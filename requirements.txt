@@ -1,0 +1,4 @@
+frida>=17.8.0
+r2pipe>=1.9.8
+pefile>=2024.8.26
+capstone>=5.0.7
