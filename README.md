@@ -6,9 +6,11 @@ No reverse engineering experience required -- just good prompting. Although some
 
 ## Requirements
 
-- [Cursor IDE](https://cursor.sh)
-OR
-- [VSCode](https://code.visualstudio.com/) + [Copilot](https://github.com/features/copilot)
+- A supported IDE:
+  - [Cursor IDE](https://cursor.sh)
+    
+    OR
+  - [VSCode](https://code.visualstudio.com/) + [Copilot](https://github.com/features/copilot)
 - Python 3.10+
 - Visual Studio 2022+ with C++ Desktop workload (only needed to build ASI patches)
 
