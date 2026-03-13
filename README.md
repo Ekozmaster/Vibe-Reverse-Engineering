@@ -1,6 +1,6 @@
 # Vibe Reverse Engineering
 
-LLM-friendly static and dynamic analysis tools for **x86/x64 PE binaries**, designed for Cursor IDE. Point an agent at an `.exe`, describe what you want, and let it work.
+LLM-friendly static and dynamic analysis tools for **x86/x64 PE binaries**, designed for Cursor IDE and GitHub Copilot through VSCode. Point an agent at an `.exe`, describe what you want, and let it work.
 
 No reverse engineering experience required -- just good prompting. Although some basic knowledge of programming and RE can go a long way.
 
@@ -26,7 +26,7 @@ pip install -r requirements.txt
 
 ## How it works
 
-The project ships with Cursor rules (`.cursor/rules/`) that teach the agent a full tool catalog -- which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.
+The project ships with Cursor rules (`.cursor/rules/`) and Copilot instructions (`./github/copilot-instructions.md`) that teach the agent a full tool catalog -- which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.
 
 **Static analysis** (`retools/`) works directly on PE files on disk: disassembly, decompilation, cross-references, call graphs, vtable analysis, byte pattern search, and more.
 
