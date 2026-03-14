@@ -480,3 +480,63 @@ python -m livetools analyze scene.jsonl --filter "addr==0x00401000" --group-by "
 python -m livetools analyze scene.jsonl --filter "addr==0x00401000" --cross-tab caller leave.eax
 python -m livetools analyze scene.jsonl --export-csv scene.csv
 ```
+
+---
+
+## RTX Remix — DX9 FFP Porting
+
+### Purpose
+
+Some DX9 games use custom vertex shaders that RTX Remix cannot inject into because Remix requires fixed-function pipeline (FFP) geometry to apply path-traced lighting and replaceable assets. The FFP template (`rtx_remix_tools/dx/dx9_ffp_template/`) is a D3D9 proxy DLL that intercepts `IDirect3DDevice9`, captures the game's VS constant matrices (View/Projection/World), NULLs the shaders on draw calls, applies the matrices through `SetTransform`, and chain-loads RTX Remix. It is not a drop-in solution — adapt it per-game using `retools` and `livetools`.
+
+**When to suggest this workflow**: whenever the user mentions RTX Remix compatibility, FFP rendering, DX9 shader-to-FFP conversion, or building a `d3d9.dll` proxy for a game. Proactively recommend loading `#dx9-ffp-port` in Copilot Chat for full porting context — it walks through the complete workflow and common pitfalls.
+
+### File Map
+
+| Path | Role |
+|------|------|
+| `rtx_remix_tools/dx/dx9_ffp_template/proxy/d3d9_device.c` | Core FFP conversion — 119-method `IDirect3DDevice9` wrapper |
+| `rtx_remix_tools/dx/dx9_ffp_template/proxy/d3d9_main.c` | DLL entry, logging, Remix chain-loading, INI parsing |
+| `rtx_remix_tools/dx/dx9_ffp_template/proxy/d3d9_wrapper.c` | `IDirect3D9` wrapper — intercepts `CreateDevice` |
+| `rtx_remix_tools/dx/dx9_ffp_template/proxy/proxy.ini` | Runtime config: Remix chain load, albedo texture stage |
+| `rtx_remix_tools/dx/dx9_ffp_template/proxy/build.bat` | MSVC x86 no-CRT build (auto-finds VS via vswhere) |
+| `rtx_remix_tools/dx/dx9_ffp_template/scripts/` | Analysis scripts (see below) |
+| `rtx_remix_tools/dx/dx9_ffp_template/kb.h` | Blank knowledge base — copy to `patches/<GameName>/` and accumulate RE discoveries |
+
+Per-game copies live at `patches/<GameName>/` (copy the whole template directory there).
+
+### Analysis Scripts
+
+| Script | What it finds |
+|--------|---------------|
+| `scripts/find_d3d_calls.py <game.exe>` | D3D9/D3DX imports and call sites |
+| `scripts/find_vs_constants.py <game.exe>` | `SetVertexShaderConstantF` call sites and register/count args |
+| `scripts/find_device_calls.py <game.exe>` | Device vtable call patterns and device pointer refs |
+| `scripts/find_vtable_calls.py <game.exe>` | D3DX constant table usage and D3D9 vtable calls |
+| `scripts/decode_vtx_decls.py <game.exe> --scan` | Vertex declaration formats (BLENDWEIGHT/BLENDINDICES → skinning) |
+| `scripts/scan_d3d_region.py <game.exe> 0xSTART 0xEND` | Map all D3D9 vtable calls in a code region |
+
+Run these from the template directory or from a per-game copy under `patches/<GameName>/`.
+
+### Porting Workflow (Summary)
+
+1. **Static analysis** — run the scripts above against the game binary; identify `SetVertexShaderConstantF` call sites and vertex declaration formats.
+2. **Discover VS constant layout** — determine which registers hold View, Projection, and World matrices. Use `retools.decompiler` on the call sites, then confirm with a live `livetools trace` reading `[esp+4]:4:uint32; [esp+8]:4:uint32; [esp+c]:64:float32` (device, startReg, count, data).
+3. **Copy template + update defines** — copy `rtx_remix_tools/dx/dx9_ffp_template/` to `patches/<GameName>/`, then edit the `GAME-SPECIFIC` block at the top of `d3d9_device.c` with the discovered register ranges (`VS_REG_VIEW_START/END`, `VS_REG_PROJ_*`, `VS_REG_WORLD_*`).
+4. **Build and deploy** — run `build.bat` from `patches/<GameName>/proxy/`, copy `d3d9.dll` + `proxy.ini` to the game directory alongside `d3d9_remix.dll`.
+5. **Iterate with the log** — `ffp_proxy.log` records per-frame draw call data (VS regs written, vertex decls, matrices). Wrong matrices → re-check register mapping. White/black objects → adjust `AlbedoStage` in `proxy.ini`. Geometry piled at origin → world matrix register is wrong.
+
+### Key `d3d9_device.c` Defines
+
+```c
+#define VS_REG_VIEW_START       0   // First register of view matrix
+#define VS_REG_VIEW_END         4
+#define VS_REG_PROJ_START       4   // First register of projection matrix
+#define VS_REG_PROJ_END         8
+#define VS_REG_WORLD_START     16   // First register of world matrix
+#define VS_REG_WORLD_END       20
+#define VS_REG_BONE_THRESHOLD  20   // Registers at/beyond this are bone candidates
+#define VS_REGS_PER_BONE        3   // Registers per bone (3 = packed 4x3)
+```
+
+For the full workflow, common pitfalls, and architecture details, load `#dx9-ffp-port` in Copilot Chat.
