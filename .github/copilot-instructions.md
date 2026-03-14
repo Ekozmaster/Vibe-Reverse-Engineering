@@ -487,9 +487,9 @@ python -m livetools analyze scene.jsonl --export-csv scene.csv
 
 ### Purpose
 
-Some DX9 games use custom vertex shaders that RTX Remix cannot inject into because Remix requires fixed-function pipeline (FFP) geometry to apply path-traced lighting and replaceable assets. The FFP template (`rtx_remix_tools/dx/dx9_ffp_template/`) is a D3D9 proxy DLL that intercepts `IDirect3DDevice9`, captures the game's VS constant matrices (View/Projection/World), NULLs the shaders on draw calls, applies the matrices through `SetTransform`, and chain-loads RTX Remix. It is not a drop-in solution — adapt it per-game using `retools` and `livetools`.
+Some DX9 games use custom vertex shaders that RTX Remix cannot inject into because Remix requires fixed-function pipeline (FFP) geometry to apply path-traced lighting and replaceable assets. The FFP template (`rtx_remix_tools/dx/dx9_ffp_template/`) is a D3D9 proxy DLL that intercepts `IDirect3DDevice9`, captures the game's VS constant matrices (View/Projection/World), NULLs the shaders on draw calls, applies the matrices through `SetTransform`, and chain-loads RTX Remix. It is not a drop-in solution — every game needs its own RE investigation.
 
-If you use this workflow, you __must__ read the associated dx9-ffp-port.prompt.md file for detailed instructions, common pitfalls, and architectural explanations.
+If you use this workflow, you __must__ read the associated .github\copilot-prompts\dx9-ffp-port.prompt.md file for detailed instructions, common pitfalls, and architectural explanations.
 
 **When to suggest this workflow**: whenever the user mentions FFP rendering, DX9 shader-to-FFP conversion, or building a `d3d9.dll` proxy for a game. Potentially recommend it if the game you're reverse engineering would have better results with this than other methods. Proactively recommend loading `#dx9-ffp-port` in Copilot Chat for full porting context — it walks through the complete workflow and common pitfalls.
 
@@ -502,15 +502,17 @@ If you use this workflow, you __must__ read the associated dx9-ffp-port.prompt.m
 | `rtx_remix_tools/dx/dx9_ffp_template/proxy/d3d9_wrapper.c` | `IDirect3D9` wrapper — intercepts `CreateDevice` |
 | `rtx_remix_tools/dx/dx9_ffp_template/proxy/proxy.ini` | Runtime config: Remix chain load, albedo texture stage |
 | `rtx_remix_tools/dx/dx9_ffp_template/proxy/build.bat` | MSVC x86 no-CRT build (auto-finds VS via vswhere) |
-| `rtx_remix_tools/dx/dx9_ffp_template/scripts/` | Analysis scripts (see below) |
+| `rtx_remix_tools/dx/dx9_ffp_template/scripts/` | Quick-scan scripts (surface addresses only — not a substitute for deep analysis) |
 | `rtx_remix_tools/dx/dx9_ffp_template/kb.h` | Blank knowledge base — copy to `patches/<GameName>/` and accumulate RE discoveries |
 
 Per-game copies live at `patches/<GameName>/` (copy the whole template directory there).
 
-### Analysis Scripts
+### Analysis Scripts — Entry Points, Not Endpoints
 
-| Script | What it finds |
-|--------|---------------|
+The scripts below are fast first-pass scanners. They surface candidate addresses and call sites to give you a starting point. They do **not** replace deep analysis — always follow up with `retools` and `livetools` to understand what is actually happening.
+
+| Script | What it surfaces |
+|--------|------------------|
 | `scripts/find_d3d_calls.py <game.exe>` | D3D9/D3DX imports and call sites |
 | `scripts/find_vs_constants.py <game.exe>` | `SetVertexShaderConstantF` call sites and register/count args |
 | `scripts/find_device_calls.py <game.exe>` | Device vtable call patterns and device pointer refs |
@@ -518,17 +520,37 @@ Per-game copies live at `patches/<GameName>/` (copy the whole template directory
 | `scripts/decode_vtx_decls.py <game.exe> --scan` | Vertex declaration formats (BLENDWEIGHT/BLENDINDICES → skinning) |
 | `scripts/scan_d3d_region.py <game.exe> 0xSTART 0xEND` | Map all D3D9 vtable calls in a code region |
 
-Run these from the template directory or from a per-game copy under `patches/<GameName>/`.
+Once you have addresses from these scripts, bring in the full RE toolset to understand what is actually happening. Some examples:
+- `decompiler.py` on a `SetVertexShaderConstantF` call site can reveal the full calling context and which registers are loaded from where
+- `callgraph.py --up` can show what triggers a render path; `--down` can show what it drives
+- `xrefs.py` on an IAT slot can turn up call sites the scripts missed
+- `structrefs.py --aggregate` on a shader-setup function can reconstruct the surrounding render state struct
+- `search.py strings --xrefs` can locate shader-loading or matrix-building paths by name
+- `datarefs.py` can trace where a global device pointer or matrix value originates
 
-### Porting Workflow (Summary)
+### Porting Investigation Goals
 
-1. **Static analysis** — run the scripts above against the game binary; identify `SetVertexShaderConstantF` call sites and vertex declaration formats.
-2. **Discover VS constant layout** — determine which registers hold View, Projection, and World matrices. Use `retools.decompiler` on the call sites, then confirm with a live `livetools trace` reading `[esp+4]:4:uint32; [esp+8]:4:uint32; [esp+c]:64:float32` (device, startReg, count, data).
-3. **Copy template + update defines** — copy `rtx_remix_tools/dx/dx9_ffp_template/` to `patches/<GameName>/`, then edit the `GAME-SPECIFIC` block at the top of `d3d9_device.c` with the discovered register ranges (`VS_REG_VIEW_START/END`, `VS_REG_PROJ_*`, `VS_REG_WORLD_*`).
-4. **Build and deploy** — run `build.bat` from `patches/<GameName>/proxy/`, copy `d3d9.dll` + `proxy.ini` to the game directory alongside `d3d9_remix.dll`.
-5. **Iterate with the log** — `ffp_proxy.log` records per-frame draw call data (VS regs written, vertex decls, matrices). Wrong matrices → re-check register mapping. White/black objects → adjust `AlbedoStage` in `proxy.ini`. Geometry piled at origin → world matrix register is wrong.
+The goal is to answer three questions. The tools and approaches below are illustrative — use whatever combination gives the clearest answer for the specific game.
 
-### Key `d3d9_device.c` Defines
+**1. Which VS constant registers hold View, Projection, and World matrices?**
+- Script output gives candidate call sites; `decompiler.py` on those sites can reveal register ranges and data sources
+- If scripts miss call sites, `xrefs.py` on the `SetVertexShaderConstantF` IAT slot finds the rest
+- `livetools trace` reading `[esp+4]:4:uint32; [esp+8]:4:uint32; [esp+c]:64:float32` (startReg, count, data) can confirm live values
+- If the game uses an indirection layer, `callgraph.py --up` from the call site can expose the real dispatch path
+
+**2. What vertex formats are used, and is there skinning?**
+- Script output surfaces vertex declaration addresses; `decompiler.py` on the setup code can confirm the format
+- `search.py insn` for `D3DDECL_END` patterns or FVF constants can find inline declarations the scripts miss
+- `structrefs.py --aggregate` on a draw call wrapper can show what the vertex buffer layout looks like in practice
+
+**3. Is the render path too complex for a simple register remap?**
+- `callgraph.py --down` from the render entry point can reveal depth — wide or deeply conditional trees warrant more investigation before touching defines
+- `livetools steptrace` through a draw call can map the exact execution path per frame
+- `livetools dipcnt callers` can identify which functions account for most draw traffic
+
+### Apply Discoveries
+
+Once the matrix register layout is confirmed, update `d3d9_device.c`:
 
 ```c
 #define VS_REG_VIEW_START       0   // First register of view matrix
@@ -540,5 +562,7 @@ Run these from the template directory or from a per-game copy under `patches/<Ga
 #define VS_REG_BONE_THRESHOLD  20   // Registers at/beyond this are bone candidates
 #define VS_REGS_PER_BONE        3   // Registers per bone (3 = packed 4x3)
 ```
+
+Build with `build.bat`, deploy alongside `d3d9_remix.dll`, then iterate using `ffp_proxy.log`. Wrong matrices → re-check register mapping with `decompiler.py`. White/black objects → adjust `AlbedoStage` in `proxy.ini`. Geometry at origin → world matrix register is wrong, trace it live with `livetools trace`.
 
 For the full workflow, common pitfalls, and architecture details, load `#dx9-ffp-port` in Copilot Chat.
