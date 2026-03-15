@@ -212,3 +212,88 @@ $ 0x7C554C Flags g_renderFlags
 
 **Always pass `--types <kb_file>` when using `decompiler.py`** so accumulated knowledge improves every decompilation.
 
+---
+
+## RTX Remix — DX9 FFP Porting
+
+Some DX9 games use custom vertex shaders that RTX Remix cannot inject into because Remix requires fixed-function pipeline (FFP) geometry for path-traced lighting and replaceable assets. The FFP template (`rtx_remix_tools/dx/dx9_ffp_template/`) is a D3D9 proxy DLL that intercepts `IDirect3DDevice9`, captures the game's VS constant matrices (View/Projection/World), NULLs the shaders on draw calls, applies the matrices through `SetTransform`, and chain-loads RTX Remix. Each game requires its own RE investigation.
+
+**When to use this workflow**: whenever the user mentions FFP rendering, DX9 shader-to-FFP conversion, RTX Remix compatibility, or building a `d3d9.dll` proxy for a game.
+
+**SKINNING IS OFF BY DEFAULT.** Do NOT enable `ENABLE_SKINNING`, modify skinning code, or discuss skinning infrastructure unless the user explicitly asks for character model / bone / skeletal animation support.
+
+### File Map
+
+| Path | Role |
+|------|------|
+| `rtx_remix_tools/dx/dx9_ffp_template/proxy/d3d9_device.c` | Core FFP conversion — 119-method `IDirect3DDevice9` wrapper |
+| `rtx_remix_tools/dx/dx9_ffp_template/proxy/d3d9_main.c` | DLL entry, logging, Remix chain-loading, INI parsing |
+| `rtx_remix_tools/dx/dx9_ffp_template/proxy/d3d9_wrapper.c` | `IDirect3D9` wrapper — intercepts `CreateDevice` |
+| `rtx_remix_tools/dx/dx9_ffp_template/proxy/proxy.ini` | Runtime config: Remix chain load, albedo texture stage |
+| `rtx_remix_tools/dx/dx9_ffp_template/proxy/build.bat` | MSVC x86 no-CRT build (auto-finds VS via vswhere) |
+| `extensions/skinning/README.md` | Guide for enabling skinning (late-stage only) |
+
+Per-game copies live at `patches/<GameName>/` (copy the whole template directory).
+
+### Analysis Scripts
+
+| Script | What it surfaces |
+|--------|-----------------|
+| `scripts/find_d3d_calls.py <game.exe>` | D3D9/D3DX imports and call sites |
+| `scripts/find_vs_constants.py <game.exe>` | `SetVertexShaderConstantF` call sites and register/count args |
+| `scripts/find_device_calls.py <game.exe>` | Device vtable call patterns |
+| `scripts/decode_vtx_decls.py <game.exe> --scan` | Vertex declaration formats |
+| `scripts/scan_d3d_region.py <game.exe> 0xSTART 0xEND` | D3D9 vtable calls in a code region |
+
+Scripts are fast first-pass scanners — always follow up with `retools` and `livetools` for deep analysis.
+
+### Game-Specific Defines
+
+The top of `proxy/d3d9_device.c` has a `GAME-SPECIFIC` section that must be set from RE findings:
+
+```c
+#define VS_REG_VIEW_START       0   // First register of view matrix
+#define VS_REG_VIEW_END         4
+#define VS_REG_PROJ_START       4   // First register of projection matrix
+#define VS_REG_PROJ_END         8
+#define VS_REG_WORLD_START     16   // First register of world matrix
+#define VS_REG_WORLD_END       20
+#define ENABLE_SKINNING         0   // Off by default; only set to 1 after rigid FFP works
+```
+
+### Porting Workflow
+
+1. **Static analysis**: Run `find_d3d_calls.py`, `find_vs_constants.py`, `decode_vtx_decls.py`. Use `retools.decompiler` on `SetVertexShaderConstantF` call sites to identify matrix register layout.
+2. **Dynamic confirmation**: Trace `SetVertexShaderConstantF` live:
+   ```bash
+   python -m livetools trace <call_addr> --count 50 \
+       --read "[esp+8]:4:uint32; [esp+10]:4:uint32; *[esp+c]:64:float32"
+   ```
+   Captures: startRegister, Vector4fCount, and the actual float data (first 4 vec4 constants, dereferenced).
+3. **Copy template**: `patches/<GameName>/` — update the `GAME-SPECIFIC` defines.
+4. **Build**: `cd patches/<GameName>/proxy && build.bat`
+5. **Deploy**: Copy `d3d9.dll` + `proxy.ini` to the game directory.
+6. **Iterate via log**: The proxy writes `ffp_proxy.log` after a 50-second delay. Check VS regs written, vertex declarations, actual matrix values. Do not change the logging delay unless the user asks.
+
+**Always tell the user when you need them to interact with the game** for logging or hooking purposes. They must be in-game with real geometry visible.
+
+### Editing d3d9_device.c — What to Edit vs Leave Alone
+
+| Section | Edit Per-Game? |
+|---------|----------------|
+| `VS_REG_*` and `ENABLE_SKINNING` defines | **YES** |
+| `FFP_SetupLighting`, `FFP_SetupTextureStages`, `FFP_ApplyTransforms` | MAYBE |
+| `WD_DrawPrimitive` / `WD_DrawIndexedPrimitive` | **YES** — draw routing |
+| IUnknown + relay thunks | NO — naked ASM, never edit |
+| Everything else | NO |
+
+**DrawIndexedPrimitive routing**: no NORMAL → HUD passthrough; rigid with NORMAL → FFP convert; skinned → FFP skinned draw (only when `ENABLE_SKINNING=1`).
+
+### Common Pitfalls
+
+- **Wrong matrices**: D3D9 FFP expects row-major. Proxy transposes. If game stores row-major in VS constants, remove the transpose in `FFP_ApplyTransforms`.
+- **White/black objects**: Albedo texture on stage 1+. Set `AlbedoStage` in `proxy.ini`, or trace `SetTexture` to find the right stage.
+- **Geometry at origin**: World matrix register mapping wrong — re-check VS constant writes via `livetools trace`.
+- **Game crashes on startup**: Set `Enabled=0` in `proxy.ini [Remix]` to test without Remix.
+- **Missing world geometry**: Check whether its vertex decl has NORMAL and whether `viewProjValid` is true at draw time.
+

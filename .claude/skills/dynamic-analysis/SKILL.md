@@ -5,6 +5,8 @@ description: Frida-based live process analysis toolkit for reverse engineering. 
 
 # Dynamic Analysis with livetools
 
+For DX9 FFP proxy porting and RTX Remix compatibility, see also: @dx9-ffp-port
+
 A live analysis toolkit for running processes. Attach, trace functions, collect data, inspect state, step through code, patch memory, analyze offline -- composable tools that chain naturally for any RE scenario.
 
 All commands: `python -m livetools <command> [args]`
