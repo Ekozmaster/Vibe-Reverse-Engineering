@@ -1,16 +1,15 @@
 # Vibe Reverse Engineering
 
-LLM-friendly static and dynamic analysis tools for **x86/x64 PE binaries**, designed for Cursor IDE and GitHub Copilot through VSCode. Point an agent at an `.exe`, describe what you want, and let it work.
+LLM-friendly static and dynamic analysis tools for **x86/x64 PE binaries**, designed for agentic coding tools. Point an agent at an `.exe`, describe what you want, and let it work.
 
 No reverse engineering experience required -- just good prompting. Although some basic knowledge of programming and RE can go a long way.
 
 ## Requirements
 
-- A supported IDE:
+- A supported agentic coding tool:
   - [Cursor IDE](https://cursor.sh)
-    
-    OR
   - [VSCode](https://code.visualstudio.com/) + [Copilot](https://github.com/features/copilot)
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - Python 3.10+
 - Visual Studio 2022+ with C++ Desktop workload (only needed to build ASI patches)
 
@@ -26,7 +25,13 @@ pip install -r requirements.txt
 
 ## How it works
 
-The project ships with Cursor rules (`.cursor/rules/`) and Copilot instructions (`./github/copilot-instructions.md`) that teach the agent a full tool catalog -- which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.
+The project ships with agent instructions tailored to each supported environment:
+
+- **Cursor** — `.cursor/rules/`
+- **Copilot** — `.github/copilot-instructions.md`
+- **Claude Code** — `CLAUDE.md`
+
+Each teaches the agent the full tool catalog -- which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.
 
 **Static analysis** (`retools/`) works directly on PE files on disk: disassembly, decompilation, cross-references, call graphs, vtable analysis, byte pattern search, and more.
 
@@ -34,7 +39,7 @@ The project ships with Cursor rules (`.cursor/rules/`) and Copilot instructions 
 
 ## Usage
 
-Start a new chat in Cursor, point it at the target binary, and describe what you're after:
+Open this directory in your agentic coding tool and describe what you're after:
 
 > Disable frustum culling in "D:/Games/MyGame/AwesomeGame.exe" -- I'm modding raytracing and need geometry to render behind the camera for reflections/mirrors.
 
