@@ -55,23 +55,6 @@ The project ships with agent instructions tailored to each supported environment
 
 Each teaches the agent the full tool catalog — which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.
 
-### Kiro
-
-Kiro loads context automatically via steering files and exposes deep skill knowledge via powers:
-
-| Steering file | Loaded | Purpose |
-|---------------|--------|---------|
-| `tool-catalog.md` | Always | Complete reference for all tools |
-| `engineering-standards.md` | Always | Code quality and comment standards |
-| `dx9-ffp-port.md` | On proxy/patch files | RTX Remix FFP porting workflow |
-
-| Power | Purpose |
-|-------|---------|
-| `dx9-ffp-port` | DX9 fixed-function pipeline porting knowledge base |
-| `dynamic-analysis` | Frida-based dynamic analysis patterns and workflows |
-
-Kiro also has agent hooks that enforce the workflow: research the game/API online and write a spec before touching code, verify fixes actually work after the agent stops, and keep the KB updated with game-specific findings.
-
 ## Usage
 
 Open this directory in your agentic coding tool and describe what you're after:
