@@ -1,0 +1,12 @@
+{
+  "name": "Research & Spec Before Task",
+  "version": "1.0.0",
+  "description": "Before any spec task starts: research the specific game or API online, then create a spec file with a proper plan before touching any code.",
+  "when": {
+    "type": "preTaskExecution"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A spec task is about to start. Before writing any code, do the following:\n\n1. RESEARCH: Search the web for documentation, known issues, and community findings specific to the game or API involved in this task. For example: if fixing input for Re-Volt, search for 'Re-Volt DirectInput raw input handling', 'Re-Volt Xbox PC input method', etc. Summarise what you find — input method used (DirectInput/RawInput/WinAPI), known quirks, relevant community fixes.\n\n2. SPEC: Create or update a spec file at `.kiro/specs/<task-name>.md` with:\n   - Problem statement (what is broken and why)\n   - Research findings (what the game/API actually does)\n   - Proposed fix approach (the correct layer to fix it)\n   - Implementation steps (ordered, specific)\n   - Verification method (how to confirm it works)\n\n3. Only proceed to implementation after the spec is written."
+  }
+}
