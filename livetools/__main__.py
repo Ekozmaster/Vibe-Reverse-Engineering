@@ -593,6 +593,64 @@ def cmd_memwatch(args: argparse.Namespace) -> None:
         print("Usage: python -m livetools memwatch [start|stop|read]")
 
 
+# ── gamectl command ───────────────────────────────────────────────────────
+
+def cmd_gamectl(args: argparse.Namespace) -> None:
+    from . import gamectl as gc
+    action = args.gc_action
+
+    hwnd, err = gc.resolve_hwnd(getattr(args, "exe", None),
+                                getattr(args, "window", None))
+    if action == "info":
+        # info doesn't need a valid hwnd to report the error clearly
+        if not hwnd:
+            print(f"[error] {err}"); return
+        info = gc.get_window_info(hwnd)
+        print(f"hwnd:  {info['hwnd']}")
+        print(f"title: {info['title']}")
+        print(f"pid:   {info['pid']}")
+        print(f"tid:   {info['tid']}")
+        return
+
+    if not hwnd:
+        print(f"[error] {err}"); return
+
+    if action == "key":
+        focused = gc.focus_hwnd(hwnd)
+        r = gc.send_key(args.key_name, hold_ms=args.hold_ms)
+        print(f"focused={focused} {r}")
+
+    elif action == "keys":
+        r = gc.send_keys(hwnd, args.sequence, delay_ms=args.delay_ms)
+        print(f"focused={r['focused']} sent={r['count']} ok={r['ok']}")
+        for a in r["actions"]:
+            if not a.get("ok", True):
+                print(f"  [error] {a}")
+
+    elif action == "click":
+        r = gc.click_at(hwnd, args.x, args.y)
+        print(r)
+
+    elif action == "macro":
+        macros = gc.load_macros(args.macro_file)
+        r = gc.run_macro(hwnd, args.macro_name, macros, delay_ms=args.delay_ms)
+        if r["ok"]:
+            print(f"Macro '{args.macro_name}' done. "
+                  f"{r['steps_result']['count']} actions sent.")
+        else:
+            print(f"[error] {r.get('error', r)}")
+
+    elif action == "macros":
+        macros = gc.load_macros(args.macro_file)
+        print(f"Macros in {args.macro_file}:")
+        for name, defn in sorted(macros.items()):
+            print(f"  {name:<24s}  {defn.get('description', '')}")
+            print(f"    steps: {defn.get('steps', '')}")
+
+    else:
+        print("Usage: python -m livetools gamectl [info|key|keys|click|macro|macros]")
+
+
 # ── argument parser ────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -946,6 +1004,66 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--export-csv", default=None,
         help="Export filtered/grouped data as CSV to file")
 
+    # -- gamectl --
+    sp = sub.add_parser("gamectl",
+        help="Send keystrokes/mouse clicks directly to a game window (no Frida, no focus needed)",
+        description=(
+            "Posts WM_KEYDOWN/WM_KEYUP directly to the target window handle.\n"
+            "No focus stealing — works even when the game is in the background.\n\n"
+            "Window lookup (pick one):\n"
+            "  --exe game.exe      find window by process exe name (recommended)\n"
+            "  --window <hint>     find window by title substring\n\n"
+            "Key names: RETURN, ESCAPE, SPACE, UP, DOWN, LEFT, RIGHT,\n"
+            "           TAB, F1-F12, A-Z, 0-9, NUMPAD0-9, SHIFT, CTRL, ALT\n\n"
+            "Sequence token syntax:\n"
+            "  KEY_NAME          — keydown + keyup\n"
+            "  WAIT:N            — pause N milliseconds\n"
+            "  HOLD:KEY_NAME:N   — hold key N ms before keyup\n\n"
+            "Examples:\n"
+            "  python -m livetools gamectl --exe revolt_xbox.exe info\n"
+            "  python -m livetools gamectl --exe revolt_xbox.exe key RETURN\n"
+            "  python -m livetools gamectl --exe revolt_xbox.exe keys \"DOWN DOWN RETURN\"\n"
+            "  python -m livetools gamectl --exe revolt_xbox.exe keys "
+            "\"RETURN WAIT:1000 RETURN WAIT:1000 RETURN\" --delay-ms 0\n"
+            "  python -m livetools gamectl --exe revolt_xbox.exe click 400 300\n"
+            "  python -m livetools gamectl --exe revolt_xbox.exe macro "
+            "--macro-file patches/revolt/macros.json navigate_menu"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sp.add_argument("--exe", "-e", default=None,
+        help="Target process exe name (e.g. revolt_xbox.exe) — preferred over --window")
+    sp.add_argument("--window", "-w", default=None,
+        help="Window title substring fallback (case-insensitive)")
+    gc_sub = sp.add_subparsers(dest="gc_action")
+
+    gc_sub.add_parser("info", help="Show hwnd, title, pid for the matched window")
+
+    gc_key = gc_sub.add_parser("key", help="Send a single key press")
+    gc_key.add_argument("key_name", help="Key name (e.g. RETURN, UP, F5, A)")
+    gc_key.add_argument("--hold-ms", type=int, default=50,
+        help="Hold duration in ms (default: 50)")
+
+    gc_keys = gc_sub.add_parser("keys", help="Send a space-separated key sequence")
+    gc_keys.add_argument("sequence",
+        help='e.g. "DOWN DOWN RETURN" or "RETURN WAIT:1000 RETURN"')
+    gc_keys.add_argument("--delay-ms", type=int, default=200,
+        help="Delay between keys in ms (default: 200)")
+
+    gc_click = gc_sub.add_parser("click", help="Post left-click at client-area coordinates")
+    gc_click.add_argument("x", type=int, help="Client X coordinate")
+    gc_click.add_argument("y", type=int, help="Client Y coordinate")
+
+    gc_macro = gc_sub.add_parser("macro", help="Run a named macro from a JSON file")
+    gc_macro.add_argument("macro_name", help="Macro name to execute")
+    gc_macro.add_argument("--macro-file", default="macros.json",
+        help="Path to macro JSON file (default: macros.json)")
+    gc_macro.add_argument("--delay-ms", type=int, default=200,
+        help="Delay between keys in ms (default: 200)")
+
+    gc_macros = gc_sub.add_parser("macros", help="List all macros in a JSON file")
+    gc_macros.add_argument("--macro-file", default="macros.json",
+        help="Path to macro JSON file (default: macros.json)")
+
     return p
 
 
@@ -988,6 +1106,7 @@ def main() -> None:
         "dipcnt": cmd_dipcnt,
         "memwatch": cmd_memwatch,
         "analyze": cmd_analyze,
+        "gamectl": cmd_gamectl,
     }
 
     handler = dispatch.get(args.command)
