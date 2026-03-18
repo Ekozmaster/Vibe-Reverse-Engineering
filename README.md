@@ -10,6 +10,7 @@ No reverse engineering experience required -- just good prompting. Although some
   - [Cursor IDE](https://cursor.sh)
   - [VSCode](https://code.visualstudio.com/) + [Copilot](https://github.com/features/copilot)
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+  - [Kiro](https://kiro.dev)
 - Python 3.10+
 - Visual Studio 2022+ with C++ Desktop workload (only needed to build ASI patches)
 
@@ -30,12 +31,36 @@ The project ships with agent instructions tailored to each supported environment
 - **Cursor** — `.cursor/rules/`
 - **Copilot** — `.github/copilot-instructions.md`
 - **Claude Code** — `CLAUDE.md`
+- **Kiro** — `.kiro/steering/` (auto-loaded context) and `.kiro/powers/` (on-demand skills)
 
 Each teaches the agent the full tool catalog -- which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.
+
+### Kiro steering files
+
+| File | Purpose |
+|------|---------|
+| `.kiro/steering/tool-catalog.md` | Complete tool reference — loaded automatically in every session |
+| `.kiro/steering/engineering-standards.md` | Code quality and comment standards |
+| `.kiro/steering/dx9-ffp-port.md` | RTX Remix FFP porting workflow — loaded when working on proxy/patch files |
+
+### Kiro powers (on-demand skills)
+
+| Power | Purpose |
+|-------|---------|
+| `.kiro/powers/dx9-ffp-port/` | Deep knowledge base for DX9 fixed-function pipeline porting |
+| `.kiro/powers/dynamic-analysis/` | Frida-based dynamic analysis patterns and workflows |
 
 **Static analysis** (`retools/`) works directly on PE files on disk: disassembly, decompilation, cross-references, call graphs, vtable analysis, byte pattern search, and more.
 
 **Dynamic analysis** (`livetools/`) attaches to a running process via Frida: breakpoints, register/memory inspection, function tracing, instruction-level stepping, and live memory patching.
+
+**Game window automation** (`livetools/gamectl.py`) sends keystrokes and mouse clicks to a game window without Frida. Uses `SendInput` with `AttachThreadInput` focus management — works with DirectInput/RawInput games that ignore `PostMessage`. Target by process exe name:
+
+```bash
+python -m livetools gamectl --exe game.exe info
+python -m livetools gamectl --exe game.exe keys "DOWN DOWN RETURN"
+python -m livetools gamectl --exe game.exe macro --macro-file patches/MyGame/macros.json navigate_menu
+```
 
 ## Usage
 
