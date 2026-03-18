@@ -24,31 +24,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## How it works
-
-The project ships with agent instructions tailored to each supported environment:
-
-- **Cursor** — `.cursor/rules/`
-- **Copilot** — `.github/copilot-instructions.md`
-- **Claude Code** — `CLAUDE.md`
-- **Kiro** — `.kiro/steering/` (auto-loaded context) and `.kiro/powers/` (on-demand skills)
-
-Each teaches the agent the full tool catalog -- which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.
-
-### Kiro steering files
-
-| File | Purpose |
-|------|---------|
-| `.kiro/steering/tool-catalog.md` | Complete tool reference — loaded automatically in every session |
-| `.kiro/steering/engineering-standards.md` | Code quality and comment standards |
-| `.kiro/steering/dx9-ffp-port.md` | RTX Remix FFP porting workflow — loaded when working on proxy/patch files |
-
-### Kiro powers (on-demand skills)
-
-| Power | Purpose |
-|-------|---------|
-| `.kiro/powers/dx9-ffp-port/` | Deep knowledge base for DX9 fixed-function pipeline porting |
-| `.kiro/powers/dynamic-analysis/` | Frida-based dynamic analysis patterns and workflows |
+## Tools
 
 **Static analysis** (`retools/`) works directly on PE files on disk: disassembly, decompilation, cross-references, call graphs, vtable analysis, byte pattern search, and more.
 
@@ -61,6 +37,40 @@ python -m livetools gamectl --exe game.exe info
 python -m livetools gamectl --exe game.exe keys "DOWN DOWN RETURN"
 python -m livetools gamectl --exe game.exe macro --macro-file patches/MyGame/macros.json navigate_menu
 ```
+
+**D3D9 frame tracer** (`graphics/directx/dx9/tracer/`) captures every `IDirect3DDevice9` call with arguments, backtraces, shader bytecodes, and matrix data. Outputs JSONL for offline analysis.
+
+**RTX Remix FFP template** (`rtx_remix_tools/dx/dx9_ffp_template/`) is a D3D9 proxy DLL that converts shader-based games to fixed-function pipeline for RTX Remix compatibility.
+
+## How it works
+
+The project ships with agent instructions tailored to each supported environment:
+
+| Tool | Instructions |
+|------|-------------|
+| Cursor | `.cursor/rules/` |
+| Copilot | `.github/copilot-instructions.md` |
+| Claude Code | `CLAUDE.md` |
+| Kiro | `.kiro/steering/` + `.kiro/powers/` |
+
+Each teaches the agent the full tool catalog — which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.
+
+### Kiro
+
+Kiro loads context automatically via steering files and exposes deep skill knowledge via powers:
+
+| Steering file | Loaded | Purpose |
+|---------------|--------|---------|
+| `tool-catalog.md` | Always | Complete reference for all tools |
+| `engineering-standards.md` | Always | Code quality and comment standards |
+| `dx9-ffp-port.md` | On proxy/patch files | RTX Remix FFP porting workflow |
+
+| Power | Purpose |
+|-------|---------|
+| `dx9-ffp-port` | DX9 fixed-function pipeline porting knowledge base |
+| `dynamic-analysis` | Frida-based dynamic analysis patterns and workflows |
+
+Kiro also has agent hooks that enforce the workflow: research the game/API online and write a spec before touching code, verify fixes actually work after the agent stops, and keep the KB updated with game-specific findings.
 
 ## Usage
 
