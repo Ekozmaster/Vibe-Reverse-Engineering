@@ -274,6 +274,26 @@ Use `patches/<project_name>/` (git-ignored) for all project-specific artifacts:
 
 Create the project subfolder on first use.
 
+### Backups
+
+Before modifying project files (proxy source, kb.h, proxy.ini, build scripts, ASI specs), create a timestamped backup in `patches/<project>/backups/`:
+
+```
+patches/<project>/backups/YYYY-MM-DD_HHMM_<description>/
+```
+
+Copy ALL files being modified into the backup folder. The description should be a short slug of what the update does (e.g. `added-world-matrix-regs`, `fixed-albedo-stage`, `enabled-skinning`).
+
+Example:
+```
+patches/MyGame/backups/2026-03-19_1430_added-world-matrix-regs/
+├── d3d9_device.c
+├── proxy.ini
+└── kb.h
+```
+
+Create the backup BEFORE making changes so it captures the last known-good state. This applies to all development work — FFP proxy edits, ASI patch specs, build config changes, and any other project file modifications.
+
 ### Knowledge Base
 
 When reverse engineering a binary, maintain a knowledge base file (`.h`) that accumulates discoveries. Store in `patches/<project>/kb.h`.
