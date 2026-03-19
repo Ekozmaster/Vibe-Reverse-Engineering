@@ -2,35 +2,35 @@
  * d3d9_skinning.h — FFP Indexed Vertex Blending Extension
  *
  * This file is #included by d3d9_device.c ONLY when ENABLE_SKINNING=1.
- * It contains all skinning infrastructure for converting skinned meshes
- * (BLENDWEIGHT + BLENDINDICES vertex declarations) to FFP indexed
- * vertex blending with bone matrices.
+ * It converts skinned meshes (BLENDWEIGHT + BLENDINDICES vertex declarations)
+ * to D3D9 FFP indexed vertex blending with bone matrices.
  *
- * THIS IS A LATE-STAGE EXTENSION. It should only be enabled after:
- *   - Basic FFP conversion works (rigid geometry renders correctly)
- *   - Matrix register mapping is confirmed
- *   - AlbedoStage and texture routing are correct
+ * Bone matrices are uploaded immediately in SetVertexShaderConstantF (not
+ * deferred to draw time). Per-object stale bone clearing prevents matrix
+ * leakage between separate skinned meshes.
  *
+ * EXPAND_SKIN_VERTICES (default 0):
+ *   0 = draw with original VB and declaration (simpler, works when FFP
+ *       accepts the game's vertex format directly)
+ *   1 = expand vertices to a fixed 48-byte layout with VB caching (needed
+ *       when the game's vertex format isn't directly FFP-compatible)
+ *
+ * THIS IS A LATE-STAGE EXTENSION. Enable only after rigid FFP works.
  * To enable: set #define ENABLE_SKINNING 1 in d3d9_device.c
- *
- * Contents:
- *   - half_to_float          — IEEE 754 binary16 → binary32 decoder
- *   - decode_normal           — compressed normal format decoder
- *   - expand_skin_vertex      — per-vertex expansion to fixed 48-byte layout
- *   - SkinVB_GetExpanded      — vertex buffer expansion with caching
- *   - SkinVB_ReleaseCache     — free cached expanded VBs
- *   - FFP_UploadBones         — upload bone matrices via SetTransform
- *   - FFP_DisableSkinning     — reset indexed vertex blending state
- *   - Skin_DrawDIP            — complete skinned DrawIndexedPrimitive handler
- *   - Skin_InitDevice         — create skinExpDecl at device creation
- *   - Skin_ReleaseDevice      — free VB cache + skinExpDecl on device release
  *
  * All functions are static and require the WrappedDevice struct, slot
  * enums, and D3D9 constants from d3d9_device.c to be defined first.
  */
 
-/* Forward declaration — FFP_Engage is defined after this header is included */
+/* Forward declarations — defined after this header is included */
 static void FFP_Engage(WrappedDevice *self);
+static void FFP_Disengage(WrappedDevice *self);
+
+/* ======================================================================
+ * Vertex Expansion (only when EXPAND_SKIN_VERTICES=1)
+ * ====================================================================== */
+
+#if EXPAND_SKIN_VERTICES
 
 /* ---- Format Decoders ---- */
 
@@ -231,55 +231,32 @@ static void SkinVB_ReleaseCache(WrappedDevice *self) {
     }
 }
 
-/* ---- Bone Upload ---- */
+#endif /* EXPAND_SKIN_VERTICES */
+
+/* ======================================================================
+ * Bone Render State Setup
+ * ====================================================================== */
 
 /*
- * Upload bone matrices for FFP indexed vertex blending.
+ * Enable FFP indexed vertex blending render states.
  *
- * Each bone occupies VS_REGS_PER_BONE consecutive vec4 registers
- * (typically 3 = 4x3 matrix, rows 0-2; row 3 = implicit 0,0,0,1).
- * Uploaded as D3DTS_WORLDMATRIX(n) for FFP indexed vertex blending.
+ * Bone matrices are already uploaded immediately in SetVertexShaderConstantF,
+ * so this only enables the render states and flags worldDirty.
  */
 static void FFP_UploadBones(WrappedDevice *self) {
-    typedef int (__stdcall *FN_SetTransform)(void*, unsigned int, float*);
     typedef int (__stdcall *FN_SetRS)(void*, unsigned int, unsigned int);
     void **vt = RealVtbl(self);
-    int startReg, numBones, i;
-    float boneMat[16];
 
-    startReg = self->boneStartReg;
-    if (startReg < (int)VS_REG_BONE_THRESHOLD) return;
-
-    numBones = self->numBones;
-    if (numBones <= 0) return;
-    if (numBones > MAX_FFP_BONES) numBones = MAX_FFP_BONES;
+    if (self->numBones <= 0) return;
 
     ((FN_SetRS)vt[SLOT_SetRenderState])(self->pReal, D3DRS_INDEXEDVERTEXBLENDENABLE, 1);
     ((FN_SetRS)vt[SLOT_SetRenderState])(self->pReal, D3DRS_VERTEXBLEND,
         self->curDeclNumWeights == 1 ? D3DVBF_1WEIGHTS :
         self->curDeclNumWeights == 2 ? D3DVBF_2WEIGHTS : D3DVBF_3WEIGHTS);
 
-    /*
-     * After uploading bones, WORLDMATRIX(0) is clobbered by bone[0].
-     * Flag world transform dirty so the next rigid draw's FFP_ApplyTransforms
-     * re-applies SetTransform(WORLD) from vsConst.
-     */
+    /* Bone[0] occupies WORLDMATRIX(0) = D3DTS_WORLD, so the next rigid
+     * draw needs to re-apply its world matrix via FFP_ApplyTransforms. */
     self->worldDirty = 1;
-
-    for (i = 0; i < numBones; i++) {
-        int base = (startReg + i * VS_REGS_PER_BONE) * 4;
-        float *src = &self->vsConst[base];
-
-        /* Build 4x4 from 4x3 packed (transpose column->row major) */
-        boneMat[0]  = src[0];  boneMat[1]  = src[4];  boneMat[2]  = src[8];   boneMat[3]  = 0.0f;
-        boneMat[4]  = src[1];  boneMat[5]  = src[5];  boneMat[6]  = src[9];   boneMat[7]  = 0.0f;
-        boneMat[8]  = src[2];  boneMat[9]  = src[6];  boneMat[10] = src[10];  boneMat[11] = 0.0f;
-        boneMat[12] = src[3];  boneMat[13] = src[7];  boneMat[14] = src[11];  boneMat[15] = 1.0f;
-
-        ((FN_SetTransform)vt[SLOT_SetTransform])(self->pReal,
-            D3DTS_WORLDMATRIX(i), boneMat);
-    }
-
     self->skinningSetup = 1;
 }
 
@@ -296,74 +273,121 @@ static void FFP_DisableSkinning(WrappedDevice *self) {
     }
 }
 
-/* ---- High-Level Skinning Entry Points ---- */
+/* ======================================================================
+ * Skinned Draw Entry Point
+ * ====================================================================== */
 
 /*
  * Handle a skinned DrawIndexedPrimitive call.
- * Expands vertices to fixed FLOAT layout, uploads bones, draws with FFP.
- * Returns the HRESULT from the draw call.
- * Falls back to shader passthrough if expansion fails.
+ *
+ * When EXPAND_SKIN_VERTICES=1: expands vertices to fixed layout, draws with
+ * expanded VB. Falls back to shader passthrough if expansion fails.
+ *
+ * When EXPAND_SKIN_VERTICES=0: draws with the original VB and declaration
+ * directly (the game's vertex format must be FFP-compatible).
+ *
+ * In both modes: enables indexed vertex blending, sets bonesDrawn=1 after
+ * draw so the next object's bone writes trigger stale matrix clearing.
  */
 static int Skin_DrawDIP(WrappedDevice *self, unsigned int pt, int bvi,
     unsigned int mi, unsigned int nv, unsigned int si, unsigned int pc)
 {
     typedef int (__stdcall *FN_DIP)(void*, unsigned int, int, unsigned int, unsigned int, unsigned int, unsigned int);
-    typedef int (__stdcall *FN_SetSS)(void*, unsigned int, void*, unsigned int, unsigned int);
-    typedef int (__stdcall *FN_SetVD)(void*, void*);
     typedef int (__stdcall *FN_SetTex)(void*, unsigned int, void*);
     void **vt = RealVtbl(self);
-    unsigned int baseVtx = (unsigned int)bvi + mi;
-    void *expVB;
     int hr;
 
-    expVB = (self->skinExpDecl) ? SkinVB_GetExpanded(self, baseVtx, nv) : NULL;
-
-    if (expVB) {
-        FFP_Engage(self);
-        FFP_UploadBones(self);
-
-        /* Albedo to stage 0, NULL remaining stages */
-        {
-            int as = self->albedoStage;
-            void *albedo = (as >= 0 && as < 8) ? self->curTexture[as] : self->curTexture[0];
-            int ts;
-            ((FN_SetTex)vt[SLOT_SetTexture])(self->pReal, 0, albedo);
-            for (ts = 1; ts < 8; ts++)
-                ((FN_SetTex)vt[SLOT_SetTexture])(self->pReal, ts, NULL);
-        }
-
-        /* Bind the expansion VB and declaration */
-        ((FN_SetSS)vt[SLOT_SetStreamSource])(self->pReal, 0, expVB, 0, SKIN_VTX_SIZE);
-        ((FN_SetVD)vt[SLOT_SetVertexDeclaration])(self->pReal, self->skinExpDecl);
-
-        /* Vertices [mi..mi+nv-1] map to expansion slots [0..nv-1] via bvi=-mi */
-        hr = ((FN_DIP)vt[SLOT_DrawIndexedPrimitive])(self->pReal,
-            pt, -(int)mi, mi, nv, si, pc);
-
-        /* Restore source VB, original declaration, and texture stages */
-        ((FN_SetSS)vt[SLOT_SetStreamSource])(self->pReal, 0,
-            self->streamVB[0], self->streamOffset[0], self->streamStride[0]);
-        ((FN_SetVD)vt[SLOT_SetVertexDeclaration])(self->pReal, self->lastDecl);
-        {
-            int ts;
-            for (ts = 0; ts < 8; ts++)
-                ((FN_SetTex)vt[SLOT_SetTexture])(self->pReal, ts, self->curTexture[ts]);
-        }
-    } else {
-        /* Expansion unavailable (no skinExpDecl or VB lock failed) — shader passthrough */
-        typedef int (__stdcall *FN_SetVS)(void*, void*);
-        typedef int (__stdcall *FN_SetPS)(void*, void*);
-        if (self->ffpActive) {
-            ((FN_SetVS)vt[SLOT_SetVertexShader])(self->pReal, self->lastVS);
-            ((FN_SetPS)vt[SLOT_SetPixelShader])(self->pReal, self->lastPS);
-            self->ffpActive = 0;
-        }
+    if (self->numBones <= 0) {
+        /* No bones uploaded — passthrough with original shaders */
+        FFP_Disengage(self);
         hr = ((FN_DIP)vt[SLOT_DrawIndexedPrimitive])(self->pReal, pt, bvi, mi, nv, si, pc);
+        return hr;
     }
+
+#if EXPAND_SKIN_VERTICES
+    {
+        typedef int (__stdcall *FN_SetSS)(void*, unsigned int, void*, unsigned int, unsigned int);
+        typedef int (__stdcall *FN_SetVD)(void*, void*);
+        unsigned int baseVtx = (unsigned int)bvi + mi;
+        void *expVB = (self->skinExpDecl) ? SkinVB_GetExpanded(self, baseVtx, nv) : NULL;
+
+        if (expVB) {
+            FFP_Engage(self);
+            FFP_UploadBones(self);
+
+            /* Albedo to stage 0, NULL remaining stages */
+            {
+                int as = self->albedoStage;
+                void *albedo = (as >= 0 && as < 8) ? self->curTexture[as] : self->curTexture[0];
+                int ts;
+                ((FN_SetTex)vt[SLOT_SetTexture])(self->pReal, 0, albedo);
+                for (ts = 1; ts < 8; ts++)
+                    ((FN_SetTex)vt[SLOT_SetTexture])(self->pReal, ts, NULL);
+            }
+
+            /* Bind the expansion VB and declaration */
+            ((FN_SetSS)vt[SLOT_SetStreamSource])(self->pReal, 0, expVB, 0, SKIN_VTX_SIZE);
+            ((FN_SetVD)vt[SLOT_SetVertexDeclaration])(self->pReal, self->skinExpDecl);
+
+            /* Vertices [mi..mi+nv-1] map to expansion slots [0..nv-1] via bvi=-mi */
+            hr = ((FN_DIP)vt[SLOT_DrawIndexedPrimitive])(self->pReal,
+                pt, -(int)mi, mi, nv, si, pc);
+
+            /* Restore source VB, original declaration, and texture stages */
+            ((FN_SetSS)vt[SLOT_SetStreamSource])(self->pReal, 0,
+                self->streamVB[0], self->streamOffset[0], self->streamStride[0]);
+            ((FN_SetVD)vt[SLOT_SetVertexDeclaration])(self->pReal, self->lastDecl);
+            {
+                int ts;
+                for (ts = 0; ts < 8; ts++)
+                    ((FN_SetTex)vt[SLOT_SetTexture])(self->pReal, ts, self->curTexture[ts]);
+            }
+        } else {
+            /* Expansion unavailable — shader passthrough */
+            FFP_Disengage(self);
+            hr = ((FN_DIP)vt[SLOT_DrawIndexedPrimitive])(self->pReal, pt, bvi, mi, nv, si, pc);
+            return hr;
+        }
+    }
+#else
+    /* No expansion — draw with original VB and declaration */
+    FFP_Engage(self);
+    FFP_UploadBones(self);
+
+    /* Albedo to stage 0, NULL remaining stages */
+    {
+        int as = self->albedoStage;
+        void *albedo = (as >= 0 && as < 8) ? self->curTexture[as] : self->curTexture[0];
+        int ts;
+        ((FN_SetTex)vt[SLOT_SetTexture])(self->pReal, 0, albedo);
+        for (ts = 1; ts < 8; ts++)
+            ((FN_SetTex)vt[SLOT_SetTexture])(self->pReal, ts, NULL);
+    }
+
+    hr = ((FN_DIP)vt[SLOT_DrawIndexedPrimitive])(self->pReal, pt, bvi, mi, nv, si, pc);
+
+    /* Restore original texture bindings */
+    {
+        int ts;
+        for (ts = 0; ts < 8; ts++)
+            ((FN_SetTex)vt[SLOT_SetTexture])(self->pReal, ts, self->curTexture[ts]);
+    }
+#endif
+
+    /* Mark bones as drawn — counter resets on next bone write (new object).
+     * Do NOT reset numBones here: multiple sub-meshes of the same skinned
+     * object share the same bone set across consecutive draw calls. */
+    self->bonesDrawn = 1;
+    FFP_DisableSkinning(self);
 
     return hr;
 }
 
+/* ======================================================================
+ * Device Lifecycle
+ * ====================================================================== */
+
+#if EXPAND_SKIN_VERTICES
 /*
  * Create the shared expansion vertex declaration at device creation.
  * All skinned draws are expanded into a fixed 48-byte layout.
@@ -383,8 +407,10 @@ static void Skin_InitDevice(WrappedDevice *w, void *pRealDevice) {
     };
 
     w->curDeclNumWeights = 0;
-    w->boneStartReg = 0;
     w->numBones = 0;
+    w->prevNumBones = 0;
+    w->bonesDrawn = 0;
+    w->lastBoneStartReg = 0;
     w->skinningSetup = 0;
     w->curDeclNormalOff = 0;   w->curDeclNormalType = -1;
     w->curDeclBlendWeightOff = 0;
@@ -408,3 +434,24 @@ static void Skin_ReleaseDevice(WrappedDevice *self) {
         self->skinExpDecl = NULL;
     }
 }
+
+#else /* !EXPAND_SKIN_VERTICES */
+
+/* Initialize skinning state at device creation (no expansion) */
+static void Skin_InitDevice(WrappedDevice *w, void *pRealDevice) {
+    (void)pRealDevice;
+    w->curDeclNumWeights = 0;
+    w->numBones = 0;
+    w->prevNumBones = 0;
+    w->bonesDrawn = 0;
+    w->lastBoneStartReg = 0;
+    w->skinningSetup = 0;
+    log_str("  Skinning: enabled (immediate bone upload, no vertex expansion)\r\n");
+}
+
+/* No expansion resources to free */
+static void Skin_ReleaseDevice(WrappedDevice *self) {
+    (void)self;
+}
+
+#endif /* EXPAND_SKIN_VERTICES */

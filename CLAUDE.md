@@ -342,6 +342,7 @@ The top of `proxy/d3d9_device.c` has a `GAME-SPECIFIC` section that must be set 
 #define VS_REG_WORLD_START     16   // First register of world matrix
 #define VS_REG_WORLD_END       20
 #define ENABLE_SKINNING         0   // Off by default; only set to 1 after rigid FFP works
+#define EXPAND_SKIN_VERTICES    0   // 0=use original VB, 1=expand to fixed 48-byte layout
 ```
 
 ### Porting Workflow

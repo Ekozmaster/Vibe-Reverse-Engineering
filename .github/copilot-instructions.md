@@ -652,6 +652,8 @@ Once the matrix register layout is confirmed, update `d3d9_device.c`:
 #define VS_REG_WORLD_END       20
 #define VS_REG_BONE_THRESHOLD  20   // Registers at/beyond this are bone candidates
 #define VS_REGS_PER_BONE        3   // Registers per bone (3 = packed 4x3)
+#define ENABLE_SKINNING         0   // Off by default; only set to 1 after rigid FFP works
+#define EXPAND_SKIN_VERTICES    0   // 0=use original VB, 1=expand to fixed 48-byte layout
 ```
 
 Build with `build.bat`, deploy alongside `d3d9_remix.dll`, then iterate using `ffp_proxy.log`. Wrong matrices → re-check register mapping with `decompiler.py`. White/black objects → adjust `AlbedoStage` in `proxy.ini`. Geometry at origin → world matrix register is wrong, trace it live with `livetools trace`.

@@ -55,8 +55,8 @@ The top of `d3d9_device.c` has a `GAME-SPECIFIC` section with `#define`s that mu
 // Bone defines below only matter when ENABLE_SKINNING=1 (off by default)
 #define VS_REG_BONE_THRESHOLD  20   // Registers at/beyond this are bone candidates
 #define VS_REGS_PER_BONE        3   // Registers per bone (3 = packed 4x3)
-#define VS_BONE_MIN_REGS        3   // Minimum register count for bone detection (1 bone)
 #define ENABLE_SKINNING         0   // Late-stage: set to 1 only after rigid FFP works
+#define EXPAND_SKIN_VERTICES    0   // 0=use original VB, 1=expand to fixed 48-byte layout
 ```
 
 Beyond the defines, users may need to modify:
@@ -194,21 +194,15 @@ viewProjValid AND lastDecl AND !curDeclHasPosT AND !curDeclIsSkinned?
 
 When `ENABLE_SKINNING=1`, skinned meshes flow through these stages:
 
-1. **`WD_SetVertexDeclaration`** — Parses `D3DVERTEXELEMENT9` array. If both BLENDWEIGHT and BLENDINDICES are present, sets `curDeclIsSkinned=1` and captures per-element byte offsets: `curDeclPosOff`, `curDeclBlendWeightOff`, `curDeclBlendIndicesOff`, `curDeclNormalOff`, `curDeclTexcoordOff` and their types. Also infers `curDeclNumWeights` from the BLENDWEIGHT element type.
+1. **`WD_SetVertexDeclaration`** — Parses `D3DVERTEXELEMENT9` array. If both BLENDWEIGHT and BLENDINDICES are present, sets `curDeclIsSkinned=1`. A declaration change while bones are loaded flags `bonesDrawn=1` to trigger a reset on the next bone write.
 
-2. **`WD_SetVertexShaderConstantF`** — When a write hits registers ≥ `VS_REG_BONE_THRESHOLD` with count ≥ `VS_BONE_MIN_REGS` and divisible by `VS_REGS_PER_BONE`, stores `boneStartReg` and `numBones`.
+2. **`WD_SetVertexShaderConstantF`** — Immediate bone upload. Each write with count divisible by `VS_REGS_PER_BONE`, startReg ≥ `VS_REG_BONE_THRESHOLD`, and `curDeclIsSkinned` triggers: transpose 4×3→4×4, then `SetTransform(WORLDMATRIX(numBones++))`. Supports both per-bone (count=3) and bulk (count=N*3) writes. On object boundary (`bonesDrawn` flag or startReg jump backward), clears all previous WORLDMATRIX slots to identity before uploading new bones.
 
-3. **`WD_DrawIndexedPrimitive`** — Sees `curDeclIsSkinned=1`, calls `SkinVB_GetExpanded()` which:
-   - Locks the game's source vertex buffer
-   - Calls `expand_skin_vertex()` per vertex → decodes compressed normals/UVs, writes fixed 48-byte layout
-   - Caches the result by hash key (source VB ptr + baseVtx + count + stride + decl ptr)
-   - On cache hit, returns the previously expanded buffer (no re-expansion)
+3. **`Skin_DrawDIP`** — Engages FFP, enables indexed vertex blending render states via `FFP_UploadBones`. When `EXPAND_SKIN_VERTICES=1`, expands vertices to a fixed 48-byte layout; when 0 (default), draws with the original VB directly.
 
-4. **`FFP_UploadBones`** — Reads bone matrices from `vsConst[]` starting at `boneStartReg`, transposes each 4×3 → 4×4, uploads via `SetTransform(WORLDMATRIX(i))`. Sets `D3DRS_VERTEXBLEND` and `D3DRS_INDEXEDVERTEXBLENDENABLE`. Marks `worldDirty=1` (bone[0] clobbers WORLDMATRIX(0)).
+4. **Post-draw** — Sets `bonesDrawn=1`, disables indexed vertex blending. Bone matrices persist in WORLDMATRIX slots for sub-mesh sharing; reset happens on the next object's first bone write.
 
-5. **Draw** — The expanded VB + shared `skinExpDecl` are bound, draw executes with FFP indexed vertex blending. After the draw, original VB/decl/textures are restored.
-
-All of this is infrastructure (no per-game edits). The only game-specific parts are the `VS_REG_BONE_*` defines and `ENABLE_SKINNING` toggle.
+All of this is infrastructure (no per-game edits). The only game-specific parts are the `VS_REG_BONE_*` defines and `ENABLE_SKINNING`/`EXPAND_SKIN_VERTICES` toggles.
 
 ### Key Component Notes
 
@@ -221,10 +215,27 @@ All of this is infrastructure (no per-game edits). The only game-specific parts 
 - **Matrices look wrong**: D3D9 FFP `SetTransform` expects row-major matrices. The proxy transposes them. If the game stores matrices column-major in VS constants (the common case), the transpose is correct. If the game is already row-major, remove the transpose in `FFP_ApplyTransforms`.
 - **Everything is white/black**: The game's albedo texture might be on stage 1+ instead of stage 0. Set `AlbedoStage` in proxy.ini, or trace `SetTexture` calls to find the pattern.
 - **Some objects render, others don't**: DrawPrimitive routes by vertex declaration — world-space draws (have decl, no POSITIONT, not skinned) engage FFP; screen-space/no-decl pass through. DrawIndexedPrimitive additionally filters out draws without NORMAL as likely HUD/UI. If world geometry is missing, check whether its vertex decl has NORMAL and whether `viewProjValid` is true when those draws happen.
-- **Skinned meshes are invisible**: Enable skinning with `#define ENABLE_SKINNING 1`. Check the log for `skinExpDecl: 00000000` — if NULL, `CreateVertexDeclaration` failed (device may not have been ready). Also verify `boneStartReg` and `numBones` are non-zero in DIP log entries.
+- **Skinned meshes are invisible**: Enable skinning with `#define ENABLE_SKINNING 1`. Verify `numBones` is non-zero in DIP log entries. If using `EXPAND_SKIN_VERTICES=1`, check log for `skinExpDecl: 00000000` (CreateVertexDeclaration failed).
+- **Bones mixed up between NPCs**: Stale WORLDMATRIX slots from a previous object. The proxy clears them on object boundary detection (startReg jump backward or `bonesDrawn` flag). If still broken, the game may need a game-specific reset hook.
 - **Game crashes on startup**: The chain-loaded Remix DLL might not be present. Set `Enabled=0` in proxy.ini `[Remix]` section to test without Remix first.
 - **Geometry at origin / piled up**: World matrix register mapping is wrong. Every object gets identity world transform. Re-examine VS constant writes.
 - **Characters' world geometry shifts after a skinned draw**: After uploading bone matrices, WORLDMATRIX(0) is clobbered by bone[0]. The proxy sets `worldDirty=1` so `FFP_ApplyTransforms` re-applies the world matrix on the next rigid draw. If this still causes issues, the bone start register may overlap with the world matrix register range.
+
+### Skinning Stability: Finding Game-Specific Hook Points
+
+The proxy's generic heuristics (startReg jump, `bonesDrawn` flag, declaration change) handle most games. If bones still leak between objects, the game needs a hook at a per-object boundary function — one that's called once per skinned object, before its bones are uploaded.
+
+**Finding the per-object function:**
+
+1. **Capture** 2+ frames with the D3D9 tracer while multiple skinned NPCs are on screen
+2. **Hotpaths**: `--hotpaths --resolve-addrs <game.exe>` — look at callers of bone-range `SetVertexShaderConstantF` writes
+3. **Caller histogram**: `--callers SetVertexShaderConstantF` — the function that appears N times per frame (N = number of skinned objects) is the per-object boundary
+4. **Live confirm**: `livetools trace <candidate_addr> --count 50` — with 3 NPCs, expect ~3 hits/frame
+5. **Static context**: `callgraph.py --up` + `decompiler.py` on the caller — confirm it loops over objects
+
+**Hooking it**: The hook is a 5-byte code cave (JMP to allocated memory) at the CALL instruction that invokes the per-object function. After calling the original function, the stub sets a `g_boneResetPending` flag that the `SetVertexShaderConstantF` handler checks. See `WORKING_SKINNING_CODE/d3d9_device.c` lines 1592-1675 for a reference implementation (per-object hook at 0xB991E7 wrapping call to 0x43D450).
+
+**Optional batch bracket**: One level up in the call graph is typically the "render all skinned objects" function (e.g. at 0xB99110, called from 0xB99598 in the reference implementation). Hooking entry/exit with a `g_renderSkinned` flag lets you gate bone detection more precisely (avoids false positives from non-bone constant writes in the bone register range).
 
 ## Using the RE Tools
 

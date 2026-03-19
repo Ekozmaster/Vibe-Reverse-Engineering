@@ -130,8 +130,8 @@ The top of `proxy/d3d9_device.c` has a `GAME-SPECIFIC` section:
 // Bone defines below only matter when ENABLE_SKINNING=1 (off by default)
 #define VS_REG_BONE_THRESHOLD  20
 #define VS_REGS_PER_BONE        3
-#define VS_BONE_MIN_REGS        3
 #define ENABLE_SKINNING         0   // Only set to 1 after rigid FFP works
+#define EXPAND_SKIN_VERTICES    0   // 0=use original VB, 1=expand to fixed 48-byte layout
 ```
 
 ---
@@ -243,7 +243,24 @@ python -m retools.search <game.exe> strings -f "vertex,decl,shader" --xrefs
 - **Matrices look wrong**: D3D9 FFP `SetTransform` expects row-major. The proxy transposes. If the game stores matrices row-major in VS constants (uncommon), remove the transpose in `FFP_ApplyTransforms`.
 - **Everything is white/black**: Albedo texture is on stage 1+, not stage 0. Set `AlbedoStage` in `proxy.ini`, or trace `SetTexture` calls to find the correct stage.
 - **Some objects render, others don't**: Check whether missing geometry has NORMAL in its vertex decl. Check `viewProjValid` is true at draw time. DrawPrimitive routes on decl presence + no POSITIONT + not skinned.
-- **Skinned meshes invisible**: Enable `ENABLE_SKINNING 1`. Check log for `skinExpDecl: 00000000` (CreateVertexDeclaration failed). Verify `boneStartReg` and `numBones` are non-zero.
+- **Skinned meshes invisible**: Enable `ENABLE_SKINNING 1`. Verify `numBones` is non-zero in DIP log entries. If using `EXPAND_SKIN_VERTICES=1`, check log for `skinExpDecl: 00000000` (CreateVertexDeclaration failed).
+- **Bones mixed up between NPCs**: Stale WORLDMATRIX slots from a previous object. The proxy clears them on object boundary detection (startReg jump or `bonesDrawn` flag). If still broken, the game may need a game-specific reset hook.
 - **Game crashes on startup**: Set `Enabled=0` in `proxy.ini [Remix]` to test without Remix.
 - **Geometry at origin / piled up**: World matrix register mapping wrong. Re-examine VS constant writes via `livetools trace`.
 - **World geometry shifts after skinned draws**: `WORLDMATRIX(0)` clobbered by bone[0]. The proxy sets `worldDirty=1` for re-application. If still broken, check for bone register overlap with world matrix range.
+
+### Skinning Stability: Finding Game-Specific Hook Points
+
+The proxy's generic heuristics (startReg jump, `bonesDrawn` flag, declaration change) handle most games. If bones still leak between objects, the game needs a hook at a per-object boundary function — one that's called once per skinned object, before its bones are uploaded.
+
+**Finding the per-object function:**
+
+1. **Capture** 2+ frames with the D3D9 tracer while multiple skinned NPCs are on screen
+2. **Hotpaths**: `--hotpaths --resolve-addrs <game.exe>` — look at callers of bone-range `SetVertexShaderConstantF` writes
+3. **Caller histogram**: `--callers SetVertexShaderConstantF` — the function that appears N times per frame (N = number of skinned objects) is the per-object boundary
+4. **Live confirm**: `livetools trace <candidate_addr> --count 50` — with 3 NPCs, expect ~3 hits/frame
+5. **Static context**: `callgraph.py --up` + `decompiler.py` on the caller — confirm it loops over objects
+
+**Hooking it**: The hook is a 5-byte code cave (JMP to allocated memory) at the CALL instruction that invokes the per-object function. After calling the original function, the stub sets a `g_boneResetPending` flag that the `SetVertexShaderConstantF` handler checks. See `WORKING_SKINNING_CODE/d3d9_device.c` lines 1592-1675 for a reference implementation (per-object hook at 0xB991E7 wrapping call to 0x43D450).
+
+**Optional batch bracket**: One level up in the call graph is typically the "render all skinned objects" function (e.g. at 0xB99110, called from 0xB99598 in the reference implementation). Hooking entry/exit with a `g_renderSkinned` flag lets you gate bone detection more precisely (avoids false positives from non-bone constant writes in the bone register range).

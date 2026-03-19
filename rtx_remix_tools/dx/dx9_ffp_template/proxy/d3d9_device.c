@@ -53,10 +53,10 @@ extern void log_floats_dec(const char *prefix, float *data, unsigned int count);
 /* Bone palette detection (only matters when ENABLE_SKINNING=1) */
 #define VS_REG_BONE_THRESHOLD  20   /* Writes at this register+ may be bones */
 #define VS_REGS_PER_BONE        3   /* Registers per bone (3 = 4x3 packed) */
-#define VS_BONE_MIN_REGS        3   /* Minimum registers to trigger detection (1 bone) */
 
 /* GAME-SPECIFIC: Skinning — off by default. See extensions/skinning/README.md */
 #define ENABLE_SKINNING 0
+#define EXPAND_SKIN_VERTICES 0      /* 0=use original VB (default), 1=expand to fixed 48-byte layout */
 
 /* ---- Diagnostic logging ---- */
 #define DIAG_LOG_FRAMES 3
@@ -139,7 +139,7 @@ extern void log_floats_dec(const char *prefix, float *data, unsigned int count);
 #define D3DDECLTYPE_DEC3N     14
 #define D3DDECLTYPE_FLOAT16_2 15
 
-#if ENABLE_SKINNING
+#if ENABLE_SKINNING && EXPAND_SKIN_VERTICES
 /* Expanded skinned vertex layout: FLOAT3 pos + FLOAT3 weights + UBYTE4 idx + FLOAT3 normal + FLOAT2 uv */
 #define SKIN_VTX_SIZE   48
 #define SKIN_CACHE_SIZE 64
@@ -293,11 +293,14 @@ typedef struct WrappedDevice {
     int curDeclIsSkinned;   /* 1 if current decl has BLENDWEIGHT+BLENDINDICES */
 
 #if ENABLE_SKINNING
-    int curDeclNumWeights;  /* number of blend weights (1-3) */
-    int boneStartReg;       /* VS constant register where bone matrices start */
-    int numBones;           /* number of bones detected from constant writes */
-    int skinningSetup;      /* whether FFP skinning state has been configured */
+    int curDeclNumWeights;   /* number of blend weights (1-3) */
+    int numBones;            /* bones uploaded this object (immediate upload counter) */
+    int prevNumBones;        /* bone count from previous object (for stale clearing) */
+    int bonesDrawn;          /* set to 1 after a skinned draw; triggers reset on next bone write */
+    int lastBoneStartReg;    /* startReg of most recent bone write (startReg-jump detection) */
+    int skinningSetup;       /* whether FFP skinning state has been configured */
 
+#if EXPAND_SKIN_VERTICES
     /* Per-element offsets/types for skinned vertex expansion */
     int curDeclNormalOff;       /* byte offset of NORMAL in source vertex */
     int curDeclNormalType;      /* D3DDECLTYPE of NORMAL, or -1 if none */
@@ -311,7 +314,8 @@ typedef struct WrappedDevice {
     unsigned int skinExpKey[SKIN_CACHE_SIZE];   /* hash key per slot */
     unsigned int skinExpNv[SKIN_CACHE_SIZE];    /* vertex count per slot */
     void        *skinExpDecl;                  /* IDirect3DVertexDeclaration9* for expanded layout */
-#endif
+#endif /* EXPAND_SKIN_VERTICES */
+#endif /* ENABLE_SKINNING */
 
     /* Vertex element tracking */
     int curDeclHasTexcoord;
@@ -713,7 +717,7 @@ static int __stdcall WD_Reset(WrappedDevice *self, void *pPresentParams) {
     self->viewProjDirty = 0;
     self->psConstDirty = 0;
     self->ffpActive = 0;
-#if ENABLE_SKINNING
+#if ENABLE_SKINNING && EXPAND_SKIN_VERTICES
     SkinVB_ReleaseCache(self);
 #endif
 
@@ -924,8 +928,8 @@ static int __stdcall WD_DrawIndexedPrimitive(WrappedDevice *self,
         if (self->curDeclIsSkinned) {
             log_str("    [SKINNED]\r\n");
 #if ENABLE_SKINNING
-            log_int("    boneStart=", self->boneStartReg);
             log_int("    numBones=", self->numBones);
+            log_int("    bonesDrawn=", self->bonesDrawn);
 #endif
         }
         log_int("    hasNormal=", self->curDeclHasNormal);
@@ -980,10 +984,9 @@ static int __stdcall WD_DrawIndexedPrimitive(WrappedDevice *self,
             if (mat4_is_interesting(&self->vsConst[20*4]))     diag_log_matrix("    c20-c23", &self->vsConst[20*4]);
             if (mat4_is_interesting(&self->vsConst[36*4]))     diag_log_matrix("    c36-c39", &self->vsConst[36*4]);
 #if ENABLE_SKINNING
-            if (self->curDeclIsSkinned && self->boneStartReg >= (int)VS_REG_BONE_THRESHOLD) {
-                diag_log_matrix("    bone0", &self->vsConst[self->boneStartReg * 4]);
-                if (self->numBones > 1)
-                    diag_log_matrix("    bone1", &self->vsConst[(self->boneStartReg + VS_REGS_PER_BONE) * 4]);
+            if (self->curDeclIsSkinned && self->numBones > 0) {
+                log_int("    bones uploaded=", self->numBones);
+                log_int("    lastBoneStartReg=", self->lastBoneStartReg);
             }
 #endif
         }
@@ -1042,12 +1045,47 @@ static int __stdcall WD_SetVertexShaderConstantF(WrappedDevice *self,
         }
 
 #if ENABLE_SKINNING
-        /* Bone palette detection */
+        /* Immediate bone upload: transpose 4x3→4x4 and SetTransform now.
+         * Supports per-bone (count==3) and bulk (count==N*3) writes. */
         if (startReg >= VS_REG_BONE_THRESHOLD &&
-            count >= VS_BONE_MIN_REGS &&
-            (count % VS_REGS_PER_BONE) == 0) {
-            self->boneStartReg = startReg;
-            self->numBones = count / VS_REGS_PER_BONE;
+            count >= VS_REGS_PER_BONE &&
+            (count % VS_REGS_PER_BONE) == 0 &&
+            self->curDeclIsSkinned) {
+
+            /* Detect object boundary and reset stale bones */
+            int needsReset = self->bonesDrawn;
+            if (!needsReset && self->numBones > 0 && startReg < self->lastBoneStartReg)
+                needsReset = 1; /* startReg jumped backward → new object */
+
+            if (needsReset) {
+                typedef int (__stdcall *FN_ST)(void*, unsigned int, float*);
+                static float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+                int slot;
+                for (slot = 0; slot < self->numBones; slot++)
+                    ((FN_ST)RealVtbl(self)[SLOT_SetTransform])(
+                        self->pReal, D3DTS_WORLDMATRIX(slot), ident);
+                self->prevNumBones = self->numBones;
+                self->numBones = 0;
+                self->bonesDrawn = 0;
+            }
+            self->lastBoneStartReg = startReg;
+
+            /* Upload each bone immediately */
+            {
+                typedef int (__stdcall *FN_SetTransform)(void*, unsigned int, float*);
+                int b, nBatch = count / VS_REGS_PER_BONE;
+                for (b = 0; b < nBatch && self->numBones < MAX_FFP_BONES; b++) {
+                    float boneMat[16];
+                    const float *src = &pData[b * VS_REGS_PER_BONE * 4];
+                    boneMat[0]  = src[0];  boneMat[1]  = src[4];  boneMat[2]  = src[8];   boneMat[3]  = 0.0f;
+                    boneMat[4]  = src[1];  boneMat[5]  = src[5];  boneMat[6]  = src[9];   boneMat[7]  = 0.0f;
+                    boneMat[8]  = src[2];  boneMat[9]  = src[6];  boneMat[10] = src[10];  boneMat[11] = 0.0f;
+                    boneMat[12] = src[3];  boneMat[13] = src[7];  boneMat[14] = src[11];  boneMat[15] = 1.0f;
+                    ((FN_SetTransform)RealVtbl(self)[SLOT_SetTransform])(self->pReal,
+                        D3DTS_WORLDMATRIX(self->numBones), boneMat);
+                    self->numBones++;
+                }
+            }
         }
 #endif
 
@@ -1150,6 +1188,12 @@ static int __stdcall WD_SetStreamSource(WrappedDevice *self,
 static int __stdcall WD_SetVertexDeclaration(WrappedDevice *self, void *pDecl) {
     typedef int (__stdcall *FN)(void*, void*);
 
+#if ENABLE_SKINNING
+    /* Declaration change while bones are loaded → likely new object */
+    if (self->curDeclIsSkinned && self->numBones > 0 && pDecl != self->lastDecl)
+        self->bonesDrawn = 1;
+#endif
+
     self->lastDecl = pDecl;
     self->curDeclIsSkinned = 0;
     self->curDeclHasTexcoord = 0;
@@ -1160,11 +1204,13 @@ static int __stdcall WD_SetVertexDeclaration(WrappedDevice *self, void *pDecl) {
     self->curDeclTexcoordOff = 0;
 #if ENABLE_SKINNING
     self->curDeclNumWeights = 0;
+#if EXPAND_SKIN_VERTICES
     self->curDeclNormalOff = 0;    self->curDeclNormalType = -1;
     self->curDeclBlendWeightOff = 0;
     self->curDeclBlendWeightType = 0;
     self->curDeclBlendIndicesOff = 0;
     self->curDeclPosOff = 0;
+#endif
 #endif
 
     if (pDecl) {
@@ -1195,25 +1241,25 @@ static int __stdcall WD_SetVertexDeclaration(WrappedDevice *self, void *pDecl) {
                     if (usage == D3DDECLUSAGE_BLENDWEIGHT) {
                         hasBlendWeight = 1;
                         blendWeightType = type;
-#if ENABLE_SKINNING
+#if ENABLE_SKINNING && EXPAND_SKIN_VERTICES
                         self->curDeclBlendWeightOff  = offset;
                         self->curDeclBlendWeightType = type;
 #endif
                     }
                     if (usage == D3DDECLUSAGE_BLENDINDICES) {
                         hasBlendIndices = 1;
-#if ENABLE_SKINNING
+#if ENABLE_SKINNING && EXPAND_SKIN_VERTICES
                         self->curDeclBlendIndicesOff = offset;
 #endif
                     }
                     if (usage == D3DDECLUSAGE_POSITION && stream == 0) {
-#if ENABLE_SKINNING
+#if ENABLE_SKINNING && EXPAND_SKIN_VERTICES
                         self->curDeclPosOff = offset;
 #endif
                     }
                     if (usage == D3DDECLUSAGE_NORMAL && stream == 0) {
                         self->curDeclHasNormal = 1;
-#if ENABLE_SKINNING
+#if ENABLE_SKINNING && EXPAND_SKIN_VERTICES
                         self->curDeclNormalOff  = offset;
                         self->curDeclNormalType = type;
 #endif
