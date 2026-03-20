@@ -50,7 +50,7 @@ The project ships with agent instructions tailored to each supported environment
 |------|-------------|
 | Cursor | `.cursor/rules/` |
 | Copilot | `.github/copilot-instructions.md` |
-| Claude Code | `CLAUDE.md` |
+| Claude Code | `.claude/CLAUDE.md` + `.claude/rules/` |
 | Kiro | `.kiro/steering/` + `.kiro/powers/` |
 
 Each teaches the agent the full tool catalog — which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.

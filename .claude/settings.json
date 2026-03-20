@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m retools*)",
+      "Bash(python -m livetools*)",
+      "Bash(python -m graphics*)",
+      "Bash(python verify_install.py)",
+      "Bash(python rtx_remix_tools/*)"
+    ]
+  }
+}
