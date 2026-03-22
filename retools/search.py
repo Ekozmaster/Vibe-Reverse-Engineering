@@ -31,12 +31,70 @@ import fnmatch
 import re
 import struct
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
 
 CHUNK = 0x10000
+
+
+@dataclass(frozen=True, slots=True)
+class StringRef:
+    va: int | None
+    offset: int
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImportEntry:
+    dll: str
+    name: str
+
+
+def find_strings(b: Binary, filter_keywords=None, min_len=4) -> list[StringRef]:
+    """Extract printable ASCII strings from the binary.
+
+    Args:
+        b: Loaded PE binary.
+        filter_keywords: List of keywords to match (case-insensitive), or None for all.
+        min_len: Minimum string length.
+
+    Returns:
+        List of StringRef with VA, file offset, and string value.
+    """
+    results: list[StringRef] = []
+    for m in re.finditer(rb"[\x20-\x7e]{%d,}" % min_len, b.raw):
+        s = m.group().decode("ascii", errors="ignore")
+        if filter_keywords and not any(
+            f.lower() in s.lower() for f in filter_keywords
+        ):
+            continue
+        va = b.offset_to_va(m.start())
+        results.append(StringRef(va=va, offset=m.start(), value=s))
+    return results
+
+
+def find_imports(b: Binary) -> list[ImportEntry]:
+    """Extract PE import table entries.
+
+    Returns:
+        List of ImportEntry with DLL name and function name.
+    """
+    results: list[ImportEntry] = []
+    if not hasattr(b.pe, "DIRECTORY_ENTRY_IMPORT"):
+        return results
+    for entry in b.pe.DIRECTORY_ENTRY_IMPORT:
+        dll = entry.dll.decode("ascii", errors="ignore")
+        for imp in entry.imports:
+            name = (
+                imp.name.decode("ascii", errors="ignore")
+                if imp.name
+                else f"ordinal_{imp.ordinal}"
+            )
+            results.append(ImportEntry(dll=dll, name=name))
+    return results
 
 
 def _match_insn(mnemonic: str, op_str: str, pattern: str) -> bool:
@@ -81,15 +139,11 @@ def _find_xrefs_for_va(b: Binary, target_va: int) -> list[tuple[int, str, str]]:
 def cmd_strings(b: Binary, args):
     w = 16 if b.is_64 else 8
     filters = [f.strip() for f in args.filter.split(",")] if args.filter else None
-    for m in re.finditer(rb"[\x20-\x7e]{%d,}" % args.min_len, b.raw):
-        s = m.group().decode("ascii", errors="ignore")
-        if filters and not any(f.lower() in s.lower() for f in filters):
-            continue
-        va = b.offset_to_va(m.start())
-        loc = f"0x{va:0{w}X}" if va else f"off:{m.start():08X}"
-        print(f"{loc}: {s}")
-        if args.xrefs and va:
-            for xva, mn, ops in _find_xrefs_for_va(b, va):
+    for sref in find_strings(b, filter_keywords=filters, min_len=args.min_len):
+        loc = f"0x{sref.va:0{w}X}" if sref.va else f"off:{sref.offset:08X}"
+        print(f"{loc}: {sref.value}")
+        if args.xrefs and sref.va:
+            for xva, mn, ops in _find_xrefs_for_va(b, sref.va):
                 print(f"  xref: 0x{xva:0{w}X} ({mn} {ops})")
 
 
@@ -108,19 +162,10 @@ def cmd_pattern(b: Binary, args):
 
 
 def cmd_imports(b: Binary, args):
-    if not hasattr(b.pe, "DIRECTORY_ENTRY_IMPORT"):
-        return
-    for entry in b.pe.DIRECTORY_ENTRY_IMPORT:
-        dll = entry.dll.decode("ascii", errors="ignore")
-        if args.dll and args.dll.lower() not in dll.lower():
+    for imp in find_imports(b):
+        if args.dll and args.dll.lower() not in imp.dll.lower():
             continue
-        for imp in entry.imports:
-            name = (
-                imp.name.decode("ascii", errors="ignore")
-                if imp.name
-                else f"ordinal_{imp.ordinal}"
-            )
-            print(f"{dll:30s} {name}")
+        print(f"{imp.dll:30s} {imp.name}")
 
 
 def cmd_exports(b: Binary, args):

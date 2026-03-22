@@ -307,13 +307,15 @@ python -m livetools analyze trace.jsonl --compare-intervals 10 50
 python -m livetools analyze trace.jsonl --histogram "enter.reads.0.value.0"
 ```
 
-### Recipe 4: Find DLL base for vtable hooks (modules)
+### Recipe 4: Verify a hook address is correct
 
+Before hooking, confirm the address contains real code in the live process:
 ```
-python -m livetools modules --filter kernel
+python -m livetools modules --filter <game_name>
+python -m livetools disasm <target_addr> -n 5
 ```
 
-Use the base address to compute vtable entry addresses.
+If `disasm` shows garbage or errors, the address is wrong at runtime. For DLLs, rebase from `modules` output. For game .exe code, most x86 games load at preferred base — static addresses work directly.
 
 ### Recipe 5: Register inspection at a breakpoint
 
@@ -390,6 +392,20 @@ python -m livetools analyze scene.jsonl --export-csv scene.csv
 
 6. **Cross-reference with static analysis.** Match live register values and call sites against static disassembly from `retools` to identify struct offsets, vtable slots, and data pointers.
 
-7. **Use modules to find DLL bases.** Before hooking a DLL function (e.g. D3D9 vtable), use `modules` to find the actual loaded base address.
+7. **Verify addresses before hooking.** Most 32-bit game .exe files load at their preferred base (no ASLR), so static addresses from `retools` work directly. For DLLs or ASLR binaries, run `modules --filter <name>` and rebase: `runtime_addr = runtime_base + (static_addr - preferred_base)`. When in doubt, `modules` is one command — run it.
 
 8. **Composable pipeline.** `trace` captures raw records. `collect` streams them to disk. `analyze` aggregates offline. Chain them for any investigation.
+
+9. **Hook the game's CALL instruction, not the DLL function.** To trace a D3D9 method (or any API call), find the `call [reg+offset]` or `call <addr>` instruction *in the game's code* via `xrefs.py` or `vtable.py calls`. Hook THAT address. Do NOT compute the target address inside d3d9.dll and hook there — the arguments are arranged at the caller, and the DLL entry point is shared across all callers.
+
+10. **Zero hits means something is wrong — diagnose, don't give up.** If trace/collect returns 0 samples: (a) Ask the user: is the game window focused and actively rendering? (b) Verify the address: `disasm <addr>` in livetools — confirm real code exists there. (c) Try a known-hot address: `dipcnt callers 10` finds confirmed active call sites; trace one to prove the hook pipeline works. (d) Only after all three pass should you reconsider whether the original address is actually called during gameplay.
+
+---
+
+## Anti-Patterns
+
+**Do NOT chase the "real" device pointer.** When working with D3D9, do NOT: read a device pointer from a global, dereference its vtable, compute `d3d9.dll_base + slot_offset`, and hook that address. This hooks inside the DLL where arguments are not in the expected layout and proxy/wrapper DLLs break the vtable chain. Hook the game's CALL instruction instead (pattern #9).
+
+**Do NOT explain away zero data.** If a trace returns 0 samples, the answer is "I got no data and need to troubleshoot" — not "the game doesn't appear to use this code path." Follow the escalation in pattern #10.
+
+**Do NOT pass DLL-internal addresses to trace/bp.** Addresses from a DLL's export table or vtable layout belong to the DLL's code. Hooking them gives you the wrong context. Always prefer hooking in the game's own .text section.

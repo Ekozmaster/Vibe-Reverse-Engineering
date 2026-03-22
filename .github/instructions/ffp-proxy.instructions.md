@@ -1,7 +1,5 @@
-﻿---
-description: RTX Remix DX9 FFP porting — per-game folders, address mapping, VS constant discovery, build/deploy, pitfalls.
-inclusion: fileMatch
-fileMatchPattern: "patches/**,rtx_remix_tools/**,**/d3d9_device.c,**/d3d9_main.c,**/d3d9_wrapper.c,**/proxy.ini,**/build.bat"
+---
+applyTo: "rtx_remix_tools/**,patches/**/proxy/**,**/d3d9_device.c,**/d3d9_main.c,**/d3d9_wrapper.c,**/proxy.ini,**/build.bat"
 ---
 
 # DX9 FFP Proxy — Game Porting
@@ -81,7 +79,7 @@ Copy `d3d9.dll` + `proxy.ini` to the game directory. Place `d3d9_remix.dll` ther
 
 The proxy writes `ffp_proxy.log` after a 50-second delay — do not change the delay. Check VS regs written, vertex declarations, matrix values.
 
-**Tell the user when you need them to interact with the game.** They must be in-game with geometry visible.
+The user must be in-game with geometry visible when captures are needed.
 
 ## Architecture: What to Edit
 

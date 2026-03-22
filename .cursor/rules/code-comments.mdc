@@ -13,8 +13,7 @@ Note: These rules are not exhaustive. Extrapolate from the principles and exampl
 
 ## Remove
 
-- **Implementation backstories**: "We do this because the other day X happened" or "This was added after we found a bug where Y"
-- **Cross-extension internals**: "Tf.Notice fires synchronously during attr.Set" in code that is agnostic of USD
+- **Implementation backstories**: "We do this because the other day X happened"
 - **Obvious narration**: "Create the attribute", "Loop through keys", "Check if valid" -- if the code says it, the comment is noise
 - **Debugging breadcrumbs**: "Without this, subsequent tests may see the modifier key as still held"
 - **Trial-and-error reasoning**: "We tried X but it caused Y so we do Z instead"

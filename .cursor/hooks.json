@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "echo \"Edited: ${filePath}\"",
+        "description": "Log edited file path"
+      }
+    ],
+    "stop": [
+      {
+        "command": "git diff --name-only HEAD 2>/dev/null | grep -c 'kb\\.h$' || true",
+        "description": "Report if any KB files were modified in this session"
+      }
+    ]
+  }
+}

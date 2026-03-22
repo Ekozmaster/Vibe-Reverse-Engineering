@@ -1,6 +1,5 @@
 ---
-description: Catalog of all RE tools -- pick the right tool for the job
-alwaysApply: true
+applyTo: "retools/**,livetools/**,graphics/**,tools/**,patches/**"
 ---
 
 # Tool Catalog
@@ -15,9 +14,9 @@ IMPORTANT: Collecting MORE INFORMATION per command run is encouraged over minor 
 
 ## Decision Guide
 
-### Run Directly (main agent)
+### Run Directly (fast, <5s)
 
-These are fast (<5s) and allowed inline:
+These are fast and can be run inline without delegation:
 
 - "What compiler built this?" → `python -m retools.sigdb fingerprint $B`
 - "Is this a known library function?" → `python -m retools.sigdb identify $B $VA`
@@ -26,9 +25,9 @@ These are fast (<5s) and allowed inline:
 - "Read a typed value from the PE file" → `python -m retools.readmem $B $VA $TYPE`
 - "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json`
 
-### Delegate to `static-analyzer` subagent
+### Delegate to the static-analyzer agent
 
-Everything else. Tell the subagent WHAT you need, not HOW to run it — it has the full tool catalog.
+Everything else. Specify WHAT you need, not HOW to run it — the agent has the full tool catalog.
 
 - "What does this function do?" → decompile + callgraph + xrefs
 - "Who calls this function?" → xrefs or callgraph --up
@@ -46,17 +45,17 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 - "Bulk signature scan" → sigdb scan (1-3 min)
 - Any combination of the above
 
-### Live tools (main agent, requires attached process)
+### Live tools (requires attached process)
 
 - "Is this function reached at runtime?" → `livetools trace` or `collect`
 - "What are the actual register values?" → `livetools trace --read` or `bp` + `regs`
 - "How many draw calls happen?" → `livetools dipcnt`
 - "Who writes to this memory address?" → `livetools memwatch`
 
-### dx9tracer (main agent for capture, delegate analysis)
+### dx9tracer (capture inline, delegate analysis)
 
-- "Trigger a frame capture" → main agent: `python -m graphics.directx.dx9.tracer trigger`
-- "Analyze captured frames" → delegate to `static-analyzer`: summary, render-passes, shader-map, etc.
+- "Trigger a frame capture" → `python -m graphics.directx.dx9.tracer trigger`
+- "Analyze captured frames" → delegate to the static-analyzer agent: summary, render-passes, shader-map, etc.
 
 ## Static Analysis (`retools/`) -- offline, on-disk PE files
 

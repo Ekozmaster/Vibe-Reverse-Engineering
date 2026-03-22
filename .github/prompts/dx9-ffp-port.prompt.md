@@ -1,3 +1,9 @@
+---
+name: 'DX9 FFP Port'
+description: 'Port a DX9 shader-based game to fixed-function pipeline for RTX Remix compatibility'
+argument-hint: '<game.exe path>'
+---
+
 # DX9 FFP Proxy — Game Porting Prompt
 
 You are helping a user port a DX9 shader-based game to the fixed-function pipeline using the `rtx_remix_tools/dx/dx9_ffp_template/` template in this workspace. The goal is RTX Remix compatibility: Remix requires FFP geometry to inject path-traced lighting and replaceable assets. Also use the Vibe RE tools (retools, livetools) for static and dynamic analysis to assist with developing this wrapper. They are meant to be used together.

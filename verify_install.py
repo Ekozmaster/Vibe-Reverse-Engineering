@@ -85,6 +85,16 @@ def check_r2ghidra():
                "r2ghidra_sleigh/ missing or empty -- run: git lfs pull")
 
 
+def check_sigdb():
+    db_path = ROOT / "retools" / "data" / "signatures.db"
+    if db_path.is_file() and db_path.stat().st_size > 1024:
+        record("sigdb", PASS,
+               f"signatures.db ({db_path.stat().st_size:,} bytes)")
+    else:
+        record("sigdb", WARN,
+               "signatures.db missing or empty -- run: python retools/sigdb.py pull")
+
+
 def check_retools_import():
     modules = [
         "retools.common", "retools.decompiler", "retools.disasm",
@@ -115,6 +125,7 @@ def main():
     check_python_deps()
     check_r2_runs()
     check_retools_import()
+    check_sigdb()
 
     failures = sum(1 for _, s, _ in results if s == FAIL)
     print()

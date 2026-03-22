@@ -2,11 +2,6 @@
   "name": "Verify Fix & Update Docs",
   "version": "1.0.0",
   "description": "After agent stops: verify the fix actually works with a real test, then update docs — game kb.h for game-specific findings, tool-catalog.md only if a reusable tool changed.",
-  "when": {
-    "type": "agentStop"
-  },
-  "then": {
-    "type": "askAgent",
-    "prompt": "The agent just stopped. Do the following in order:\n\n1. VERIFY: Run a real functional test on whatever was changed this session — not just 'no diagnostics'. Exercise the actual code path and report the output. If gamectl was involved, run `python -m livetools gamectl --exe <game.exe> info` and a key sequence test.\n\n2. CONFIRM: State clearly — working or still broken. If broken, state the next concrete step.\n\n3. UPDATE DOCS (scoped correctly):\n   - Game-specific findings (addresses, structs, pitfalls) → update `patches/<GameName>/kb.h`\n   - FFP porting findings → update `.kiro/steering/dx9-ffp-port.md` if it's a general pattern\n   - Reusable tool changes (retools/, livetools/, graphics/) → update `.kiro/steering/tool-catalog.md`\n   - Game-specific scripts in patches/<GameName>/ → never go in tool-catalog.md"
-  }
+  "triggerType": "Agent Stop",
+  "agentPrompt": "The agent just stopped. Do the following in order:\n\n1. VERIFY: Run a real functional test on whatever was changed this session — not just 'no diagnostics'. Exercise the actual code path and report the output. If gamectl was involved, run `python -m livetools gamectl --exe <game.exe> info` and a key sequence test.\n\n2. CONFIRM: State clearly — working or still broken. If broken, state the next concrete step.\n\n3. UPDATE DOCS (scoped correctly):\n   - Game-specific findings (addresses, structs, pitfalls) → update `patches/<GameName>/kb.h`\n   - FFP porting findings → update `.kiro/steering/dx9-ffp-port.md` if it's a general pattern\n   - Reusable tool changes (retools/, livetools/, graphics/) → update `.kiro/steering/tool-catalog.md`\n   - Game-specific scripts in patches/<GameName>/ → never go in tool-catalog.md"
 }

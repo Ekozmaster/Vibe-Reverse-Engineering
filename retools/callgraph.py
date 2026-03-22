@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
-from xrefs import _scan_refs
+from xrefs import scan_refs
 from funcinfo import find_start, analyze
 
 
@@ -33,7 +33,7 @@ def _find_callers(b: Binary, target: int) -> list[int]:
     """Return deduplicated sorted caller function addresses."""
     refs = []
     for va_start, raw_off, size in b.exec_ranges():
-        refs.extend(_scan_refs(b.raw, va_start, raw_off, size, target, "call"))
+        refs.extend(scan_refs(b.raw, va_start, raw_off, size, target, "call"))
     funcs = set()
     for _, va in refs:
         start = find_start(b, va)

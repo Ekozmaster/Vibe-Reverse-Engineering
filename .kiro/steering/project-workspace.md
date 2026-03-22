@@ -1,0 +1,45 @@
+---
+description: Project workspace conventions — patches/ directory structure, timestamped backups, and knowledge base (.h) format for accumulating RE discoveries
+inclusion: auto
+name: project-workspace
+---
+
+# Project Workspace
+
+Use `patches/<project_name>/` (git-ignored) for all project-specific artifacts:
+- Knowledge base files (`kb.h`)
+- One-off analysis scripts
+- ASI patch specs and builds
+- Notes, logs, collected trace data
+
+Create the project subfolder on first use.
+
+# Backups
+
+Before modifying project files (proxy source, kb.h, proxy.ini, build scripts, ASI specs), create a timestamped backup in `patches/<project>/backups/`:
+
+```
+patches/<project>/backups/YYYY-MM-DD_HHMM_<description>/
+```
+
+Copy ALL files being modified into the backup folder. The description should be a short slug of what the update does (e.g. `added-world-matrix-regs`, `fixed-albedo-stage`, `enabled-skinning`).
+
+Create the backup BEFORE making changes so it captures the last known-good state. This applies to all development work — FFP proxy edits, ASI patch specs, build config changes, and any other project file modifications.
+
+# Knowledge Base
+
+When reverse engineering a binary, maintain a knowledge base file (`.h`) that accumulates discoveries. Store in `patches/<project>/kb.h`.
+
+**Format:** C types (no prefix), functions (`@` prefix), globals (`$` prefix):
+```c
+struct Foo { int x; float y; };
+@ 0x401000 void __cdecl ProcessInput(int key);
+$ 0x7C5548 Object* g_mainObject
+```
+
+**When to update the KB:**
+- When you identify a function's purpose, add `@ 0xADDR` with a descriptive name and signature
+- When you reconstruct a struct (e.g., from `structrefs.py --aggregate`), add the struct definition
+- When you identify a global variable via `datarefs.py`, add `$ 0xADDR` with its name and type
+- When you identify magic constants, define an enum with named values
+- When `rtti.py` reveals a class name, use it in struct/function names

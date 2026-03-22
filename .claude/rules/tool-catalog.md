@@ -1,6 +1,5 @@
 ---
-description: Catalog of all RE tools -- pick the right tool for the job
-alwaysApply: true
+description: Complete catalog of all RE tools (retools, livetools, dx9 tracer) with syntax, examples, and caveats. Consult before choosing which tool to use.
 ---
 
 # Tool Catalog

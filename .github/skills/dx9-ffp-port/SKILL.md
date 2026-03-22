@@ -1,9 +1,7 @@
 ---
-name: "dx9-ffp-port"
-displayName: "DX9 FFP Port"
-description: "DX9 shader-to-FFP proxy porting for RTX Remix compatibility. Covers the full workflow: static analysis, VS constant register discovery, dynamic live tracing, proxy build/deploy, and iteration. Includes draw call routing logic, common pitfalls, and skinning guidance."
-keywords: ["dx9", "directx", "ffp", "rtx-remix", "d3d9", "proxy", "shader", "fixed-function"]
-author: "workspace"
+name: 'dx9-ffp-port'
+description: 'DX9 shader-to-FFP proxy porting for RTX Remix compatibility. Use when porting a DX9 shader-based game to the fixed-function pipeline. Covers static analysis, VS constant register discovery, proxy build/deploy, and iteration.'
+user-invocable: true
 ---
 
 # DX9 FFP Proxy — Game Porting

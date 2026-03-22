@@ -37,3 +37,9 @@ livetools/.state.json
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Signature DB (downloaded via sigdb.py pull)
+retools/data/signatures.db
+retools/data/sources/
+*.db-shm
+*.db-wal

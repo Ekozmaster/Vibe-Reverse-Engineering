@@ -55,6 +55,7 @@ Examples:
 import argparse
 import struct
 import sys
+from dataclasses import dataclass, field
 
 import pefile
 
@@ -109,93 +110,132 @@ def _fail(msg: str) -> None:
     sys.exit(1)
 
 
-def cmd_vtable(pe: pefile.PE, args):
+@dataclass
+class RttiClass:
+    name: str
+    vtable_va: int
+    hierarchy: list[str] = field(default_factory=list)
+
+
+def resolve_vtable(pe: pefile.PE, vtable_va: int) -> RttiClass | None:
+    """Extract RTTI class info from a vtable address.
+
+    Returns an RttiClass with the class name and hierarchy, or None
+    if the address does not point to a valid RTTI vtable.
+    """
     base = pe.OPTIONAL_HEADER.ImageBase
     is_64 = pe.OPTIONAL_HEADER.Magic == 0x20B
-    vtable_va = int(args.va, 16)
     vtable_rva = vtable_va - base
 
-    # ── Read COL reference ────────────────────────────────────────
-    # The 4 bytes immediately before the vtable contain either:
-    #   x86: a 32-bit VA pointing to the COL
-    #   x64: a 32-bit image-relative RVA pointing to the COL
     col_ref = _read_u32(pe, vtable_rva - 4)
     if col_ref is None:
-        _fail(f"Cannot read COL reference at vtable-4 "
-              f"(vtable RVA 0x{vtable_rva:X}). Is this a valid vtable address?")
+        return None
 
     col_rva = _to_rva(pe, col_ref, is_64)
     if col_rva <= 0:
-        _fail(f"COL reference at vtable-4 is 0x{col_ref:X} which yields "
-              f"invalid RVA 0x{col_rva:X}. Not a valid RTTI vtable.")
+        return None
 
-    # ── Validate COL signature ────────────────────────────────────
     expected_sig = 1 if is_64 else 0
     sig = _read_u32(pe, col_rva)
-    if sig is None:
-        _fail(f"Cannot read COL at RVA 0x{col_rva:X}. "
-              f"The vtable-4 value (0x{col_ref:X}) does not point to valid data.")
-    if sig != expected_sig:
-        _fail(f"COL signature is {sig} (expected {expected_sig} for "
-              f"{'64' if is_64 else '32'}-bit). "
-              f"Address 0x{vtable_va:X} may not be an RTTI vtable, or this "
-              f"binary was compiled without /GR (RTTI disabled).")
+    if sig is None or sig != expected_sig:
+        return None
 
-    # x64 COL has a self-reference RVA at +0x14 -- sanity check
     if is_64:
         self_rva = _read_u32(pe, col_rva + 0x14)
         if self_rva != col_rva:
-            _fail(f"COL self-reference mismatch: expected RVA 0x{col_rva:X}, "
-                  f"got 0x{self_rva:X}. Corrupt or non-standard RTTI.")
+            return None
 
-    # ── Read TypeDescriptor ───────────────────────────────────────
     td_ref = _read_u32(pe, col_rva + 0x0C)
     if td_ref is None:
-        _fail(f"Cannot read TypeDescriptor pointer from COL at RVA 0x{col_rva:X}.")
+        return None
     td_rva = _to_rva(pe, td_ref, is_64)
 
     class_name = _resolve_td_name(pe, td_rva, is_64)
     if class_name is None:
-        _fail(f"TypeDescriptor at RVA 0x{td_rva:X} does not contain a valid "
-              f"MSVC decorated name (expected '.?AV...' or '.?AU...').")
+        return None
 
-    print(f"Class: {class_name}")
-
-    # ── Read ClassHierarchyDescriptor ─────────────────────────────
+    hierarchy: list[str] = []
     chd_ref = _read_u32(pe, col_rva + 0x10)
-    if chd_ref is None or chd_ref == 0:
-        return
-    chd_rva = _to_rva(pe, chd_ref, is_64)
+    if chd_ref is not None and chd_ref != 0:
+        chd_rva = _to_rva(pe, chd_ref, is_64)
+        num_bases = _read_u32(pe, chd_rva + 0x08)
+        if num_bases is not None and 0 < num_bases <= MAX_BASES:
+            bca_ref = _read_u32(pe, chd_rva + 0x0C)
+            if bca_ref is not None:
+                bca_rva = _to_rva(pe, bca_ref, is_64)
+                for i in range(num_bases):
+                    bcd_ref = _read_u32(pe, bca_rva + i * 4)
+                    if bcd_ref is None:
+                        break
+                    bcd_rva = _to_rva(pe, bcd_ref, is_64)
+                    bcd_td_ref = _read_u32(pe, bcd_rva)
+                    if bcd_td_ref is None:
+                        break
+                    bcd_td_rva = _to_rva(pe, bcd_td_ref, is_64)
+                    base_name = _resolve_td_name(pe, bcd_td_rva, is_64)
+                    if base_name is None:
+                        break
+                    hierarchy.append(base_name)
 
-    num_bases = _read_u32(pe, chd_rva + 0x08)
-    if num_bases is None or num_bases == 0 or num_bases > MAX_BASES:
-        print(f"  (hierarchy unavailable: numBaseClasses={num_bases})")
-        return
+    return RttiClass(name=class_name, vtable_va=vtable_va, hierarchy=hierarchy)
 
-    bca_ref = _read_u32(pe, chd_rva + 0x0C)
-    if bca_ref is None:
-        return
-    bca_rva = _to_rva(pe, bca_ref, is_64)
 
-    hierarchy = []
-    for i in range(num_bases):
-        bcd_ref = _read_u32(pe, bca_rva + i * 4)
-        if bcd_ref is None:
-            break
-        bcd_rva = _to_rva(pe, bcd_ref, is_64)
+def scan_all_rtti(pe: pefile.PE) -> list[RttiClass]:
+    """Walk all readable PE sections looking for valid RTTI vtable references.
 
-        bcd_td_ref = _read_u32(pe, bcd_rva)
-        if bcd_td_ref is None:
-            break
-        bcd_td_rva = _to_rva(pe, bcd_td_ref, is_64)
+    Returns a deduplicated list of RttiClass objects found in the binary.
+    """
+    base = pe.OPTIONAL_HEADER.ImageBase
+    is_64 = pe.OPTIONAL_HEADER.Magic == 0x20B
+    expected_sig = 1 if is_64 else 0
 
-        base_name = _resolve_td_name(pe, bcd_td_rva, is_64)
-        if base_name is None:
-            break
-        hierarchy.append(base_name)
+    seen: dict[str, RttiClass] = {}
+    for section in pe.sections:
+        if not (section.Characteristics & 0x40000000):  # IMAGE_SCN_MEM_READ
+            continue
+        sec_rva = section.VirtualAddress
+        sec_size = section.SizeOfRawData
+        sec_off = section.PointerToRawData
+        data = pe.get_data(sec_rva, min(sec_size, section.Misc_VirtualSize))
 
-    if hierarchy:
-        print(f"Hierarchy: {' -> '.join(hierarchy)}")
+        for i in range(0, len(data) - 4, 4):
+            val = struct.unpack_from("<I", data, i)[0]
+            col_rva = _to_rva(pe, val, is_64)
+            if col_rva <= 0:
+                continue
+            col_sig = _read_u32(pe, col_rva)
+            if col_sig != expected_sig:
+                continue
+
+            # The 4-byte COL reference sits at vtable-4, so vtable VA is here + 4
+            vtable_va = base + sec_rva + i + 4
+            result = resolve_vtable(pe, vtable_va)
+            if result is not None and result.name not in seen:
+                seen[result.name] = result
+
+    return list(seen.values())
+
+
+def cmd_vtable(pe: pefile.PE, args):
+    vtable_va = int(args.va, 16)
+    result = resolve_vtable(pe, vtable_va)
+    if result is None:
+        base = pe.OPTIONAL_HEADER.ImageBase
+        is_64 = pe.OPTIONAL_HEADER.Magic == 0x20B
+        vtable_rva = vtable_va - base
+        col_ref = _read_u32(pe, vtable_rva - 4)
+        if col_ref is None:
+            _fail(f"Cannot read COL reference at vtable-4 "
+                  f"(vtable RVA 0x{vtable_rva:X}). Is this a valid vtable address?")
+        col_rva = _to_rva(pe, col_ref, is_64)
+        if col_rva <= 0:
+            _fail(f"COL reference at vtable-4 is 0x{col_ref:X} which yields "
+                  f"invalid RVA 0x{col_rva:X}. Not a valid RTTI vtable.")
+        _fail(f"RTTI resolution failed at vtable 0x{vtable_va:X}. "
+              f"Binary may lack RTTI or address is not a vtable.")
+    print(f"Class: {result.name}")
+    if result.hierarchy:
+        print(f"Hierarchy: {' -> '.join(result.hierarchy)}")
 
 
 def cmd_throwinfo(pe: pefile.PE, args):

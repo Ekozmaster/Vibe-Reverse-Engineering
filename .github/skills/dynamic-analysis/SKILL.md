@@ -1,9 +1,7 @@
 ---
-name: "dynamic-analysis"
-displayName: "Dynamic Analysis"
-description: "Frida-based live process analysis toolkit for reverse engineering. Use when attaching to a running process, tracing functions, collecting execution data, inspecting registers/memory/stack at runtime, stepping through code, patching live memory, or analyzing JSONL trace dumps."
-keywords: ["frida", "dynamic-analysis", "reverse-engineering", "tracing", "breakpoints", "memory", "livetools"]
-author: "workspace"
+name: 'dynamic-analysis'
+description: 'Frida-based live process analysis toolkit. Use when attaching to a running process, tracing functions, collecting execution data, inspecting registers/memory/stack, stepping through code, patching live memory, or analyzing JSONL trace dumps.'
+user-invocable: true
 ---
 
 # Dynamic Analysis with livetools
@@ -401,7 +399,7 @@ python -m livetools analyze scene.jsonl --export-csv scene.csv
 
 9. **Hook the game's CALL instruction, not the DLL function.** To trace a D3D9 method (or any API call), find the `call [reg+offset]` or `call <addr>` instruction *in the game's code* via `xrefs.py` or `vtable.py calls`. Hook THAT address. Do NOT compute the target address inside d3d9.dll and hook there — the arguments are arranged at the caller, and the DLL entry point is shared across all callers.
 
-10. **Zero hits means something is wrong — diagnose, don't give up.** If trace/collect returns 0 samples: (a) Ask the user: is the game window focused and actively rendering? (b) Verify the address: `disasm <addr>` in livetools -- confirm real code exists there. (c) Try a known-hot address: `dipcnt callers 10` finds confirmed active call sites; trace one to prove the hook pipeline works. (d) Only after all three pass should you reconsider whether the original address is actually called during gameplay.
+10. **Zero hits means something is wrong — diagnose, don't give up.** If trace/collect returns 0 samples: (a) Ask the user: is the game window focused and actively rendering? (b) Verify the address: `disasm <addr>` in livetools — confirm real code exists there. (c) Try a known-hot address: `dipcnt callers 10` finds confirmed active call sites; trace one to prove the hook pipeline works. (d) Only after all three pass should you reconsider whether the original address is actually called during gameplay.
 
 ---
 

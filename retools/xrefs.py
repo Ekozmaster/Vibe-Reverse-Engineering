@@ -25,8 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
 
 
-def _scan_refs(raw: bytes, sec_va: int, sec_off: int, sec_size: int,
-               target: int, kind: str) -> list[tuple[str, int]]:
+def scan_refs(raw: bytes, sec_va: int, sec_off: int, sec_size: int,
+              target: int, kind: str) -> list[tuple[str, int]]:
     results: list[tuple[str, int]] = []
     for i in range(sec_size - 6):
         b = raw[sec_off + i]
@@ -79,7 +79,7 @@ def main():
 
     refs: list[tuple[str, int]] = []
     for va_start, raw_off, size in b.exec_ranges():
-        refs.extend(_scan_refs(b.raw, va_start, raw_off, size, target, args.type))
+        refs.extend(scan_refs(b.raw, va_start, raw_off, size, target, args.type))
     refs.sort(key=lambda r: r[1])
 
     print(f"{len(refs)} xrefs to 0x{target:X}\n")

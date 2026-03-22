@@ -1,5 +1,5 @@
 ---
-description: DX9 FFP Proxy porting guide for RTX Remix compatibility. Use when porting a DX9 shader-based game to the fixed-function pipeline using the rtx_remix_tools/dx/dx9_ffp_template template.
+description: DX9 FFP Proxy porting guide for RTX Remix compatibility. Use when porting a DX9 shader-based game to the fixed-function pipeline.
 alwaysApply: false
 ---
 
@@ -69,7 +69,7 @@ Beyond the defines, users may need to modify:
 
 Follow these steps in order for ideal results. Each step depends on the previous. Be sure to use the Vibe Reverse Engineering tools (retools, livetools) for static and dynamic analysis as well. You do not need to strictly follow the order laid out here.
 
-### Step 1: Static Analysis
+### Step 1a: Static Analysis
 
 Run the template's analysis scripts to understand the game's D3D9 usage:
 
@@ -85,6 +85,24 @@ Key things to find:
 - Which functions call `SetVertexShaderConstantF` and with what register/count patterns
 - What vertex declaration formats the game uses (BLENDWEIGHT/BLENDINDICES = skinning)
 - Where the main rendering loop/draw calls live
+
+### Step 1b: D3D9 Frame Trace (recommended — fastest path to answers)
+
+Deploy the D3D9 tracer (`graphics/directx/dx9/tracer/bin/`) to the game directory, capture 2 frames, then run analysis. This is the fastest way to answer all three porting questions without manual RE:
+
+```bash
+python -m graphics.directx.dx9.tracer trigger --game-dir <GAME_DIR>
+python -m graphics.directx.dx9.tracer analyze <trace.jsonl> --shader-map
+python -m graphics.directx.dx9.tracer analyze <trace.jsonl> --const-provenance
+python -m graphics.directx.dx9.tracer analyze <trace.jsonl> --vtx-formats
+python -m graphics.directx.dx9.tracer analyze <trace.jsonl> --render-passes --pipeline-diagram
+```
+
+- `--shader-map` — CTAB disassembly shows named parameters and register mappings (e.g. `WorldViewProj c0 4`, `WorldView c4 3`, `FogValue c8 1`). Directly reveals which constant registers hold View, Projection, and World matrices.
+- `--const-provenance` — shows which `SetVertexShaderConstantF` call set each register at each draw
+- `--vtx-formats` — groups draws by vertex declaration with full element breakdown (POSITION, NORMAL, BLENDWEIGHT, etc.)
+- `--render-passes` + `--pipeline-diagram` — shows the render pipeline structure and pass types
+- `--classify-draws` — auto-tags draws by render state (alpha, ztest, fog, etc.)
 
 ### Step 2: Discover VS Constant Layout
 
@@ -210,11 +228,32 @@ When `ENABLE_SKINNING=1`, skinned meshes flow through these stages:
 
 All of this is infrastructure (no per-game edits). The only game-specific parts are the `VS_REG_BONE_*` defines and `ENABLE_SKINNING` toggle.
 
+### Skinning Stability
+
+After skinning is enabled and working, watch for these instabilities:
+
+- **Flickering skinned meshes**: cache invalidation mismatch — the hash key may not capture enough state (e.g. animation frame changes vertex data without changing VB ptr). Add stride or frame counter to the hash if needed.
+- **Bone count wrong**: `numBones` detected from register count / `VS_REGS_PER_BONE`. If the game packs bones differently (e.g. 4x4 instead of 4x3), adjust `VS_REGS_PER_BONE`.
+- **First few frames corrupt**: device not ready at `CreateVertexDeclaration` time — check log for `skinExpDecl: 00000000`. Defer creation to first draw if needed.
+
 ### Key Component Notes
 
 - **FFP_Engage / FFP_Disengage**: `FFP_Engage` NULLs shaders, applies transforms, sets up texture stages. `FFP_Disengage` restores the game's shaders. The proxy avoids redundant state changes between consecutive FFP draw calls.
 - **FFP_ApplyTransforms**: Reads from the `vsConst[]` array using the `VS_REG_*` defines and calls `SetTransform` with transposed matrices (D3D9 FFP expects row-major).
 - **Relay thunks**: The 104 non-intercepted methods use `__declspec(naked)` ASM to swap `this` and jump directly to the real vtable. Zero overhead. Don't touch these unless you need to intercept a new method.
+
+## Analysis Scripts — Entry Points, Not Endpoints
+
+The scripts below are fast first-pass scanners. They surface candidate addresses and call sites to give you a starting point. They do **not** replace deep analysis — always follow up with `retools` and `livetools` to understand what is actually happening.
+
+| Script | What it surfaces |
+|--------|------------------|
+| `scripts/find_d3d_calls.py <game.exe>` | D3D9/D3DX imports and call sites |
+| `scripts/find_vs_constants.py <game.exe>` | `SetVertexShaderConstantF` call sites and register/count args |
+| `scripts/find_device_calls.py <game.exe>` | Device vtable call patterns and device pointer refs |
+| `scripts/find_vtable_calls.py <game.exe>` | D3DX constant table usage and D3D9 vtable calls |
+| `scripts/decode_vtx_decls.py <game.exe> --scan` | Vertex declaration formats (BLENDWEIGHT/BLENDINDICES → skinning) |
+| `scripts/scan_d3d_region.py <game.exe> 0xSTART 0xEND` | Map all D3D9 vtable calls in a code region |
 
 ## Common Pitfalls
 
@@ -225,29 +264,6 @@ All of this is infrastructure (no per-game edits). The only game-specific parts 
 - **Game crashes on startup**: The chain-loaded Remix DLL might not be present. Set `Enabled=0` in proxy.ini `[Remix]` section to test without Remix first.
 - **Geometry at origin / piled up**: World matrix register mapping is wrong. Every object gets identity world transform. Re-examine VS constant writes.
 - **Characters' world geometry shifts after a skinned draw**: After uploading bone matrices, WORLDMATRIX(0) is clobbered by bone[0]. The proxy sets `worldDirty=1` so `FFP_ApplyTransforms` re-applies the world matrix on the next rigid draw. If this still causes issues, the bone start register may overlap with the world matrix register range.
-
-## Using the RE Tools
-
-All the Vibe RE tools described in the workspace instructions (retools, livetools, dx9 tracer) are available. Key workflows for FFP porting:
-
-### D3D9 Frame Trace (recommended first step)
-
-Deploy the D3D9 tracer (`graphics/directx/dx9/tracer/bin/`) to capture the application's full render frame -- this is the fastest way to answer all three porting questions:
-
-- `python -m graphics.directx.dx9.tracer analyze <trace.jsonl> --shader-map` -- CTAB disassembly shows named parameters and register mappings (e.g. `WorldViewProj c0 4`, `WorldView c4 3`, `FogValue c8 1`). Directly reveals which constant registers hold View, Projection, and World matrices.
-- `... --const-provenance` -- shows which `SetVertexShaderConstantF` call set each register at each draw. `--const-provenance-draw N` gives full register values for a specific draw.
-- `... --vtx-formats` -- groups draws by vertex declaration with full element breakdown (POSITION, NORMAL, BLENDWEIGHT, etc.)
-- `... --render-passes` + `--pipeline-diagram` -- shows the render pipeline structure and pass types
-- `... --classify-draws` -- auto-tags draws by render state (alpha, ztest, fog, etc.)
-
-### Traditional RE tools
-
-- `retools.decompiler` with `--types kb.h` for decompiling rendering functions
-- `livetools trace` on `SetVertexShaderConstantF` to see register + data patterns
-- `livetools trace` on `DrawIndexedPrimitive` to see call frequency and arguments
-- `livetools steptrace` on a rendering function to understand control flow
-- `retools.search strings --xrefs` to find error messages or shader-related strings
-- `retools.xrefs` / `retools.callgraph --up` to find who calls rendering functions
 
 ## Notes
 - Do not change the time frame of the logging (unless specified by the user). The delay is important to ensure the user is able to get into the game with actual geometry being drawn before the logs start, otherwise they may get lost in the initial burst of draw calls during loading.
