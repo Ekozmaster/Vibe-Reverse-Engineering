@@ -7,6 +7,7 @@
 - `context.py assemble` / `postprocess` (context gathering, <5s)
 - `readmem.py` (single typed read from PE, <5s)
 - `asi_patcher.py build` (build step, not analysis)
+- `pyghidra_backend.py status` (project existence check, <1s)
 
 If you're about to run a second retools command in the same turn, you should have delegated.
 

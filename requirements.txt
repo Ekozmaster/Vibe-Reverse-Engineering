@@ -3,3 +3,4 @@ r2pipe>=1.9.8
 pefile>=2024.8.26
 capstone>=5.0.7
 minidump>=0.0.24
+pyghidra>=2.0.0,<4.0.0

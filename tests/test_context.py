@@ -148,6 +148,23 @@ class TestPostprocess:
         assert "Init" in result
         assert "param_1->speed" in result
 
+    def test_renames_ghidra_FUN_prefix(self):
+        from context import postprocess
+        raw = "call FUN_00401000\nmov eax, FUN_00402000\n"
+        kb = {0x00401000: "ProcessInput", 0x00402000: "GetValue"}
+        result = postprocess(raw, kb)
+        assert "ProcessInput" in result
+        assert "GetValue" in result
+        assert "FUN_00401000" not in result
+
+    def test_renames_ghidra_FUN_16digit(self):
+        from context import postprocess
+        raw = "call FUN_0000000140001000\n"
+        kb = {0x0000000140001000: "WideFunc"}
+        result = postprocess(raw, kb)
+        assert "WideFunc" in result
+        assert "FUN_0000000140001000" not in result
+
 
 # ---------------------------------------------------------------------------
 # assemble

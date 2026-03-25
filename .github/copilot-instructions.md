@@ -9,7 +9,9 @@ On first use, or if `kb.h` is missing or contains only minimal content, automati
 `python -m retools.bootstrap <binary> --project <ProjectName>`
 before any further static or dynamic analysis. **Bootstrap takes 2-5 minutes** — it scans for RTTI classes, identifies CRT/library functions, and propagates labels. The output goes to `patches/<ProjectName>/kb.h` — verify this file exists and has content after bootstrap returns. All subsequent `decompiler.py` calls must use `--types patches/<ProjectName>/kb.h`. **Bootstrap speeds up all subsequent decompilation**: `--types` pre-analyzes every known function so cross-references resolve to named functions and you avoid the expensive full-binary analysis pass. Tell the user it's running and do other work while it completes.
 
-Run `python verify_install.py` from the repo root before first use. Common failures: missing `git lfs pull` (LFS pointer stubs instead of real binaries), missing `pip install -r requirements.txt`.
+**In parallel with bootstrap**, run `python retools/pyghidra_backend.py analyze <binary> --project patches/<ProjectName>` to create a reusable Ghidra project. This takes 5-15 minutes but makes all subsequent pyghidra decompilations near-instant. Both bootstrap and pyghidra analyze can run simultaneously.
+
+Run `python verify_install.py` from the repo root before first use. If pyghidra/Ghidra shows as WARN, run `python verify_install.py --setup` to auto-download JDK 21 + Ghidra + pyghidra (~600MB one-time download). Common failures: missing `git lfs pull` (LFS pointer stubs instead of real binaries), missing `pip install -r requirements.txt`.
 
 ## Delegation Rule
 
@@ -19,6 +21,7 @@ Run `python verify_install.py` from the repo root before first use. Common failu
 - `context.py assemble` / `postprocess` — context gathering and decompiler annotation
 - `readmem.py` — single typed read from a PE file
 - `asi_patcher.py build` — build step, not analysis
+- `pyghidra_backend.py status` — project existence check (<1s)
 
 If you're about to run a second `retools` command in the same turn, stop and delegate everything to a subagent.
 
@@ -27,6 +30,17 @@ Run all tools from the repo root using `python -m <module>` syntax (e.g. `python
 ## Live Tools First
 
 The main agent owns `livetools` — always use them to verify static findings and act on leads from subagents. When a subagent returns addresses or candidates, immediately follow up with live tools (trace, breakpoint, mem read/write) rather than spawning more static analysis. Static analysis finds clues; live tools confirm and act on them. Do not wait idle for subagents — use live tools to explore independently while static analysis runs in the background.
+
+## Dual-Backend Decompilation
+
+The decompiler supports two backends with different strengths:
+
+- **pyghidra (preferred)** — better MSVC type propagation, library call resolution, larger function scope detection. Requires a Ghidra project (`pyghidra_backend.py analyze` creates one). Use when `patches/<project>/ghidra/<binary>.gpr` exists.
+- **r2ghidra (fallback)** — better `__thiscall` on small functions, no JVM startup. Always available.
+
+**Auto mode**: `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h --project patches/proj` tries pyghidra first, falls back to r2ghidra. Use `--project` alongside `--types` for auto selection.
+
+**Dual-backend deep analysis**: For complex exploratory tasks (finding subsystems, mapping call chains), run both backends in parallel on the same functions and merge findings. r2ghidra results go to `findings_r2.md`, pyghidra to `findings.md`. Neither backend finds everything alone -- merging both gives the most complete picture.
 
 ## Engineering Standards
 

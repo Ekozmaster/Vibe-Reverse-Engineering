@@ -43,3 +43,22 @@ retools/data/signatures.db
 retools/data/sources/
 *.db-shm
 *.db-wal
+
+# Ghidra + JDK (downloaded via verify_install.py --setup)
+tools/ghidra_*/
+tools/jdk-*/
+
+# Target binaries (not part of the toolkit)
+*.exe
+*.dll
+!graphics/directx/dx9/tracer/src/*.dll
+
+
+# Research artifacts
+compass_artifact_*
+
+# Agent memory (machine-specific, regenerated per session)
+.claude/agent-memory/
+
+# Superpowers specs/plans (session artifacts)
+docs/
