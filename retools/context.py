@@ -25,8 +25,8 @@ from structrefs import aggregate_struct
 from search import find_strings
 from sigdb import SignatureDB, extract_structural_sig
 
-# Pattern: fcn.XXXXXXXX where X is hex (case-insensitive)
-_FCN_RE = re.compile(r"fcn\.([0-9a-fA-F]{8})")
+# Pattern: fcn.XXXXXXXX or FUN_XXXXXXXX (r2ghidra or Ghidra naming)
+_FCN_RE = re.compile(r"(?:fcn\.|FUN_)([0-9a-fA-F]{8,16})")
 
 # Pattern: *(type *)(var + 0xOFFSET)
 _STRUCT_ACCESS_RE = re.compile(

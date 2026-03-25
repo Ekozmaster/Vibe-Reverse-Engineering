@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Decompile a function from a PE binary using radare2 + r2ghidra/pdc.
+"""Decompile a function from a PE binary.
 
-Produces pseudo-C output for the function at the given virtual address.
-Uses r2ghidra (pdg) when available, falling back to r2's built-in pdc.
+Uses pyghidra (headless Ghidra) when a Ghidra project exists, falling back
+to radare2 + r2ghidra/pdc. pyghidra runs Ghidra's full analysis pipeline
+for richer type/calling convention recovery, but requires a one-time
+analysis pass via pyghidra_backend.py.
 
 Supports loading type/function/global metadata via ``--types`` to produce
 richer decompiled output (named structs, function names, enum values).
@@ -15,6 +17,7 @@ Usage:
     python -m retools.decompiler <binary> <va>
     python -m retools.decompiler <binary> <va> --types kb.h
     python -m retools.decompiler <binary> <va> --backend pdc
+    python -m retools.decompiler <binary> <va> --project patches/MyGame --backend ghidra
 
 Knowledge base format (``--types`` input):
     // C type definitions (struct, enum, typedef) -- no prefix
@@ -30,7 +33,7 @@ Knowledge base format (``--types`` input):
 Examples:
     python -m retools.decompiler binary.exe 0x401000
     python -m retools.decompiler binary.exe 0x401000 --types project/kb.h
-    python -m retools.decompiler binary.exe 0x401000 --types "struct V { float x; float y; float z; };"
+    python -m retools.decompiler binary.exe 0x401000 --project patches/MyGame --backend ghidra
 """
 
 import argparse
@@ -124,16 +127,38 @@ def _load_types(r2, types_arg: str) -> None:
 
 
 def decompile(binary: str, va: int, *, backend: str = "auto",
-              full_analysis: bool = False, types: str | None = None) -> str:
+              full_analysis: bool = False, types: str | None = None,
+              project_dir: str | None = None) -> str:
     """Decompile the function at *va* and return pseudo-C as a string.
 
     Args:
         binary: Path to PE file.
         va: Virtual address of the function.
-        backend: Decompiler backend ("auto", "pdg", "pdc", "pdd").
+        backend: Decompiler backend ("auto", "ghidra", "pyhidra", "pdg", "pdc", "pdd").
         full_analysis: If True, run ``aaa`` before decompiling.
         types: Knowledge-base string, stdin marker (``-``), or file path.
+        project_dir: Project directory (e.g. ``patches/MyGame``). Enables
+            pyghidra backend when a Ghidra project exists at ``<project_dir>/ghidra/``.
     """
+    # -- pyghidra backend routing --
+    if backend in ("ghidra", "pyhidra"):
+        if not project_dir:
+            return "[error] --project required with --backend ghidra"
+        from retools.pyghidra_backend import decompile as ghidra_decompile
+        ghidra_dir = str(Path(project_dir) / "ghidra")
+        return ghidra_decompile(ghidra_dir, binary, va)
+
+    if backend == "auto" and project_dir:
+        from retools.pyghidra_backend import is_analyzed, decompile as ghidra_decompile
+        bin_name = Path(binary).stem
+        ghidra_dir = str(Path(project_dir) / "ghidra")
+        if is_analyzed(ghidra_dir, bin_name):
+            result = ghidra_decompile(ghidra_dir, binary, va)
+            if not result.startswith("[error]"):
+                return result
+            # pyghidra error in auto mode -- fall through to r2ghidra
+    # -- end pyghidra routing (fall through to r2ghidra) --
+
     r2_bin = _find_r2_bin()
     if r2_bin is None:
         raise FileNotFoundError(
@@ -183,7 +208,7 @@ def main() -> None:
     p.add_argument("va", help="Function virtual address in hex (e.g. 0x401000)")
     p.add_argument(
         "-b", "--backend",
-        choices=["auto", *_BACKEND_CMDS],
+        choices=["auto", "ghidra", "pyhidra", *_BACKEND_CMDS],
         default="auto",
         help="Decompiler backend (default: auto – tries pdg then pdc)",
     )
@@ -197,6 +222,11 @@ def main() -> None:
         help="Knowledge base: inline types string, '-' for stdin, "
              "or path to .h file with structs/functions/globals",
     )
+    p.add_argument(
+        "-p", "--project",
+        help="Project directory (e.g. patches/MyGame). "
+             "Enables pyghidra backend when Ghidra project exists at <project>/ghidra/",
+    )
     args = p.parse_args()
     if not args.types:
         print("hint: use --types kb.h to load a knowledge base for richer output", file=sys.stderr)
@@ -204,7 +234,7 @@ def main() -> None:
           file=sys.stderr)
     print(decompile(args.binary, int(args.va, 16),
                     backend=args.backend, full_analysis=args.full_analysis,
-                    types=args.types))
+                    types=args.types, project_dir=args.project))
 
 
 if __name__ == "__main__":

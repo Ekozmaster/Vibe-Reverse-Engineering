@@ -4,7 +4,7 @@ description: Complete catalog of all RE tools (retools, livetools, dx9 tracer) w
 
 # Tool Catalog
 
-**BEFORE FIRST USE**: Run `python verify_install.py` from the repo root. Do NOT proceed with any tool until every check passes. Common failures: missing `git lfs pull` (LFS pointer stubs instead of binaries), missing `pip install -r requirements.txt`.
+**BEFORE FIRST USE**: Run `python verify_install.py` from the repo root. Do NOT proceed with any tool until every required check passes. If pyghidra/Ghidra shows as WARN, run `python verify_install.py --setup` to auto-download JDK 21 + Ghidra + pyghidra. Common failures: missing `git lfs pull` (LFS pointer stubs instead of binaries), missing `pip install -r requirements.txt`.
 
 All tools work on PE binaries (`.exe` and `.dll`). `$B` = path to binary, `$VA` = hex address, `$D` = path to minidump `.dmp` file. Check tools help command for more info on usage.
 Always consult this catalog before making any move to take the best decision on what to use with best bang for your buck.
@@ -41,7 +41,7 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 - "Find instructions using a specific constant" → instruction search
 - "What crashed and what was the error message?" → dump diagnosis + throwmap
 - "Map all throw sites to error strings" → throwmap list
-- "First time analyzing a binary?" → bootstrap (2-5 min)
+- "First time analyzing a binary?" → bootstrap (2-5 min) + pyghidra analyze (5-15 min) in parallel
 - "Bulk signature scan" → sigdb scan (1-3 min)
 - Any combination of the above
 
@@ -64,7 +64,10 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 | Tool | Purpose | Example |
 |------|---------|---------|
 | `disasm.py $B $VA` | Disassemble N instructions at VA | `disasm.py binary.exe 0x401000 -n 50` |
-| `decompiler.py $B $VA --types` | **Ghidra-quality C decompilation** with knowledge base | `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h` |
+| `decompiler.py $B $VA --types --project` | **C decompilation** -- pyghidra (if project exists) or r2ghidra | `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h --project patches/proj` |
+| `pyghidra_backend.py analyze $B --project $P` | **Full Ghidra analysis** -- one-time, saves reusable project | `pyghidra_backend.py analyze game.exe --project patches/MyGame` |
+| `pyghidra_backend.py decompile $B $VA --project $P` | Decompile via saved Ghidra project | `pyghidra_backend.py decompile game.exe 0x401000 --project patches/MyGame` |
+| `pyghidra_backend.py status $B --project $P` | Check if Ghidra project exists | `pyghidra_backend.py status game.exe --project patches/MyGame` |
 | `funcinfo.py $B $VA` | Find function start/end, rets, calling convention, callees | `funcinfo.py binary.exe 0x401000` |
 | `cfg.py $B $VA` | Control flow graph (basic blocks + edges, text or mermaid) | `cfg.py binary.exe 0x401000 --format mermaid` |
 | `callgraph.py $B $VA` | Caller/callee tree (multi-level, --up/--down N) | `callgraph.py binary.exe 0x401000 --up 3` |
@@ -246,6 +249,14 @@ Minidumps vary in how much data they capture depending on `MiniDumpWriteDump` fl
 ### `datarefs.py` / `search.py strings --xrefs` -- addressing modes
 
 These tools find references via absolute memory operands, immediate values (with `--imm` flag), and RIP-relative addressing. If you suspect a reference exists but the tool doesn't find it, the address might be computed at runtime. Try `search.py pattern` with the address bytes directly, or use `livetools memwatch`.
+
+### `pyghidra_backend.py` -- requires Ghidra installation
+
+Requires Ghidra 11.x+ installed and `GHIDRA_INSTALL_DIR` environment variable set. **Optional** -- the toolkit works without it (r2ghidra remains the fallback).
+
+**Disk usage**: Ghidra projects are ~10-20x the binary size. A 30MB game exe produces a ~300-600MB `.rep/` directory under `patches/<project>/ghidra/`. This directory is already covered by `.gitignore` (the `patches/` exclusion).
+
+**First-time analysis** takes 5-15 minutes depending on binary size. Subsequent decompilation from the saved project is instant (<1s plus ~3s JVM startup per process).
 
 ### `livetools` -- static vs runtime addresses
 

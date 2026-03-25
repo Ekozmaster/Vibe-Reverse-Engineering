@@ -7,15 +7,23 @@ inclusion: always
 
 The main agent orchestrates and focuses on **live tools**, **dx9tracer capture**, **user interaction**, and **synthesis**. Heavy static analysis and web research are delegated to subagents so the user isn't blocked.
 
+## Pre-flight: Ensure Ghidra Backend
+
+Before first use of pyghidra, the `static-analyzer` subagent should check if Ghidra is available. Run `python verify_install.py` — if pyghidra/Ghidra shows WARN, run `python verify_install.py --setup` to auto-download JDK 21 + Ghidra 11.4.3 + pyghidra. This is a one-time setup (~600MB download). Skip if pyghidra already shows PASS.
+
 ## Bootstrap First — New Binaries
 
 When analyzing a binary for the first time (no existing or sparsely populated `patches/<project>/kb.h`), **always bootstrap before other static analysis**:
 
-1. Spawn a `static-analyzer` subagent to run `bootstrap.py <binary> --project <Name>` — this seeds `patches/<project>/kb.h` with RTTI classes, CRT/library function IDs, compiler info, and propagated labels. **Bootstrap takes 2-5 minutes.** Tell the user it's running and do other work while it completes. The output goes to `patches/<project>/kb.h` — verify this file exists and has content after bootstrap returns. **Bootstrap speeds up all subsequent decompilation**: when `--types kb.h` is passed to the decompiler, it pre-analyzes every known function (`af` per KB entry) so cross-references resolve to named functions, callees get inlined signatures, and you avoid the expensive full-binary `aaa` analysis pass.
-2. Any other static analysis subagents should run in parallel, but their decompilation output will be richer if bootstrap finishes first
-3. After bootstrap, all subsequent `decompiler.py` calls **must** use `--types patches/<project>/kb.h`
+1. The `static-analyzer` subagent auto-pulls `signatures.db` if missing (pre-flight check). Spawn it to run `bootstrap.py <binary> --project <Name>` — this seeds `patches/<project>/kb.h` with RTTI classes, CRT/library function IDs, compiler info, and propagated labels. **Bootstrap takes 2-5 minutes.** Tell the user it's running and do other work while it completes. The output goes to `patches/<project>/kb.h` — verify this file exists and has content after bootstrap returns. **Bootstrap speeds up all subsequent decompilation**: when `--types kb.h` is passed to the decompiler, it pre-analyzes every known function (`af` per KB entry) so cross-references resolve to named functions, callees get inlined signatures, and you avoid the expensive full-binary `aaa` analysis pass.
+2. **In parallel**, spawn a second `static-analyzer` to run `pyghidra_backend.py analyze <binary> --project patches/<Name>`. This runs Ghidra's full analysis (PE loader, MSVC calling convention detection, type propagation, RTTI parsing) and saves a reusable project. **Takes 5-15 minutes.** Once complete, all subsequent decompilations via `--backend auto --project patches/<Name>` will use Ghidra's higher-quality output.
+3. Any other static analysis subagents should run in parallel, but their decompilation output will be richer if bootstrap finishes first
+4. After bootstrap, all subsequent `decompiler.py` calls **must** use `--types patches/<project>/kb.h`
+5. After pyghidra analyze, all subsequent `decompiler.py` calls should also use `--project patches/<project>` so `--backend auto` prefers Ghidra when available
 
 **How to detect "needs bootstrap":** Check if `patches/<project>/kb.h` exists AND has real content (function signatures `@`, globals `$`, or struct definitions beyond section headers). An empty or stub KB with only comment headers counts as sparse — bootstrap it. Quick check: `grep -cE '^[@$]|^struct |^enum ' patches/<project>/kb.h` — if the count is under 50, bootstrap.
+
+**How to detect "needs pyghidra analyze":** Check if `patches/<project>/ghidra/<binary_stem>.gpr` exists. If not, spawn `pyghidra_backend.py analyze`. If kb.h also needs bootstrap, spawn both in parallel.
 
 ## Delegation Rules
 
@@ -27,6 +35,8 @@ When analyzing a binary for the first time (no existing or sparsely populated `p
 | dx9tracer trigger/capture | Main agent — directly |
 | dx9tracer analyze (offline JSONL analysis) | `static-analyzer` subagent |
 | Bootstrap new binary (`bootstrap.py`) | `static-analyzer` subagent -- takes 2-5 min |
+| pyghidra analyze (first-time Ghidra analysis) | `static-analyzer` subagent -- takes 5-15 min |
+| Decompiler with `--backend ghidra` (subsequent) | `static-analyzer` subagent -- fast (JVM ~3s + decompile <1s) |
 | Bulk signature scan (`sigdb.py scan`) | `static-analyzer` subagent -- takes 1-3 min |
 | Signature DB build (`sigdb.py build`) | `static-analyzer` subagent -- takes 1-5 min |
 | Single function ID (`sigdb.py identify`, `fingerprint`) | Main agent -- fast (<5s) |
@@ -49,6 +59,19 @@ When both static and dynamic analysis are needed:
 
 Multiple `static-analyzer` instances can run in parallel for independent questions (e.g., decompiling two unrelated functions, analyzing different modules). When a subagent returns findings with multiple leads (e.g., "5 candidate functions found"), spawn parallel subagents to chase independent leads simultaneously — don't serialize them or try to analyze them yourself.
 
+## Dual-Backend Deep Analysis
+
+For deep analysis tasks (finding subsystems, mapping call chains, understanding large code areas), spawn **two parallel static-analyzer agents using different decompiler backends**:
+
+1. **r2ghidra agent** — uses `--backend pdg` (with `--types kb.h`), writes to `patches/<project>/findings_r2.md`
+2. **pyghidra agent** — uses `pyghidra_backend.py decompile` (requires Ghidra project), writes to `patches/<project>/findings.md`
+
+**Why both:** Each backend has different strengths. r2ghidra is better at `__thiscall` recovery on small functions and low-level D3D details. pyghidra resolves more library calls, finds larger function scopes, and propagates types better. Neither finds everything alone — merging both gives the most complete picture.
+
+**When to use dual-backend:** Complex exploratory tasks ("find the culling system", "map the rendering pipeline", "understand the network protocol"). Not needed for single-function decompilation — use `--backend auto` for that.
+
+**Synthesis:** When both agents return, the main agent reads both findings files and merges them into a unified analysis. Conflicting information is resolved by checking which backend's output is more complete for that specific function.
+
 ## Main Agent Responsibilities During Analysis
 
 **Do not silently wait for subagents.** While static analysis runs:
@@ -60,9 +83,10 @@ Multiple `static-analyzer` instances can run in parallel for independent questio
 ## Examples
 
 **"Disable culling in game.exe"**
-1. Spawn `static-analyzer` in background: find `SetRenderState` calls with `D3DRS_CULLMODE`, string search for "cull", xrefs to render state functions
-2. Immediately tell the user: "Please launch the game — I'll need to attach with livetools to patch culling at runtime once I find the addresses"
-3. When static results return, use `livetools` to verify and patch: `mem write` to NOP the cull-enable instruction or force `D3DRS_CULLMODE` to `D3DCULL_NONE`
+1. Spawn `static-analyzer` #1 (r2ghidra): find `SetRenderState` calls with `D3DRS_CULLMODE`, string search for "cull", xrefs to render state functions. Uses `--backend pdg --types kb.h`. Writes to `findings_r2.md`.
+2. Spawn `static-analyzer` #2 (pyghidra): same search strategy but decompile with `pyghidra_backend.py decompile`. Writes to `findings.md`.
+3. Immediately tell the user: "Please launch the game — I'll need to attach with livetools to patch culling at runtime once I find the addresses"
+4. When both return, merge findings and use `livetools` to verify and patch: `mem write` to NOP the cull-enable instruction or force `D3DRS_CULLMODE` to `D3DCULL_NONE`
 
 **"What does function 0x401000 do?"**
 1. Spawn `static-analyzer`: decompile with `--types kb.h`, get callgraph, xrefs
@@ -79,11 +103,13 @@ Multiple `static-analyzer` instances can run in parallel for independent questio
 2. Tell the user: "Analyzing the crash dump. If you can reproduce the crash, launch the game and I'll attach to catch it live"
 
 **"Analyze game.exe for the first time"**
-1. Spawn `static-analyzer` in background: `bootstrap.py game.exe --project MyGame`
-2. Tell the user: "Bootstrapping the binary -- this will auto-identify RTTI classes, CRT functions, and propagated labels. Takes ~3 minutes."
-3. While bootstrap runs, use `sigdb.py fingerprint` (fast) to tell the user the compiler version
-4. When bootstrap returns, read the report and summarize coverage to the user
-5. All subsequent decompilations use `--types patches/MyGame/kb.h` with the seeded KB
+1. Spawn `static-analyzer` #1 in background: `bootstrap.py game.exe --project MyGame`
+2. Spawn `static-analyzer` #2 in background: `pyghidra_backend.py analyze game.exe --project patches/MyGame`
+3. Tell the user: "Bootstrapping the binary and running Ghidra analysis in parallel. Bootstrap ~3 min, Ghidra ~10 min."
+4. While both run, use `sigdb.py fingerprint` (fast) to tell the user the compiler version
+5. When bootstrap returns, read the report and summarize coverage to the user
+6. When pyghidra returns, tell the user: "Ghidra analysis complete. Subsequent decompilations will use Ghidra's higher-quality output."
+7. All subsequent decompilations use `--types patches/MyGame/kb.h --project patches/MyGame`
 
 ## Anti-Patterns
 
