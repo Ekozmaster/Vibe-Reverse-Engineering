@@ -30,6 +30,7 @@ Spec format (JSON):
   {
     "name": "MyPatch",          <-- valid C identifier, used for output filename
     "arch": "x86",              <-- "x86" or "x64"
+    "base": "0x400000",         <-- optional: PE preferred base for ASLR rebase
     "description": "optional human-readable note",
     "verify": [
       {"addr": "0x401000", "expect": "55 8B EC"}
@@ -43,6 +44,12 @@ Spec format (JSON):
       {"name": "Big",   "type": "int64", "addr": "0x406000", "value": 0}
     ]
   }
+
+When "base" is present, all addresses in verify/patches are treated as
+static VAs relative to the preferred image base.  At runtime the ASI
+resolves the actual module base via GetModuleHandleA(NULL) and rebases
+every address to (runtime_base + addr - preferred_base).  Omit "base"
+for non-ASLR binaries where addresses are absolute.
 
 Patch types: bytes, code, nop, float, double, int32, int64
 ("code" is an alias for "bytes")
@@ -104,8 +111,12 @@ def _hex_to_c(hex_str: str) -> str:
     return ", ".join(f"0x{t}" for t in hex_str.strip().split())
 
 
-def _c_addr(addr_str: str, arch: str) -> str:
+def _c_addr(addr_str: str, arch: str, base: int | None = None) -> str:
     val = int(addr_str, 16)
+    if base is not None:
+        rva = val - base
+        d = 16 if arch == "x64" else 8
+        return f"rva(0x{rva:0{d}X})"
     d = 16 if arch == "x64" else 8
     return f"(UINT_PTR)0x{val:0{d}X}"
 
@@ -119,6 +130,9 @@ def generate_c(spec: dict) -> str:  # noqa: C901 — long but linear
     desc = spec.get("description", "")
     patches = spec["patches"]
     verifies = spec["verify"]
+    base: int | None = None
+    if "base" in spec:
+        base = int(spec["base"], 16) if isinstance(spec["base"], str) else spec["base"]
 
     L: list[str] = []
 
@@ -138,6 +152,15 @@ def generate_c(spec: dict) -> str:  # noqa: C901 — long but linear
     w('#pragma comment(lib, "kernel32.lib")')
     w("int _fltused = 0;")
     w()
+
+    if base is not None:
+        w("static UINT_PTR g_base;")
+        w()
+        w("static UINT_PTR rva(UINT_PTR offset)")
+        w("{")
+        w("    return g_base + offset;")
+        w("}")
+        w()
 
     # byte helpers
     w("static void write_mem(volatile unsigned char *dst,")
@@ -268,7 +291,7 @@ def generate_c(spec: dict) -> str:  # noqa: C901 — long but linear
         w("    return 1;")
     else:
         for v in verifies:
-            addr = _c_addr(v["addr"], arch)
+            addr = _c_addr(v["addr"], arch, base)
             tokens = v["expect"].strip().split()
             cnt = len(tokens)
             arr = ", ".join(f"0x{t}" for t in tokens)
@@ -291,7 +314,7 @@ def generate_c(spec: dict) -> str:  # noqa: C901 — long but linear
     for p in patches:
         pn = p["name"]
         pt = p["type"]
-        addr = _c_addr(p["addr"], arch)
+        addr = _c_addr(p["addr"], arch, base)
 
         w(f"static int apply_{pn}(void)")
         w("{")
@@ -338,8 +361,15 @@ def generate_c(spec: dict) -> str:  # noqa: C901 — long but linear
     w("    if (reason != DLL_PROCESS_ATTACH)")
     w("        return TRUE;")
     w("    DisableThreadLibraryCalls(hModule);")
+
+    if base is not None:
+        w("    g_base = (UINT_PTR)GetModuleHandleA(NULL);")
+
     w("    log_open();")
     w(f'    log_str("{name} loaded\\r\\n");')
+
+    if base is not None:
+        w('    log_str("Base: "); log_hex(g_base); log_str("\\r\\n");')
 
     if verifies:
         w()
@@ -353,7 +383,7 @@ def generate_c(spec: dict) -> str:  # noqa: C901 — long but linear
     w()
     for p in patches:
         pn = p["name"]
-        addr = _c_addr(p["addr"], arch)
+        addr = _c_addr(p["addr"], arch, base)
         w(f'    log_patch("{pn}", {addr}, apply_{pn}());')
 
     w()
@@ -424,6 +454,7 @@ def cmd_init(directory: Path) -> None:
     skeleton = {
         "name": dir_name,
         "arch": "x86",
+        "base": "0x400000",
         "description": "",
         "verify": [],
         "patches": [],
