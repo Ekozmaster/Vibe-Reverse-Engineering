@@ -5,65 +5,72 @@ alwaysApply: false
 
 # DX9 FFP Proxy — Game Porting Guide
 
-You are helping a user port a DX9 shader-based game to the fixed-function pipeline using the `rtx_remix_tools/dx/dx9_ffp_template/` template in this workspace. The goal is RTX Remix compatibility: Remix requires FFP geometry to inject path-traced lighting and replaceable assets. Also use the Vibe RE tools (retools, livetools) for static and dynamic analysis to assist with developing this wrapper. They are meant to be used together.
+You are helping a user port a DX9 shader-based game to the fixed-function pipeline using the `rtx_remix_tools/dx/remix-comp/` codebase in this workspace. The goal is RTX Remix compatibility: Remix requires FFP geometry to inject path-traced lighting and replaceable assets. Also use the Vibe RE tools (retools, livetools) for static and dynamic analysis to assist with developing this wrapper. They are meant to be used together.
 
-**SKINNING IS OFF BY DEFAULT.** Do NOT enable `ENABLE_SKINNING`, modify skinning code, or discuss skinning infrastructure unless the user explicitly asks for character model / bone / skeletal animation support. Until then, treat skinning as non-existent. When the user does request it, read `extensions/skinning/README.md` and `proxy/d3d9_skinning.h` for the full guide.
+**SKINNING IS OFF BY DEFAULT.** Do NOT enable skinning, modify skinning code, or discuss skinning infrastructure unless the user explicitly asks for character model / bone / skeletal animation support. Until then, treat skinning as non-existent. When the user does request it, read `src/comp/modules/skinning.hpp` and `src/comp/modules/skinning.cpp` for the full implementation.
 
 ---
 
-## What the Template Does
+## What remix-comp Does
 
-The template is a d3d9.dll proxy that intercepts `IDirect3DDevice9` and:
+The codebase (`rtx_remix_tools/dx/remix-comp/`) is a C++20 compatibility mod based on remix-comp-base that intercepts `IDirect3DDevice9` and:
 
 1. Captures vertex shader constants (View, Projection, World matrices) from `SetVertexShaderConstantF`
 2. Parses `SetVertexDeclaration` to detect per-element attributes: BLENDWEIGHT+BLENDINDICES (skinned), POSITIONT (screen-space), NORMAL presence, and per-element byte offsets and types
 3. Routes `DrawIndexedPrimitive` by vertex layout:
-   - No NORMAL → HUD/UI pass-through (uses different VS constant layout than world geometry)
-   - Skinned with `ENABLE_SKINNING=1` → expands vertices to a fixed FLOAT layout, then draws with FFP indexed vertex blending
-   - Rigid 3D (has NORMAL) → NULLs shaders, applies FFP transforms, draws
+   - No NORMAL -> HUD/UI pass-through (uses different VS constant layout than world geometry)
+   - Skinned with skinning module enabled -> FFP indexed vertex blending
+   - Rigid 3D (has NORMAL) -> NULLs shaders, applies FFP transforms, draws
 4. Routes `DrawPrimitive` by declaration state: world-space draws (have decl, no POSITIONT, not skinned) engage FFP; screen-space and no-decl draws pass through
 5. Applies captured matrices via `SetTransform` (FFP)
 6. Sets up texture stages and lighting for FFP rendering (stages 1-7 disabled to prevent stale auxiliary textures reaching Remix)
 7. Chain-loads RTX Remix (`d3d9_remix.dll`)
 
-## Template Source Files
+## Source File Map
 
 | File | Role |
 |------|------|
-| `proxy/d3d9_main.c` | DLL entry, logging, Remix chain loading, INI parsing |
-| `proxy/d3d9_wrapper.c` | Wrapped `IDirect3D9` (17 methods), intercepts `CreateDevice` |
-| `proxy/d3d9_device.c` | Wrapped `IDirect3DDevice9` (119 methods) — **core FFP conversion** |
-| `proxy/d3d9_skinning.h` | Skinning extension (included only when `ENABLE_SKINNING=1`) |
-| `proxy/build.bat` | MSVC x86 no-CRT build (auto-finds VS via vswhere) |
-| `proxy/d3d9.def` | Exports `Direct3DCreate9` |
-| `proxy/proxy.ini` | Runtime config: `[Remix]` chain load, `[FFP]` AlbedoStage |
-| `extensions/skinning/README.md` | Guide for enabling skinning (late-stage) |
+| `src/comp/main.cpp` | DLL entry, module loading, initialization |
+| `src/comp/modules/renderer.cpp` | Draw call routing -- `on_draw_indexed_prim()` and `on_draw_primitive()` |
+| `src/comp/modules/renderer.hpp` | Renderer class, `drawcall_mod_context` for save/restore state |
+| `src/comp/modules/d3d9ex.cpp` | `IDirect3DDevice9` hook layer -- intercepts all 119 methods |
+| `src/comp/modules/d3d9ex.hpp` | D3D9 hook declarations |
+| `src/comp/modules/skinning.cpp` | Skinning module (vertex expansion, bone upload, FFP blending) |
+| `src/comp/modules/skinning.hpp` | Skinning class interface |
+| `src/comp/modules/diagnostics.cpp` | Diagnostic logging to `ffp_proxy.log` |
+| `src/comp/modules/diagnostics.hpp` | Diagnostics class interface |
+| `src/comp/modules/imgui.cpp` | ImGui debug overlay (F4 toggle) |
+| `src/shared/common/ffp_state.cpp` | FFP state tracker -- engage/disengage, matrix transforms, texture stages |
+| `src/shared/common/ffp_state.hpp` | `ffp_state` class with all state accessors |
+| `src/shared/common/config.cpp` | INI config parser for `remix-comp.ini` |
+| `src/shared/common/config.hpp` | Config structures: `ffp_settings`, `skinning_settings`, etc. |
+| `remix-comp.ini` (in `assets/`) | Runtime config: `[FFP.Registers]`, `[Skinning]`, `[Diagnostics]`, `[Remix]` |
+| `premake5.lua` | Build system (Premake5 + VS2022) |
 
-The codebase is plain C, no CRT, links only `kernel32.lib`. Uses `__declspec(naked)` relay thunks for the ~104 non-intercepted methods.
+The codebase is C++20, uses Premake5 for build generation, component module system for extensibility.
 
 ## What Needs to Change Per Game
 
-The top of `d3d9_device.c` has a `GAME-SPECIFIC` section with `#define`s that must be set based on RE findings:
+The `remix-comp.ini` file has a `[FFP.Registers]` section that must be set based on RE findings:
 
-```c
-#define VS_REG_VIEW_START       0   // First register of view matrix
-#define VS_REG_VIEW_END         4
-#define VS_REG_PROJ_START       4   // First register of projection matrix
-#define VS_REG_PROJ_END         8
-#define VS_REG_WORLD_START     16   // First register of world matrix
-#define VS_REG_WORLD_END       20
-// Bone defines below only matter when ENABLE_SKINNING=1 (off by default)
-#define VS_REG_BONE_THRESHOLD  20   // Registers at/beyond this are bone candidates
-#define VS_REGS_PER_BONE        3   // Registers per bone (3 = packed 4x3)
-#define VS_BONE_MIN_REGS        3   // Minimum register count for bone detection (1 bone)
-#define ENABLE_SKINNING         0   // Late-stage: set to 1 only after rigid FFP works
+```ini
+[FFP.Registers]
+ViewStart=0
+ViewEnd=4
+ProjStart=4
+ProjEnd=8
+WorldStart=16
+WorldEnd=20
+BoneThreshold=20
+RegsPerBone=3
+BoneMinRegs=3
 ```
 
-Beyond the defines, users may need to modify:
-- `WD_DrawIndexedPrimitive` — draw call routing (which draws get FFP vs shader pass-through)
-- `WD_DrawPrimitive` — UI/particle handling
-- `FFP_SetupLighting`, `FFP_SetupTextureStages`, `FFP_ApplyTransforms` — FFP render state and matrix configuration
-- `AlbedoStage` in proxy.ini — which texture stage holds the diffuse/albedo
+Beyond the INI config, users may need to modify:
+- `renderer.cpp` `on_draw_indexed_prim()` -- draw call routing (which draws get FFP vs shader pass-through)
+- `renderer.cpp` `on_draw_primitive()` -- UI/particle handling
+- `ffp_state.cpp` `setup_lighting()`, `setup_texture_stages()`, `apply_transforms()` -- FFP render state and matrix configuration
+- `AlbedoStage` in `remix-comp.ini` `[FFP]` section -- which texture stage holds the diffuse/albedo
 
 ## Porting Workflow
 
@@ -71,22 +78,22 @@ Follow these steps in order for ideal results. Each step depends on the previous
 
 ### Step 1a: Static Analysis
 
-Run the template's analysis scripts to understand the game's D3D9 usage:
+Run the analysis scripts to understand the game's D3D9 usage:
 
 ```bash
-python rtx_remix_tools/dx/dx9_ffp_template/scripts/find_d3d_calls.py "<game.exe>"
-python rtx_remix_tools/dx/dx9_ffp_template/scripts/find_vs_constants.py "<game.exe>"
-python rtx_remix_tools/dx/dx9_ffp_template/scripts/decode_vtx_decls.py "<game.exe>" --scan
-python rtx_remix_tools/dx/dx9_ffp_template/scripts/find_device_calls.py "<game.exe>"
+python rtx_remix_tools/dx/scripts/find_d3d_calls.py "<game.exe>"
+python rtx_remix_tools/dx/scripts/find_vs_constants.py "<game.exe>"
+python rtx_remix_tools/dx/scripts/decode_vtx_decls.py "<game.exe>" --scan
+python rtx_remix_tools/dx/scripts/find_device_calls.py "<game.exe>"
 ```
 
 Key things to find:
-- How the game obtains its D3D device (Direct3DCreate9 call site → CreateDevice call)
+- How the game obtains its D3D device (Direct3DCreate9 call site -> CreateDevice call)
 - Which functions call `SetVertexShaderConstantF` and with what register/count patterns
 - What vertex declaration formats the game uses (BLENDWEIGHT/BLENDINDICES = skinning)
 - Where the main rendering loop/draw calls live
 
-### Step 1b: D3D9 Frame Trace (recommended — fastest path to answers)
+### Step 1b: D3D9 Frame Trace (recommended -- fastest path to answers)
 
 Deploy the D3D9 tracer (`graphics/directx/dx9/tracer/bin/`) to the game directory, capture 2 frames, then run analysis. This is the fastest way to answer all three porting questions without manual RE:
 
@@ -98,11 +105,11 @@ python -m graphics.directx.dx9.tracer analyze <trace.jsonl> --vtx-formats
 python -m graphics.directx.dx9.tracer analyze <trace.jsonl> --render-passes --pipeline-diagram
 ```
 
-- `--shader-map` — CTAB disassembly shows named parameters and register mappings (e.g. `WorldViewProj c0 4`, `WorldView c4 3`, `FogValue c8 1`). Directly reveals which constant registers hold View, Projection, and World matrices.
-- `--const-provenance` — shows which `SetVertexShaderConstantF` call set each register at each draw
-- `--vtx-formats` — groups draws by vertex declaration with full element breakdown (POSITION, NORMAL, BLENDWEIGHT, etc.)
-- `--render-passes` + `--pipeline-diagram` — shows the render pipeline structure and pass types
-- `--classify-draws` — auto-tags draws by render state (alpha, ztest, fog, etc.)
+- `--shader-map` -- CTAB disassembly shows named parameters and register mappings (e.g. `WorldViewProj c0 4`, `WorldView c4 3`, `FogValue c8 1`). Directly reveals which constant registers hold View, Projection, and World matrices.
+- `--const-provenance` -- shows which `SetVertexShaderConstantF` call set each register at each draw
+- `--vtx-formats` -- groups draws by vertex declaration with full element breakdown (POSITION, NORMAL, BLENDWEIGHT, etc.)
+- `--render-passes` + `--pipeline-diagram` -- shows the render pipeline structure and pass types
+- `--classify-draws` -- auto-tags draws by render state (alpha, ztest, fog, etc.)
 
 ### Step 2: Discover VS Constant Layout
 
@@ -124,127 +131,114 @@ This captures: startRegister, Vector4fCount, and the actual float data (first 4 
 - View matrix: changes with camera movement, contains camera orientation
 - Projection matrix: contains aspect ratio and FOV, rarely changes
 - World matrix: changes per object, contains position/rotation/scale
-- Look for 4×4 matrices (16 floats = 4 registers). Row 3 often has `[0, 0, 0, 1]` for affine transforms.
+- Look for 4x4 matrices (16 floats = 4 registers). Row 3 often has `[0, 0, 0, 1]` for affine transforms.
 
-### Step 3: Copy Template and Update Defines
+### Step 3: Copy comp/ and Configure
 
-1. Copy `rtx_remix_tools/dx/dx9_ffp_template/` to `patches/<GameName>/`
-2. Update the `GAME-SPECIFIC` section in `proxy/d3d9_device.c` with discovered register values
-3. Update `kb.h` with any function signatures, structs, or globals discovered
+1. Copy `rtx_remix_tools/dx/remix-comp/src/comp/` to `patches/<GameName>/proxy/comp/`
+2. Copy `remix-comp.ini` from `assets/` to `patches/<GameName>/proxy/`
+3. Edit `remix-comp.ini` `[FFP.Registers]` section with discovered register values
+4. Use the Premake5 template (`premake5_game.lua.template`) for the game-specific build
+5. Update `kb.h` with any function signatures, structs, or globals discovered
 
 ### Step 4: Build and Deploy
 
 ```bash
 cd patches/<GameName>/proxy
-build.bat
+# Generate VS2022 project files
+premake5 vs2022
+# Build with Visual Studio or MSBuild
 ```
 
-Copy `d3d9.dll` + `proxy.ini` to the game directory. If using Remix, also place `d3d9_remix.dll` there.
+Deploy to game directory: `.asi` file + `remix-comp.ini` + `dinput8.dll` (Ultimate ASI Loader). If using Remix, also place `d3d9_remix.dll` there.
 
-### Step 5: Diagnose with Log
+### Step 5: Diagnose with Log and ImGui
 
-The proxy writes `ffp_proxy.log` in the game directory. After a 50-second delay, it logs 3 frames of detailed draw call data:
+The proxy writes `ffp_proxy.log` in the game directory. After a configurable delay (default 50 seconds via `[Diagnostics] DelayMs`), it logs frames of detailed draw call data:
 
 - **VS regs written**: shows which constant registers the game actually fills
 - **Vertex declarations**: what vertex elements each draw uses (POSITION, NORMAL, TEXCOORD, BLENDWEIGHT, etc.)
 - **Draw calls**: primitive type, vertex count, index count, textures bound per stage
 - **Matrices**: actual View/Proj/World values being applied
 
-Use this to iterate: wrong matrices → re-check register mapping. Missing textures → adjust AlbedoStage. Objects at wrong positions → world matrix register is wrong.
+Press **F4** to open the ImGui debug overlay, which shows the FFP debug tab with live draw call stats and state information.
+
+Use this to iterate: wrong matrices -> re-check register mapping. Missing textures -> adjust AlbedoStage. Objects at wrong positions -> world matrix register is wrong.
 
 ## Architecture Details for Editing
 
 ### Code Map: Edit vs Do-Not-Touch
 
-The core file `proxy/d3d9_device.c` (~1476 lines) has clear zones. **Only edit sections marked YES or MAYBE:**
+**Only edit sections marked YES or MAYBE:**
 
-| Section | Approx Lines | Edit Per-Game? |
-|---------|-------------|----------------|
-| `VS_REG_*` and `ENABLE_SKINNING` defines | 29–53 | **YES** — set register layout (skinning OFF by default) |
-| D3D9 constants, enums, vtable slot indices | 54–257 | NO — fixed D3D9 API values |
-| `WrappedDevice` struct | 258–337 | NO — internal state bookkeeping |
-| Shader addref/release helpers | 338–366 | NO — COM ref counting |
-| `FFP_SetupLighting`, `FFP_SetupTextureStages`, `FFP_ApplyTransforms` | 367–486 | MAYBE — tweak if game needs different FFP state |
-| `#include "d3d9_skinning.h"` (conditional) | 477–481 | NO — included only when ENABLE_SKINNING=1 |
-| `FFP_Engage` / `FFP_Disengage` | 487–559 | NO — enter/leave FFP mode |
-| IUnknown + relay thunks | 560–683 | NO — naked ASM forwarding, never edit |
-| `WD_Reset` / `WD_Present` / `WD_BeginScene` / `WD_EndScene` | 684–780 | NO — frame/scene lifecycle |
-| `WD_DrawPrimitive` | 781–824 | **YES** — draw routing for non-indexed draws |
-| `WD_DrawIndexedPrimitive` | 825–993 | **YES** — main draw routing (see decision tree below) |
-| `WD_SetVertexShaderConstantF` | 995–1085 | MAYBE — dirty tracking uses `VS_REG_*` |
-| `WD_SetVertexDeclaration` | 1134–1293 | MAYBE — element parsing; add extra usages if needed |
-| `WrappedDevice_Create` + vtable wiring | 1297–1476 | NO — initialization |
+| File / Section | Edit Per-Game? |
+|----------------|----------------|
+| `remix-comp.ini` `[FFP.Registers]` | **YES** -- set register layout |
+| `remix-comp.ini` `[Skinning] Enabled=` | **YES** -- only after rigid FFP works |
+| `remix-comp.ini` `[FFP] AlbedoStage=` | **YES** -- set albedo texture stage |
+| `renderer.cpp` `on_draw_indexed_prim()` | **YES** -- main draw routing |
+| `renderer.cpp` `on_draw_primitive()` | **YES** -- draw routing for non-indexed draws |
+| `ffp_state.cpp` `setup_lighting()`, `setup_texture_stages()`, `apply_transforms()` | MAYBE -- tweak if game needs different FFP state |
+| `ffp_state.cpp` `on_set_vertex_declaration()` | MAYBE -- element parsing; add extra usages if needed |
+| `ffp_state.cpp` `on_set_vs_const_f()` | MAYBE -- dirty tracking |
+| `d3d9ex.cpp` hook implementations | NO -- infrastructure |
+| `ffp_state.cpp` `engage()` / `disengage()` | NO -- enter/leave FFP mode |
+| `skinning.cpp` | NO -- infrastructure (no per-game edits) |
+| `diagnostics.cpp` | NO -- logging infrastructure |
+| `imgui.cpp` | NO -- debug overlay |
 
 ### DrawIndexedPrimitive Decision Tree
 
-This is the routing logic that determines which draws get FFP-converted vs passed through with shaders:
+This is the routing logic in `renderer.cpp` `on_draw_indexed_prim()`:
 
 ```
 viewProjValid?
-├─ NO  → shader passthrough (transforms not captured yet)
-└─ YES
-    ├─ curDeclIsSkinned?
-    │   ├─ YES + ENABLE_SKINNING=1
-    │   │   ├─ skinExpDecl exists + expansion succeeds?
-    │   │   │   ├─ YES → FFP_Engage + FFP_UploadBones + draw expanded VB
-    │   │   │   └─ NO  → shader passthrough (fallback)
-    │   │   └─ (never reached if ENABLE_SKINNING=1)
-    │   └─ YES + ENABLE_SKINNING=0 → shader passthrough
-    └─ NOT skinned
-        ├─ !curDeclHasNormal → shader passthrough (HUD/UI)
-        └─ hasNormal → FFP_Engage + rigid FFP draw
++-- NO  -> shader passthrough (transforms not captured yet)
++-- YES
+    +-- curDeclIsSkinned?
+    |   +-- YES + skinning module -> skinning::draw_skinned_dip()
+    |   +-- YES + no skinning     -> shader passthrough
+    +-- NOT skinned
+        +-- !curDeclHasNormal -> shader passthrough (HUD/UI)
+        +-- hasNormal -> ffp_state::engage + rigid FFP draw
 ```
 
 **Common per-game changes to this tree:**
-- Game's world geometry omits NORMAL → remove or change the `!curDeclHasNormal` filter
-- Game has special passes (shadow, reflection) → filter by shader pointer, render target, or vertex count
-- Game draws UI with DrawIndexedPrimitive + NORMAL → add a filter (e.g. check stride or texture)
+- Game's world geometry omits NORMAL -> remove or change the `!cur_decl_has_normal()` filter
+- Game has special passes (shadow, reflection) -> filter by shader pointer, render target, or vertex count
+- Game draws UI with DrawIndexedPrimitive + NORMAL -> add a filter (e.g. check stride or texture)
 
 ### DrawPrimitive Decision Tree
 
 ```
 viewProjValid AND lastDecl AND !curDeclHasPosT AND !curDeclIsSkinned?
-├─ YES → FFP_Engage (world-space particles, non-indexed geometry)
-└─ NO  → shader passthrough (screen-space UI, POSITIONT, no decl, skinned)
++-- YES -> ffp_state::engage (world-space particles, non-indexed geometry)
++-- NO  -> shader passthrough (screen-space UI, POSITIONT, no decl, skinned)
 ```
 
 ### Skinning Data Flow
 
-When `ENABLE_SKINNING=1`, skinned meshes flow through these stages:
+When skinning is enabled via `[Skinning] Enabled=1` in `remix-comp.ini`:
 
-1. **`WD_SetVertexDeclaration`** — Parses `D3DVERTEXELEMENT9` array. If both BLENDWEIGHT and BLENDINDICES are present, sets `curDeclIsSkinned=1` and captures per-element byte offsets: `curDeclPosOff`, `curDeclBlendWeightOff`, `curDeclBlendIndicesOff`, `curDeclNormalOff`, `curDeclTexcoordOff` and their types. Also infers `curDeclNumWeights` from the BLENDWEIGHT element type.
+1. **`ffp_state::on_set_vertex_declaration()`** -- Parses `D3DVERTEXELEMENT9` array. If both BLENDWEIGHT and BLENDINDICES are present, sets `cur_decl_is_skinned_` and captures per-element byte offsets and types.
 
-2. **`WD_SetVertexShaderConstantF`** — When a write hits registers ≥ `VS_REG_BONE_THRESHOLD` with count ≥ `VS_BONE_MIN_REGS` and divisible by `VS_REGS_PER_BONE`, stores `boneStartReg` and `numBones`.
+2. **`ffp_state::on_set_vs_const_f()`** -- When a write hits registers >= `BoneThreshold` with count >= `BoneMinRegs` and divisible by `RegsPerBone`, stores `bone_start_reg_` and `num_bones_`.
 
-3. **`WD_DrawIndexedPrimitive`** — Sees `curDeclIsSkinned=1`, calls `SkinVB_GetExpanded()` which:
-   - Locks the game's source vertex buffer
-   - Calls `expand_skin_vertex()` per vertex → decodes compressed normals/UVs, writes fixed 48-byte layout
-   - Caches the result by hash key (source VB ptr + baseVtx + count + stride + decl ptr)
-   - On cache hit, returns the previously expanded buffer (no re-expansion)
+3. **`skinning::draw_skinned_dip()`** -- Locks the game's source vertex buffer, calls `expand_skin_vertex()` per vertex, caches results by hash key.
 
-4. **`FFP_UploadBones`** — Reads bone matrices from `vsConst[]` starting at `boneStartReg`, transposes each 4×3 → 4×4, uploads via `SetTransform(WORLDMATRIX(i))`. Sets `D3DRS_VERTEXBLEND` and `D3DRS_INDEXEDVERTEXBLENDENABLE`. Marks `worldDirty=1` (bone[0] clobbers WORLDMATRIX(0)).
+4. **`skinning::upload_bones()`** -- Reads bone matrices from VS constants, transposes, uploads via `SetTransform(WORLDMATRIX(i))`. Sets `D3DRS_VERTEXBLEND` and `D3DRS_INDEXEDVERTEXBLENDENABLE`.
 
-5. **Draw** — The expanded VB + shared `skinExpDecl` are bound, draw executes with FFP indexed vertex blending. After the draw, original VB/decl/textures are restored.
-
-All of this is infrastructure (no per-game edits). The only game-specific parts are the `VS_REG_BONE_*` defines and `ENABLE_SKINNING` toggle.
-
-### Skinning Stability
-
-After skinning is enabled and working, watch for these instabilities:
-
-- **Flickering skinned meshes**: cache invalidation mismatch — the hash key may not capture enough state (e.g. animation frame changes vertex data without changing VB ptr). Add stride or frame counter to the hash if needed.
-- **Bone count wrong**: `numBones` detected from register count / `VS_REGS_PER_BONE`. If the game packs bones differently (e.g. 4x4 instead of 4x3), adjust `VS_REGS_PER_BONE`.
-- **First few frames corrupt**: device not ready at `CreateVertexDeclaration` time — check log for `skinExpDecl: 00000000`. Defer creation to first draw if needed.
+5. **Draw** -- The expanded VB + shared declaration are bound, draw executes with FFP indexed vertex blending. After the draw, original VB/decl/textures are restored.
 
 ### Key Component Notes
 
-- **FFP_Engage / FFP_Disengage**: `FFP_Engage` NULLs shaders, applies transforms, sets up texture stages. `FFP_Disengage` restores the game's shaders. The proxy avoids redundant state changes between consecutive FFP draw calls.
-- **FFP_ApplyTransforms**: Reads from the `vsConst[]` array using the `VS_REG_*` defines and calls `SetTransform` with transposed matrices (D3D9 FFP expects row-major).
-- **Relay thunks**: The 104 non-intercepted methods use `__declspec(naked)` ASM to swap `this` and jump directly to the real vtable. Zero overhead. Don't touch these unless you need to intercept a new method.
+- **`ffp_state::engage()` / `disengage()`**: `engage()` NULLs shaders, applies transforms, sets up texture stages. `disengage()` restores the game's shaders. Avoids redundant state changes between consecutive FFP draw calls.
+- **`ffp_state::apply_transforms()`**: Reads from the VS constant array using the INI register settings and calls `SetTransform` with transposed matrices (D3D9 FFP expects row-major).
+- **ImGui overlay (F4)**: Shows live draw call stats, FFP conversion counts, and shader pass-through counts for real-time debugging.
 
-## Analysis Scripts — Entry Points, Not Endpoints
+## Analysis Scripts -- Entry Points, Not Endpoints
 
-The scripts below are fast first-pass scanners. They surface candidate addresses and call sites to give you a starting point. They do **not** replace deep analysis — always follow up with `retools` and `livetools` to understand what is actually happening.
+The scripts below are fast first-pass scanners. They surface candidate addresses and call sites to give you a starting point. They do **not** replace deep analysis -- always follow up with `retools` and `livetools` to understand what is actually happening.
 
 | Script | What it surfaces |
 |--------|------------------|
@@ -252,19 +246,21 @@ The scripts below are fast first-pass scanners. They surface candidate addresses
 | `scripts/find_vs_constants.py <game.exe>` | `SetVertexShaderConstantF` call sites and register/count args |
 | `scripts/find_device_calls.py <game.exe>` | Device vtable call patterns and device pointer refs |
 | `scripts/find_vtable_calls.py <game.exe>` | D3DX constant table usage and D3D9 vtable calls |
-| `scripts/decode_vtx_decls.py <game.exe> --scan` | Vertex declaration formats (BLENDWEIGHT/BLENDINDICES → skinning) |
+| `scripts/decode_vtx_decls.py <game.exe> --scan` | Vertex declaration formats (BLENDWEIGHT/BLENDINDICES -> skinning) |
 | `scripts/scan_d3d_region.py <game.exe> 0xSTART 0xEND` | Map all D3D9 vtable calls in a code region |
+
+Scripts are at `rtx_remix_tools/dx/scripts/`.
 
 ## Common Pitfalls
 
-- **Matrices look wrong**: D3D9 FFP `SetTransform` expects row-major matrices. The proxy transposes them. If the game stores matrices column-major in VS constants (the common case), the transpose is correct. If the game is already row-major, remove the transpose in `FFP_ApplyTransforms`.
-- **Everything is white/black**: The game's albedo texture might be on stage 1+ instead of stage 0. Set `AlbedoStage` in proxy.ini, or trace `SetTexture` calls to find the pattern.
-- **Some objects render, others don't**: DrawPrimitive routes by vertex declaration — world-space draws (have decl, no POSITIONT, not skinned) engage FFP; screen-space/no-decl pass through. DrawIndexedPrimitive additionally filters out draws without NORMAL as likely HUD/UI. If world geometry is missing, check whether its vertex decl has NORMAL and whether `viewProjValid` is true when those draws happen.
-- **Skinned meshes are invisible**: Enable skinning with `#define ENABLE_SKINNING 1`. Check the log for `skinExpDecl: 00000000` — if NULL, `CreateVertexDeclaration` failed (device may not have been ready). Also verify `boneStartReg` and `numBones` are non-zero in DIP log entries.
-- **Game crashes on startup**: The chain-loaded Remix DLL might not be present. Set `Enabled=0` in proxy.ini `[Remix]` section to test without Remix first.
+- **Matrices look wrong**: D3D9 FFP `SetTransform` expects row-major matrices. The proxy transposes them. If the game stores matrices column-major in VS constants (the common case), the transpose is correct. If the game is already row-major, remove the transpose in `ffp_state::apply_transforms()`.
+- **Everything is white/black**: The game's albedo texture might be on stage 1+ instead of stage 0. Set `AlbedoStage` in `remix-comp.ini` `[FFP]` section, or trace `SetTexture` calls to find the pattern.
+- **Some objects render, others don't**: `on_draw_primitive()` routes by vertex declaration -- world-space draws (have decl, no POSITIONT, not skinned) engage FFP; screen-space/no-decl pass through. `on_draw_indexed_prim()` additionally filters out draws without NORMAL as likely HUD/UI. If world geometry is missing, check whether its vertex decl has NORMAL and whether `view_proj_valid()` is true when those draws happen.
+- **Skinned meshes are invisible**: Enable skinning with `[Skinning] Enabled=1` in `remix-comp.ini`. Check the log for bone count and declaration issues.
+- **Game crashes on startup**: The chain-loaded Remix DLL might not be present. Set `Enabled=0` in `remix-comp.ini` `[Remix]` section to test without Remix first.
 - **Geometry at origin / piled up**: World matrix register mapping is wrong. Every object gets identity world transform. Re-examine VS constant writes.
-- **Characters' world geometry shifts after a skinned draw**: After uploading bone matrices, WORLDMATRIX(0) is clobbered by bone[0]. The proxy sets `worldDirty=1` so `FFP_ApplyTransforms` re-applies the world matrix on the next rigid draw. If this still causes issues, the bone start register may overlap with the world matrix register range.
+- **Characters' world geometry shifts after a skinned draw**: After uploading bone matrices, WORLDMATRIX(0) is clobbered by bone[0]. The proxy sets world dirty so `apply_transforms()` re-applies the world matrix on the next rigid draw. If this still causes issues, the bone threshold register may overlap with the world matrix register range.
 
 ## Notes
-- Do not change the time frame of the logging (unless specified by the user). The delay is important to ensure the user is able to get into the game with actual geometry being drawn before the logs start, otherwise they may get lost in the initial burst of draw calls during loading.
+- Do not change the diagnostic logging delay (unless specified by the user). The delay is important to ensure the user is able to get into the game with actual geometry being drawn before the logs start, otherwise they may get lost in the initial burst of draw calls during loading.
 - Tell the user when you want to launch a game and have them interact with it for logging or hooking purposes. They MUST interact with the game to have this task be useful.

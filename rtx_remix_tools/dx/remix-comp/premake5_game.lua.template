@@ -1,0 +1,108 @@
+-- Per-game premake5.lua template for remix-comp
+-- Copy this to patches/<GameName>/proxy/ alongside your comp/ directory.
+-- Update REMIX_COMP_SRC and GAME_NAME below.
+
+-- Path to the remix-comp base directory (relative to this file)
+REMIX_COMP_SRC = "../../../../rtx_remix_tools/dx/remix-comp"
+
+-- Your game's project name
+local GAME_NAME = "MyGame"
+
+dofile(REMIX_COMP_SRC .. "/premake5_shared.lua")
+
+workspace(GAME_NAME .. "-comp")
+
+	startproject(GAME_NAME .. "-comp")
+	location "./build"
+	objdir "%{wks.location}/obj"
+	targetdir "%{wks.location}/bin/%{cfg.buildcfg}"
+
+	configurations {
+		"Debug",
+		"Release",
+	}
+
+	platforms "Win32"
+	architecture "x86"
+
+	cppdialect "C++20"
+	systemversion "latest"
+	symbols "On"
+	staticruntime "On"
+
+	disablewarnings {
+		"4239", "4369", "4505", "4996", "5311",
+		"6001", "6385", "6386", "26812"
+	}
+
+	defines {
+		"_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS"
+	}
+
+	filter "platforms:Win*"
+		defines { "_WINDOWS", "WIN32" }
+	filter {}
+
+	filter "configurations:Release"
+		optimize "Full"
+		buildoptions { "/GL" }
+		defines { "NDEBUG" }
+		flags { "MultiProcessorCompile", "LinkTimeOptimization", "No64BitChecks", "FatalCompileWarnings" }
+	filter {}
+
+	filter "configurations:Debug"
+		optimize "Debug"
+		defines { "DEBUG", "_DEBUG" }
+		flags { "MultiProcessorCompile", "No64BitChecks" }
+	filter {}
+
+
+-- Game-specific comp project
+project(GAME_NAME .. "-comp")
+	kind "SharedLib"
+	language "C++"
+
+	linkoptions { "/PDBCompress" }
+
+	pchheader "std_include.hpp"
+	pchsource "comp/std_include.cpp"
+
+	files {
+		"./comp/**.hpp",
+		"./comp/**.cpp",
+	}
+
+	includedirs {
+		"%{prj.location}/src",
+		REMIX_COMP_SRC .. "/src",
+		".",
+	}
+
+	links { "_shared" }
+
+	resincludedirs { "$(ProjectDir)src" }
+	buildoptions { "/Zm100 -Zm100" }
+
+	-- Deploy to game directory if env var is set
+	filter "configurations:Debug or configurations:Release"
+		if(os.getenv("REMIX_COMP_ROOT")) then
+			targetdir(os.getenv("REMIX_COMP_ROOT") .. "/plugins")
+			debugdir(os.getenv("REMIX_COMP_ROOT"))
+			if(os.getenv("REMIX_COMP_ROOT_EXE")) then
+				debugcommand(os.getenv("REMIX_COMP_ROOT") .. "/" .. os.getenv("REMIX_COMP_ROOT_EXE"))
+			end
+		end
+	filter {}
+
+	flags { "UndefinedIdentifiers" }
+	warnings "Extra"
+
+	postbuildcommands {
+		"MOVE /Y \"$(TargetDir)" .. GAME_NAME .. "-comp.dll\" \"$(TargetDir)" .. GAME_NAME .. "-comp.asi\"",
+	}
+
+	dependencies.imports()
+
+	group "Dependencies"
+		dependencies.projects()
+	group ""
