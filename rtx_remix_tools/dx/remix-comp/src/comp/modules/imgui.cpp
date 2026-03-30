@@ -3,6 +3,7 @@
 
 #include "imgui_internal.h"
 #include "renderer.hpp"
+#include "tracer.hpp"
 #include "shared/common/imgui_helper.hpp"
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/config.hpp"
@@ -335,6 +336,96 @@ namespace comp
 
 	// -----------
 
+	void tab_tracer()
+	{
+		auto* t = tracer::get();
+		if (!t)
+		{
+			ImGui::TextColored(ImVec4(1, 0, 0, 1), "Tracer module not loaded");
+			return;
+		}
+
+		SPACEY16;
+
+		// Status
+		if (t->is_capturing())
+		{
+			ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "CAPTURING");
+			ImGui::SameLine();
+			ImGui::Text("Frame %d / %d  (%d calls)",
+				t->frames_captured(), t->frames_to_capture(), t->sequence());
+			ImGui::ProgressBar(static_cast<float>(t->frames_captured()) / t->frames_to_capture());
+		}
+		else
+		{
+			ImGui::Text("Status: IDLE");
+		}
+
+		SPACEY8;
+		ImGui::Separator();
+		SPACEY8;
+
+		// Controls
+		static int frames = 2;
+		ImGui::SliderInt("Frames to capture", &frames, 1, 10);
+
+		static int bt_depth = 8;
+		ImGui::SliderInt("Backtrace depth", &bt_depth, 0, 16);
+
+		SPACEY8;
+
+		// Editable filename
+		static char filename_buf[256] = {};
+		static bool filename_initialized = false;
+		if (!filename_initialized || (!t->is_capturing() && filename_buf[0] == '\0'))
+		{
+			auto default_name = tracer::generate_default_filename();
+			strncpy_s(filename_buf, default_name.c_str(), sizeof(filename_buf) - 1);
+			filename_initialized = true;
+		}
+
+		ImGui::InputText("Filename", filename_buf, sizeof(filename_buf));
+		ImGui::SameLine();
+		ImGui::TextDisabled(".jsonl");
+
+		SPACEY8;
+
+		ImGui::BeginDisabled(t->is_capturing());
+		if (ImGui::Button("Start Capture", ImVec2(200, 0)))
+		{
+			t->set_backtrace_depth(bt_depth);
+			std::string fname = filename_buf;
+			if (fname.empty())
+				fname = tracer::generate_default_filename();
+			t->start_capture(frames, fname);
+			filename_buf[0] = '\0';
+			filename_initialized = false;
+		}
+		ImGui::EndDisabled();
+
+		ImGui::SameLine();
+
+		ImGui::BeginDisabled(!t->is_capturing());
+		if (ImGui::Button("Stop Capture", ImVec2(200, 0)))
+			t->stop_capture();
+		ImGui::EndDisabled();
+
+		// Last capture info
+		SPACEY16;
+		if (!t->last_capture_path().empty())
+		{
+			ImGui::Separator();
+			SPACEY8;
+			ImGui::Text("Last capture:");
+			ImGui::Text("  File: %s", t->last_capture_path().c_str());
+			ImGui::Text("  Size: %.1f KB", t->last_capture_size() / 1024.0);
+			ImGui::Text("  Records: %d", t->last_capture_records());
+			ImGui::Text("  Output dir: %s", t->output_dir().c_str());
+		}
+	}
+
+	// -----------
+
 	void imgui::devgui()
 	{
 		ImGui::SetNextWindowSize(ImVec2(900, 800), ImGuiCond_FirstUseEver);
@@ -387,6 +478,7 @@ namespace comp
 			ImGui::PopStyleColor();
 			ImGui::PopStyleVar(1);
 			ADD_TAB("FFP", tab_ffp);
+			ADD_TAB("Tracer", tab_tracer);
 			ADD_TAB("Dev", tab_dev);
 			ADD_TAB("About", tab_about);
 			ImGui::EndTabBar();

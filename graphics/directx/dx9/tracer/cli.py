@@ -35,12 +35,18 @@ from pathlib import Path
 
 
 def cmd_codegen(args: argparse.Namespace) -> None:
-    from .d3d9_methods import generate_hooks_inc, SLOT_COUNT, max_argc
+    from .d3d9_methods import generate_hooks_inc, generate_cpp_dispatch_inc, SLOT_COUNT, max_argc
 
-    code = generate_hooks_inc()
+    if args.format == "cpp":
+        code = generate_cpp_dispatch_inc()
+        label = "C++ dispatch"
+    else:
+        code = generate_hooks_inc()
+        label = "C hooks"
+
     if args.output:
         Path(args.output).write_text(code)
-        print(f"Generated {args.output} ({SLOT_COUNT} methods, max {max_argc()} args)")
+        print(f"Generated {args.output} ({label}, {SLOT_COUNT} methods, max {max_argc()} args)")
     else:
         sys.stdout.write(code)
 
@@ -124,6 +130,8 @@ def build_parser() -> argparse.ArgumentParser:
     # codegen
     cg = sub.add_parser("codegen", help="Generate d3d9_trace_hooks.inc")
     cg.add_argument("--output", "-o", default=None, help="Output path (default: stdout)")
+    cg.add_argument("--format", "-f", choices=["c", "cpp"], default="c",
+                    help="Output format: c (standalone proxy) or cpp (remix-comp module)")
     cg.set_defaults(func=cmd_codegen)
 
     # trigger

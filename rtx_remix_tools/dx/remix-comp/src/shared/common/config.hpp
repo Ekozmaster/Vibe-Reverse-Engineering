@@ -55,6 +55,12 @@ namespace shared::common
 			std::string preload_dll;
 		} chain;
 
+		struct tracer_settings
+		{
+			int backtrace_depth = 8;
+			std::string output_dir = "captures";
+		} tracer;
+
 	private:
 		std::string ini_path_;
 		bool loaded_ = false;

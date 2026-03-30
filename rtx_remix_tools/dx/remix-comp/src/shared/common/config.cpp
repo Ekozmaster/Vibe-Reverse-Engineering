@@ -77,6 +77,10 @@ namespace shared::common
 		diagnostics.delay_ms = get_int("Diagnostics", "DelayMs", 50000);
 		diagnostics.log_frames = get_int("Diagnostics", "LogFrames", 3);
 
+		// [Tracer]
+		tracer.backtrace_depth = get_int("Tracer", "BacktraceDepth", 8);
+		tracer.output_dir = get_string("Tracer", "OutputDir", "captures");
+
 		log("Config", std::format("Loaded from: {}", ini_path_));
 		log("Config", std::format("FFP={} AlbedoStage={} View=c{}-c{} Proj=c{}-c{} World=c{}-c{}",
 			ffp.enabled ? 1 : 0, ffp.albedo_stage,

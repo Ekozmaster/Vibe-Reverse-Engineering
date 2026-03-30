@@ -4,6 +4,7 @@
 #include "modules/renderer.hpp"
 #include "modules/diagnostics.hpp"
 #include "modules/skinning.hpp"
+#include "modules/tracer.hpp"
 #include "shared/common/remix_api.hpp"
 #include "shared/common/config.hpp"
 
@@ -88,6 +89,7 @@ namespace comp
 		shared::common::remix_api::initialize(nullptr, nullptr, nullptr, false);
 
 		// Core modules
+		shared::common::loader::module_loader::register_module(std::make_unique<tracer>());
 		shared::common::loader::module_loader::register_module(std::make_unique<imgui>());
 		shared::common::loader::module_loader::register_module(std::make_unique<renderer>());
 
