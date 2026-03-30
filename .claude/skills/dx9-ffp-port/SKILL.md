@@ -120,10 +120,10 @@ cd rtx_remix_tools/dx/remix-comp
 build.bat release --name <GameName> --comp ..\..\..\..\patches\<GameName>\proxy\comp
 ```
 
-The build produces `<GameName>-comp.asi` in `build/bin/release/`. Deploy:
+The build produces `<GameName>-comp.asi` and `dinput8.dll` in `patches/<GameName>/build/release/`. Deploy:
 - `<GameName>-comp.asi` to the game directory (or `plugins/` subfolder)
+- `dinput8.dll` to the game directory (copied automatically by build)
 - `remix-comp.ini` to the game directory
-- `dinput8.dll` (ASI loader) to the game directory
 - `d3d9_remix.dll` to the game directory if using Remix
 
 ### Step 5: Diagnose with Log and ImGui

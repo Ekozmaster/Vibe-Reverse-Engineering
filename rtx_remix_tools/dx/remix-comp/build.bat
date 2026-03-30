@@ -15,6 +15,7 @@ set "ROOT=%~dp0"
 set "CONFIG=release"
 set "NAME=remix-comp"
 set "COMP_DIR=%ROOT%src\comp"
+set "CUSTOM_COMP=0"
 
 :: Parse args
 :parse_args
@@ -22,7 +23,7 @@ if "%~1"=="" goto :args_done
 if /i "%~1"=="release" ( set "CONFIG=release" & shift & goto :parse_args )
 if /i "%~1"=="debug"   ( set "CONFIG=debug"   & shift & goto :parse_args )
 if /i "%~1"=="--name"  ( set "NAME=%~2-comp"  & shift & shift & goto :parse_args )
-if /i "%~1"=="--comp"  ( set "COMP_DIR=%~2"   & shift & shift & goto :parse_args )
+if /i "%~1"=="--comp"  ( set "COMP_DIR=%~2" & set "CUSTOM_COMP=1" & shift & shift & goto :parse_args )
 echo Unknown argument: %~1
 exit /b 1
 :args_done
@@ -54,11 +55,22 @@ set "DEPS=%ROOT%deps"
 set "OUT=%ROOT%build\bin\%CONFIG%"
 set "OBJ=%ROOT%build\obj\%CONFIG%"
 
+:: Per-game output: .asi goes to the game's patches folder when --comp is custom
+if "!CUSTOM_COMP!"=="1" (
+    for %%G in ("!COMP_DIR!\..\..") do set "GAME_DIR=%%~fG"
+    set "GAME_OUT=!GAME_DIR!\build\!CONFIG!"
+    set "GAME_OBJ=!GAME_DIR!\build\obj\!CONFIG!"
+) else (
+    set "GAME_OUT=!OUT!"
+    set "GAME_OBJ=!OBJ!\comp"
+)
+
 mkdir "%OUT%" 2>nul
 mkdir "%OBJ%\minhook" 2>nul
 mkdir "%OBJ%\imgui" 2>nul
 mkdir "%OBJ%\shared" 2>nul
-mkdir "%OBJ%\comp" 2>nul
+mkdir "%GAME_OUT%" 2>nul
+mkdir "%GAME_OBJ%" 2>nul
 
 :: Include paths
 set "INC=/I"%SRC%" /I"%DEPS%\bridge_api" /I"%DEPS%\dxsdk\Include" /I"%DEPS%\imgui" /I"%DEPS%\minhook\include""
@@ -83,7 +95,7 @@ if /i "%CONFIG%"=="release" (
 echo.
 echo === remix-comp build ===
 echo Config:  %CONFIG%
-echo Output:  %NAME%.asi
+echo Output:  %GAME_OUT%\%NAME%.asi
 echo CompDir: %COMP_DIR%
 echo.
 
@@ -163,8 +175,8 @@ echo [4/4] %NAME%
 
 :: Create PCH
 cl /nologo /c %CF% %INC% /I"%COMP_DIR%\.." ^
-    /Yc"std_include.hpp" /Fp"%OBJ%\comp\comp.pch" ^
-    /Fo"%OBJ%\comp\std_include.obj" ^
+    /Yc"std_include.hpp" /Fp"%GAME_OBJ%\comp.pch" ^
+    /Fo"%GAME_OBJ%\std_include.obj" ^
     "%COMP_DIR%\std_include.cpp"
 if errorlevel 1 goto :fail
 
@@ -177,16 +189,16 @@ for /r "%COMP_DIR%" %%f in (*.cpp) do (
 )
 
 cl /nologo /c %CF% %INC% /I"%COMP_DIR%\.." ^
-    /Yu"std_include.hpp" /Fp"%OBJ%\comp\comp.pch" ^
-    /Fo"%OBJ%\comp\\" ^
+    /Yu"std_include.hpp" /Fp"%GAME_OBJ%\comp.pch" ^
+    /Fo"%GAME_OBJ%\\" ^
     %COMP_SRCS%
 if errorlevel 1 goto :fail
 
 :: Link DLL
 link /nologo /DLL /SUBSYSTEM:WINDOWS /DEBUG /PDBCompress %LF% %LIBPATH% ^
-    /OUT:"%OUT%\%NAME%.dll" ^
-    /PDB:"%OUT%\%NAME%.pdb" ^
-    "%OBJ%\comp\*.obj" ^
+    /OUT:"%GAME_OUT%\%NAME%.dll" ^
+    /PDB:"%GAME_OUT%\%NAME%.pdb" ^
+    "%GAME_OBJ%\*.obj" ^
     "%OUT%\_shared.lib" ^
     "%OUT%\imgui.lib" ^
     "%OUT%\minhook.lib" ^
@@ -194,11 +206,21 @@ link /nologo /DLL /SUBSYSTEM:WINDOWS /DEBUG /PDBCompress %LF% %LIBPATH% ^
 if errorlevel 1 goto :fail
 
 :: Rename to .asi
-move /y "%OUT%\%NAME%.dll" "%OUT%\%NAME%.asi" >nul
+move /y "%GAME_OUT%\%NAME%.dll" "%GAME_OUT%\%NAME%.asi" >nul
 if errorlevel 1 goto :fail
 
+:: Copy deploy files to game build folder
+if "!CUSTOM_COMP!"=="1" (
+    if exist "%ROOT%assets\dinput8.dll" (
+        copy /y "%ROOT%assets\dinput8.dll" "%GAME_OUT%\dinput8.dll" >nul
+    )
+    if exist "!GAME_DIR!\remix-comp.ini" (
+        copy /y "!GAME_DIR!\remix-comp.ini" "%GAME_OUT%\remix-comp.ini" >nul
+    )
+)
+
 echo.
-echo === Build succeeded: %OUT%\%NAME%.asi ===
+echo === Build succeeded: %GAME_OUT%\%NAME%.asi ===
 exit /b 0
 
 :fail
