@@ -22,6 +22,7 @@ Examples:
 """
 
 import argparse
+import struct
 import sys
 from pathlib import Path
 
@@ -41,6 +42,71 @@ def _resolve_target(insn) -> int | None:
         return int(insn.op_str, 16)
     except ValueError:
         return None
+
+
+def _resolve_switch(
+    b: Binary, jmp_insn, preceding_insns: list
+) -> list[int] | None:
+    """Attempt to resolve a switch/jump table from an indirect jmp.
+
+    Detects MSVC patterns: cmp reg,N / ja default / jmp [table + reg*4].
+
+    Args:
+        b: Loaded PE binary.
+        jmp_insn: The indirect jmp instruction (Capstone CsInsn).
+        preceding_insns: Instructions in the same block, ending with jmp_insn.
+
+    Returns:
+        List of resolved target VAs, or None if not a recognized switch pattern.
+    """
+    mops = Binary.mem_operands(jmp_insn)
+    if not mops:
+        return None
+    mop = mops[0]
+    if not mop.index or mop.scale != 4:
+        return None
+
+    table_base = mop.disp
+    if not table_base:
+        return None
+
+    # Walk backward looking for cmp reg, N / ja pattern
+    jmp_idx = None
+    for i, insn in enumerate(preceding_insns):
+        if insn.address == jmp_insn.address:
+            jmp_idx = i
+            break
+
+    if jmp_idx is None or jmp_idx < 2:
+        return None
+
+    case_count = None
+    for i in range(jmp_idx - 1, max(jmp_idx - 10, -1), -1):
+        insn = preceding_insns[i]
+        if insn.mnemonic == "cmp" and hasattr(insn, "operands") and len(insn.operands) == 2:
+            from capstone import x86_const as x86
+            op = insn.operands[1]
+            if op.type == x86.X86_OP_IMM:
+                case_count = op.imm & 0xFFFFFFFF
+                break
+
+    if case_count is None or case_count > 1024:
+        return None
+
+    # Read table entries
+    ptr_fmt = "<Q" if b.is_64 else "<I"
+    ptr_size = b.ptr_size
+    targets = []
+    for i in range(case_count + 1):
+        entry_data = b.read_va(table_base + i * ptr_size, ptr_size)
+        if len(entry_data) < ptr_size:
+            return None
+        target = struct.unpack(ptr_fmt, entry_data)[0]
+        if not b.in_exec(target):
+            return None
+        targets.append(target)
+
+    return targets
 
 
 def _find_func_end(insns):
@@ -121,6 +187,14 @@ def build_cfg(b: Binary, start: int, max_size: int = 0x4000):
         elif mn in _UNCOND_JUMPS:
             if target and target in blocks:
                 edges.append((block_va, target, "jmp"))
+            elif target is None and mn == "jmp":
+                # Attempt switch table resolution
+                switch_targets = _resolve_switch(b, last, block_insns)
+                if switch_targets:
+                    for i, st in enumerate(switch_targets):
+                        if st not in blocks:
+                            blocks[st] = []
+                        edges.append((block_va, st, f"case {i}"))
         else:
             if fallthrough in blocks:
                 edges.append((block_va, fallthrough, "fall"))
@@ -170,6 +244,8 @@ def main():
                    help="Output format (default: text)")
     p.add_argument("--max-size", type=lambda x: int(x, 0), default=0x4000,
                    help="Max forward-scan window in bytes (default: 0x4000)")
+    p.add_argument("--switch-details", action="store_true",
+                   help="Show switch table addresses and entry counts")
     args = p.parse_args()
 
     b = Binary(args.binary)
@@ -178,6 +254,17 @@ def main():
     blocks, edges = build_cfg(b, start, args.max_size)
 
     print(f"Function 0x{start:08X}: {len(blocks)} blocks, {len(edges)} edges\n")
+    if args.switch_details:
+        switch_blocks = [(va, insns) for va, insns in blocks.items()
+                         if any(src == va and "case" in label
+                                for src, _, label in edges)]
+        if switch_blocks:
+            print(f"Switch tables detected: {len(switch_blocks)}")
+            for sva, _ in switch_blocks:
+                cases = [(dst, label) for src, dst, label in edges
+                         if src == sva and "case" in label]
+                print(f"  0x{sva:08X}: {len(cases)} cases")
+            print()
     if args.format == "mermaid":
         _fmt_mermaid(blocks, edges, start)
     else:

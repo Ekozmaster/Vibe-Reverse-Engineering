@@ -41,6 +41,7 @@ When analyzing a binary for the first time (no existing or sparsely populated `p
 | Single function ID (`sigdb.py identify`, `fingerprint`) | Main agent -- fast (<5s) |
 | Context assembly (`context.py assemble`) | Main agent -- fast (<5s) |
 | Decompiler postprocess (`context.py postprocess`) | Main agent -- instant |
+| Dataflow: constants + backward slice (`dataflow.py`) | Main agent -- fast (<5s) |
 | File editing, patch specs, builds | Main agent — directly |
 | KB updates from subagent findings | `static-analyzer` writes to `kb.h`; main agent may refine |
 
@@ -82,15 +83,17 @@ For deep analysis tasks (finding subsystems, mapping call chains, understanding 
 ## Examples
 
 **"Disable culling in game.exe"**
-1. Spawn `static-analyzer` #1 (r2ghidra): find `SetRenderState` calls with `D3DRS_CULLMODE`, string search for "cull", xrefs to render state functions. Uses `--backend pdg --types kb.h`. Writes to `findings_r2.md`.
+1. Spawn `static-analyzer` #1 (r2ghidra): find `SetRenderState` calls with `D3DRS_CULLMODE`, string search for "cull", xrefs --indirect to find vtable call sites. Uses `--backend pdg --types kb.h`. Writes to `findings_r2.md`.
 2. Spawn `static-analyzer` #2 (pyghidra): same search strategy but decompile with `pyghidra_backend.py decompile`. Writes to `findings.md`.
 3. Immediately tell the user: "Please launch the game — I'll need to attach with livetools to patch culling at runtime once I find the addresses"
-4. When both return, merge findings and use `livetools` to verify and patch: `mem write` to NOP the cull-enable instruction or force `D3DRS_CULLMODE` to `D3DCULL_NONE`
+4. While waiting, run `dataflow.py --constants` on any known render functions to see what cull mode constants flow in (e.g., `eax = 0x2` = D3DCULL_CW)
+5. When both return, merge findings and use `livetools` to verify and patch: `mem write` to NOP the cull-enable instruction or force `D3DRS_CULLMODE` to `D3DCULL_NONE`
 
 **"What does function 0x401000 do?"**
-1. Spawn `static-analyzer`: decompile with `--types kb.h`, get callgraph, xrefs
-2. Tell the user: "Static analysis is running. Want me to also trace this function live to see actual register values and call frequency?"
-3. If yes, attach with `livetools trace 0x401000 --count 20 --read`
+1. Spawn `static-analyzer`: decompile with `--types kb.h`, get callgraph --indirect, xrefs
+2. Run `dataflow.py 0x401000 --constants` inline — see what constants flow through
+3. Tell the user: "Static analysis is running. Want me to also trace this function live to see actual register values and call frequency?"
+4. If yes, attach with `livetools trace 0x401000 --count 20 --read`
 
 **"Find who writes to address 0x7A0000"**
 1. Spawn `static-analyzer`: `datarefs.py` for static references

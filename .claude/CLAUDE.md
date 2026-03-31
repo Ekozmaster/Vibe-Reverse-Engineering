@@ -5,6 +5,7 @@
 **Never run static analysis tools directly.** Delegate to a `static-analyzer` subagent. Only exceptions — run these inline:
 - `sigdb.py identify` / `fingerprint` (single-function ID, <5s)
 - `context.py assemble` / `postprocess` (context gathering, <5s)
+- `dataflow.py --constants` / `--slice` (single-function analysis, <5s)
 - `readmem.py` (single typed read from PE, <5s)
 - `asi_patcher.py build` (build step, not analysis)
 - `pyghidra_backend.py status` (project existence check, <1s)
@@ -75,5 +76,5 @@ Each file reads as if it was always designed this way. Comments guide the next d
 
 - **Tool catalog, decision guide, and caveats**: @.claude/rules/tool-catalog.md
 - **Subagent workflow and delegation rules**: @.claude/rules/subagent-workflow.md
-- **Project workspace and knowledge base format**: @.claude/rules/project-workspace.md
-- **DX9 FFP proxy porting for RTX Remix**: @.claude/rules/dx9-ffp-port.md
+- **DX9 FFP proxy porting for RTX Remix**: `/dx9-ffp-port` skill
+- **Frida-based dynamic analysis**: `/dynamic-analysis` skill

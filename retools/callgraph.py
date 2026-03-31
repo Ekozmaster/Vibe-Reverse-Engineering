@@ -10,12 +10,12 @@ Modes:
     --down N  Walk DOWN the call chain: what does this function call? (N levels)
 
 Usage:
-    python retools/callgraph.py <binary> <target> --up N   [--flat]
-    python retools/callgraph.py <binary> <target> --down N [--flat]
+    python retools/callgraph.py <binary> <target> --up N   [--flat] [--indirect]
+    python retools/callgraph.py <binary> <target> --down N [--flat] [--indirect]
 
 Examples:
     python retools/callgraph.py binary.exe 0x401000 --up 3
-    python retools/callgraph.py binary.exe 0x401000 --down 2
+    python retools/callgraph.py binary.exe 0x401000 --down 2 --indirect
     python retools/callgraph.py binary.exe 0x401000 --up 4 --flat
 """
 
@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
-from xrefs import scan_refs
+from xrefs import scan_refs, scan_indirect_refs, IndirectRef
 from funcinfo import find_start, analyze
 
 
@@ -41,44 +41,69 @@ def _find_callers(b: Binary, target: int) -> list[int]:
     return sorted(funcs)
 
 
-def _find_callees(b: Binary, func_va: int) -> list[int]:
-    """Return deduplicated sorted direct callee addresses."""
-    _, calls, _ = analyze(b, func_va, 0x4000)
-    targets = set()
+def _find_callees(b: Binary, func_va: int) -> tuple[list[int], list[IndirectRef]]:
+    """Return (direct_targets, indirect_refs) for the function at func_va.
+
+    Args:
+        b: Loaded PE binary.
+        func_va: Function start address.
+
+    Returns:
+        Tuple of (sorted direct callee addresses, list of IndirectRef for
+        indirect calls within the function).
+    """
+    _, calls, end_va = analyze(b, func_va, 0x4000)
+    direct = set()
     for _, t in calls:
         if isinstance(t, int):
-            targets.add(t)
-    return sorted(targets)
+            direct.add(t)
+
+    # Scan function body for indirect calls
+    func_size = end_va - func_va if end_va > func_va else 0x2000
+    func_code = b.read_va(func_va, func_size)
+    indirect_refs = scan_indirect_refs(
+        func_code, [(func_va, 0, len(func_code))], b.base, is_64=b.is_64
+    )
+    return sorted(direct), indirect_refs
 
 
 def _build_tree(b: Binary, va: int, depth: int, direction: str,
-                cache: dict, visited: set) -> dict:
+                cache: dict, visited: set, indirect: bool = False) -> dict:
     if depth <= 0 or va in visited:
-        return {"va": va, "children": []}
+        return {"va": va, "children": [], "indirect": []}
     visited.add(va)
 
     if va in cache:
-        children_vas = cache[va]
+        children_vas, indirect_refs = cache[va]
     else:
-        children_vas = (_find_callers(b, va) if direction == "up"
-                        else _find_callees(b, va))
-        cache[va] = children_vas
+        if direction == "up":
+            children_vas = _find_callers(b, va)
+            indirect_refs = []
+        else:
+            children_vas, indirect_refs = _find_callees(b, va)
+        cache[va] = (children_vas, indirect_refs)
 
     children = [
-        _build_tree(b, c, depth - 1, direction, cache, visited)
+        _build_tree(b, c, depth - 1, direction, cache, visited, indirect)
         for c in children_vas
     ]
     visited.discard(va)
-    return {"va": va, "children": children}
+    return {"va": va, "children": children,
+            "indirect": indirect_refs if indirect else []}
 
 
-def _print_tree(node: dict, indent: int = 0):
+def _print_tree(node: dict, indent: int = 0, show_indirect: bool = False):
     prefix = "  " * indent + ("+-" if indent else "")
     n_children = len(node["children"])
     suffix = f"  ({n_children} children)" if n_children and indent == 0 else ""
     print(f"{prefix}0x{node['va']:08X}{suffix}")
+    if show_indirect and node.get("indirect"):
+        for ref in node["indirect"]:
+            disp_str = f"+0x{ref.disp:X}" if ref.disp else ""
+            iprefix = "  " * (indent + 1) + "  "
+            print(f"{iprefix}~ {ref.mnemonic} [{ref.base}{disp_str}] ({ref.target_type})")
     for child in node["children"]:
-        _print_tree(child, indent + 1)
+        _print_tree(child, indent + 1, show_indirect)
 
 
 def _flatten(node: dict, result: set):
@@ -101,6 +126,9 @@ def main():
                    help="Trace callees N levels down the call chain")
     p.add_argument("--flat", action="store_true",
                    help="Output a flat sorted address list instead of a tree")
+    p.add_argument("--indirect", action="store_true",
+                   help="Include indirect calls in --down mode (vtable dispatch, "
+                        "function pointers)")
     args = p.parse_args()
 
     b = Binary(args.binary)
@@ -112,7 +140,7 @@ def main():
         start = find_start(b, va)
         va = start if start else va
 
-    tree = _build_tree(b, va, depth, direction, {}, set())
+    tree = _build_tree(b, va, depth, direction, {}, set(), indirect=args.indirect)
 
     if args.flat:
         addrs = set()
@@ -122,7 +150,7 @@ def main():
             print(f"0x{a:08X}")
         print(f"\n{len(addrs)} unique {'callers' if direction == 'up' else 'callees'}")
     else:
-        _print_tree(tree)
+        _print_tree(tree, show_indirect=args.indirect)
 
 
 if __name__ == "__main__":
