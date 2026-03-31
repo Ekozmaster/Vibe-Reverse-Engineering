@@ -56,6 +56,8 @@ Each game folder under `patches/<GameName>/` is a self-contained remix-comp proj
 
 **`rtx_remix_tools/dx/remix-comp/` is the TEMPLATE.** Each game gets a full copy under `patches/<GameName>/` — the entire folder is self-contained and can be distributed as a standalone repo. Edit `src/comp/` directly in the game's copy.
 
+**Before reading remix-comp source files**, read [references/remix-comp-context.md](references/remix-comp-context.md) for a skip-list of boilerplate files (~7,000 lines) you should never open, with summaries of what they do. It also lists the ~1,200 lines of files that actually matter for per-game work.
+
 ---
 
 ## Porting Workflow
