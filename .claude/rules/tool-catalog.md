@@ -29,6 +29,8 @@ These are fast (<5s) and allowed inline:
 
 Everything else. Tell the subagent WHAT you need, not HOW to run it — it has the full tool catalog.
 
+**D3D9-specific questions?** Check the DX analysis scripts section below first — they're faster and more targeted than general retools for D3D API usage, device calls, shader constants, and vertex formats.
+
 - "What does this function do?" → decompile + callgraph + xrefs
 - "Who calls this function?" → xrefs or callgraph --up
 - "What does this function call?" → callgraph --down
@@ -51,6 +53,19 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 - "What are the actual register values?" → `livetools trace --read` or `bp` + `regs`
 - "How many draw calls happen?" → `livetools dipcnt`
 - "Who writes to this memory address?" → `livetools memwatch`
+
+### DX analysis scripts (main agent, fast first-pass)
+
+These are targeted D3D9 scanners under `rtx_remix_tools/dx/scripts/`. They run in seconds and surface D3D-specific patterns that general-purpose retools would take longer to find. **Use these BEFORE retools** when the question is about D3D9 API usage, device calls, shaders, or vertex formats.
+
+- "How does the game use D3D9?" → `find_d3d_calls.py <game.exe>` (imports + call sites)
+- "Which VS constant registers hold matrices?" → `find_vs_constants.py <game.exe>` (SetVertexShaderConstantF call sites with register/count)
+- "Where does the game call the D3D device?" → `find_device_calls.py <game.exe>` (vtable call patterns + device pointer refs)
+- "What vertex formats does the game use?" → `decode_vtx_decls.py <game.exe> --scan` (vertex declarations, detects skinning)
+- "D3DX constant table or vtable calls?" → `find_vtable_calls.py <game.exe>` (D3DX CTAB usage + D3D9 vtable calls)
+- "Map all D3D calls in a code region" → `scan_d3d_region.py <game.exe> 0xSTART 0xEND`
+
+These are fast first-pass scanners — they surface candidate addresses. Follow up with `retools` (decompiler, xrefs) and `livetools` (trace, bp) for deep analysis of the addresses they find.
 
 ### dx9tracer (main agent for capture, delegate analysis)
 
@@ -156,15 +171,16 @@ python -m livetools status              # check connection
 
 A proxy DLL that intercepts all 119 `IDirect3DDevice9` methods, capturing every call with arguments, backtraces, pointer-followed data (matrices, constants, shader bytecodes), and in-process shader disassembly (via the game's own d3dx9 DLL). Outputs JSONL for offline analysis.
 
-**Architecture**: Python codegen (`d3d9_methods.py`) → C proxy DLL (`src/`) → JSONL → Python analyzer (`analyze.py`). The proxy chains to the real d3d9 (or another wrapper) and adds near-zero overhead when not capturing.
+**Architecture**: Python codegen (`d3d9_methods.py`) → C proxy DLL (`src/`) or C++ remix-comp dispatch (`tracer_dispatch.inc`) → JSONL → Python analyzer (`analyze.py`). The standalone proxy chains to the real d3d9 (or another wrapper) and adds near-zero overhead when not capturing. The remix-comp integrated tracer records from within the dinput8.dll hook.
 
 ### Setup and Capture
 
 ```
-python -m graphics.directx.dx9.tracer codegen -o d3d9_trace_hooks.inc   # regenerate C hooks
-cd graphics/directx/dx9/tracer/src && build.bat                              # build proxy DLL
+python -m graphics.directx.dx9.tracer codegen -o d3d9_trace_hooks.inc            # C hooks (standalone proxy)
+python -m graphics.directx.dx9.tracer codegen -f cpp -o tracer_dispatch.inc      # C++ dispatch (remix-comp module)
+cd graphics/directx/dx9/tracer/src && build.bat                                  # build standalone proxy DLL
 # Deploy d3d9.dll + proxy.ini to game directory
-python -m graphics.directx.dx9.tracer trigger --game-dir <GAME_DIR>     # trigger capture (3s countdown)
+python -m graphics.directx.dx9.tracer trigger --game-dir <GAME_DIR>              # trigger capture (3s countdown)
 ```
 
 **proxy.ini** settings: `CaptureFrames=N` (frames to record), `CaptureInit=1` (capture boot-time calls like shader creation), `Chain.DLL=<wrapper.dll>` (chain to another d3d9 wrapper, or leave empty for system d3d9).
@@ -203,6 +219,19 @@ All analysis: `python -m graphics.directx.dx9.tracer analyze <JSONL> [OPTIONS]`
 | `--resolve-addrs BINARY` | Resolve backtrace addresses to function names via retools |
 | `--filter EXPR` | Filter records by field (e.g. `frame==0`, `slot==83`) |
 | `--export-csv FILE` | Export raw records to CSV |
+
+## DX Analysis Scripts (`rtx_remix_tools/dx/scripts/`) -- fast D3D9 scanners
+
+Targeted first-pass scanners for D3D9 games. Run from repo root. Output is candidate addresses and patterns — always follow up with retools/livetools for confirmation.
+
+| Script | What it surfaces | Example |
+|--------|-----------------|---------|
+| `find_d3d_calls.py $B` | D3D9/D3DX imports and call sites | `python rtx_remix_tools/dx/scripts/find_d3d_calls.py game.exe` |
+| `find_vs_constants.py $B` | `SetVertexShaderConstantF` call sites with register/count args | `python rtx_remix_tools/dx/scripts/find_vs_constants.py game.exe` |
+| `find_device_calls.py $B` | Device vtable call patterns and device pointer refs | `python rtx_remix_tools/dx/scripts/find_device_calls.py game.exe` |
+| `find_vtable_calls.py $B` | D3DX constant table usage and D3D9 vtable calls | `python rtx_remix_tools/dx/scripts/find_vtable_calls.py game.exe` |
+| `decode_vtx_decls.py $B --scan` | Vertex declaration formats (BLENDWEIGHT/BLENDINDICES = skinning) | `python rtx_remix_tools/dx/scripts/decode_vtx_decls.py game.exe --scan` |
+| `scan_d3d_region.py $B 0xSTART 0xEND` | Map all D3D9 vtable calls in a code region | `python rtx_remix_tools/dx/scripts/scan_d3d_region.py game.exe 0x401000 0x500000` |
 
 ## Tool Caveats
 
