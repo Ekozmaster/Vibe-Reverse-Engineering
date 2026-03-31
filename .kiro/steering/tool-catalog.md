@@ -24,15 +24,20 @@ These are fast (<5s) and allowed inline:
 - "Get full context before reasoning about a function" → `python -m retools.context assemble $B $VA --project $P`
 - "Clean up decompiler output with known names" → pipe through `python -m retools.context postprocess`
 - "Read a typed value from the PE file" → `python -m retools.readmem $B $VA $TYPE`
+- "What constant flows into this register?" → `python -m retools.dataflow $B $VA --constants`
+- "Trace where this value comes from" → `python -m retools.dataflow $B $VA --slice TARGET_VA:REG`
 - "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json`
 
 ### Delegate to `static-analyzer` subagent
 
 Everything else. Tell the subagent WHAT you need, not HOW to run it — it has the full tool catalog.
 
-- "What does this function do?" → decompile + callgraph + xrefs
+- "What does this function do?" → decompile + callgraph + xrefs + dataflow --constants
 - "Who calls this function?" → xrefs or callgraph --up
-- "What does this function call?" → callgraph --down
+- "What does this function call?" → callgraph --down (add --indirect for vtable calls)
+- "Who calls this virtual method?" → xrefs --indirect + filter by vtable slot offset
+- "What constant reaches this call?" → dataflow --constants or --slice VA:REG
+- "Resolve a switch/jump table" → cfg (auto-resolves MSVC switch patterns)
 - "Find a string and who uses it" → string search with xrefs
 - "Where is this global read/written?" → datarefs
 - "Where is struct field +0x54 used?" → structrefs
@@ -70,9 +75,10 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 | `pyghidra_backend.py decompile $B $VA --project $P` | Decompile via saved Ghidra project | `pyghidra_backend.py decompile game.exe 0x401000 --project patches/MyGame` |
 | `pyghidra_backend.py status $B --project $P` | Check if Ghidra project exists | `pyghidra_backend.py status game.exe --project patches/MyGame` |
 | `funcinfo.py $B $VA` | Find function start/end, rets, calling convention, callees | `funcinfo.py binary.exe 0x401000` |
-| `cfg.py $B $VA` | Control flow graph (basic blocks + edges, text or mermaid) | `cfg.py binary.exe 0x401000 --format mermaid` |
-| `callgraph.py $B $VA` | Caller/callee tree (multi-level, --up/--down N) | `callgraph.py binary.exe 0x401000 --up 3` |
-| `xrefs.py $B $VA` | Find all calls/jumps TO an address | `xrefs.py binary.exe 0x401000 -t call` |
+| `cfg.py $B $VA` | Control flow graph (basic blocks + edges, text or mermaid). Resolves MSVC switch/jump tables automatically. `--switch-details` shows table info | `cfg.py binary.exe 0x401000 --format mermaid` |
+| `callgraph.py $B $VA` | Caller/callee tree (multi-level, --up/--down N). `--indirect` adds vtable/fptr calls to --down trees | `callgraph.py binary.exe 0x401000 --down 2 --indirect` |
+| `xrefs.py $B $VA` | Find all calls/jumps TO an address. `--indirect` also scans for `call [reg+offset]`, `call [reg]`, `call [addr]` | `xrefs.py binary.exe 0x401000 --indirect` |
+| `dataflow.py $B $VA` | Forward constant propagation (`--constants`) or backward register slice (`--slice VA:REG`) within a function | `dataflow.py binary.exe 0x401000 --constants` |
 | `datarefs.py $B $VA` | Find instructions that reference a global address (mem deref + `--imm` for push/mov constants) | `datarefs.py binary.exe 0x7A0000 --imm` |
 | `structrefs.py $B $OFF` | Find all `[reg+offset]` accesses (struct field usage) | `structrefs.py binary.exe 0x54 --base esi` |
 | `structrefs.py $B --aggregate` | Reconstruct C struct from all field accesses in a function | `structrefs.py binary.exe --aggregate --fn 0x401000 --base esi` |
@@ -93,7 +99,7 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 | `sigdb.py scan $B` | Bulk signature scan against DB | `sigdb.py scan game.exe` |
 | `sigdb.py identify $B $VA` | Single function signature lookup (multi-tier) | `sigdb.py identify game.exe 0x401200` |
 | `sigdb.py fingerprint $B` | Identify compiler version (Rich header + markers + imports) | `sigdb.py fingerprint game.exe` |
-| `context.py assemble $B $VA --project $P` | Gather full analysis context for a function | `context.py assemble game.exe 0x401500 --project Warband` |
+| `context.py assemble $B $VA --project $P` | Gather full analysis context for a function. Includes forward constant propagation by default (`--no-dataflow` to skip) | `context.py assemble game.exe 0x401500 --project Warband` |
 | `context.py postprocess $B $VA --project $P` | Mechanically rename/annotate decompiler output (pipe) | `decompiler.py ... \| context.py postprocess ...` |
 | `sigdb.py build $MANIFEST` | Build/extend signature DB from manifest | `sigdb.py build sources.json` |
 | `sigdb.py pull` | Download signature DB from HuggingFace | `sigdb.py pull` or `sigdb.py pull --sources` |

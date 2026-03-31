@@ -24,6 +24,7 @@ from funcinfo import find_start, analyze
 from structrefs import aggregate_struct
 from search import find_strings
 from sigdb import SignatureDB, extract_structural_sig
+from dataflow import propagate_cfg, Const, Unknown
 
 # Pattern: fcn.XXXXXXXX or FUN_XXXXXXXX (r2ghidra or Ghidra naming)
 _FCN_RE = re.compile(r"(?:fcn\.|FUN_)([0-9a-fA-F]{8,16})")
@@ -159,7 +160,7 @@ def _find_kb_path(project_dir: str, project_dir_for_kb: str | None = None) -> Pa
 
 
 def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
-             project_dir_for_kb: str | None = None) -> str:
+             project_dir_for_kb: str | None = None, no_dataflow: bool = False) -> str:
     """Gather structured analysis context for a function.
 
     Args:
@@ -168,6 +169,7 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
         project_dir: Project directory path.
         db_path: Optional path to sigdb database.
         project_dir_for_kb: Optional override directory containing kb.h.
+        no_dataflow: If True, skip forward constant propagation in output.
 
     Returns:
         Formatted text block with context sections.
@@ -262,6 +264,26 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
                 seen_gvas.add(gva)
                 lines.append(f"  {gname} at 0x{gva:0{w}X}")
 
+    # -- Dataflow (forward constant propagation) --
+    if not no_dataflow:
+        try:
+            block_states = propagate_cfg(b, start, max_size=func_size)
+            resolved_any = False
+            dataflow_lines: list[str] = []
+            for bva in sorted(block_states):
+                state = block_states[bva]
+                for reg, val in sorted(state.items()):
+                    if isinstance(val, Const):
+                        dataflow_lines.append(
+                            f"  0x{bva:0{w}X}: {reg} = {val}"
+                        )
+                        resolved_any = True
+            if resolved_any:
+                lines.append("[dataflow]")
+                lines.extend(dataflow_lines)
+        except Exception:
+            pass
+
     # -- Sigdb structural match (best-effort) --
     if db_path:
         try:
@@ -303,6 +325,8 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("va", help="Function virtual address (hex)")
     s.add_argument("--project", required=True, help="Project directory")
     s.add_argument("--db", default=None, help="Signature DB path")
+    s.add_argument("--no-dataflow", action="store_true",
+                   help="Skip dataflow analysis in context assembly")
 
     # -- postprocess --
     s = sub.add_parser("postprocess", help="Apply text substitutions (reads stdin)")
@@ -315,7 +339,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "assemble":
         b = Binary(args.binary)
         va = int(args.va, 16)
-        result = assemble(b, va, args.project, db_path=args.db)
+        result = assemble(b, va, args.project, db_path=args.db,
+                          no_dataflow=args.no_dataflow)
         print(result, end="")
 
     elif args.command == "postprocess":
