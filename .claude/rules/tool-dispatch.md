@@ -39,9 +39,18 @@ Under `rtx_remix_tools/dx/scripts/`. Use BEFORE retools for D3D9 questions.
 
 - `find_d3d_calls.py $B` — D3D9/D3DX imports + call sites
 - `find_vs_constants.py $B` — SetVertexShaderConstantF sites with register/count
+- `find_ps_constants.py $B` — SetPixelShaderConstantF/I/B sites with register/count
 - `find_device_calls.py $B` — device vtable call patterns
 - `find_vtable_calls.py $B` — D3DX CTAB + D3D9 vtable calls
+- `find_render_states.py $B` — SetRenderState arguments with enum decoding
+- `find_texture_ops.py $B` — texture pipeline: stages, TSS ops, sampler states
+- `find_transforms.py $B` — SetTransform types (World, View, Projection, Texture)
+- `find_surface_formats.py $B` — CreateTexture/RT/DS format extraction
+- `find_stateblocks.py $B` — state block creation/recording/apply patterns
+- `decode_fvf.py $B` — FVF bitfield decode from SetFVF calls
 - `decode_vtx_decls.py $B --scan` — vertex declaration formats
+- `find_shader_bytecode.py $B` — embedded shader bytecode extraction
+- `classify_draws.py $B` — draw call classification (FFP/shader/hybrid)
 - `scan_d3d_region.py $B 0xSTART 0xEND` — D3D calls in code region
 
 ## dx9tracer

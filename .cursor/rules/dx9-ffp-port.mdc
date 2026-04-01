@@ -244,9 +244,18 @@ The scripts below are fast first-pass scanners. They surface candidate addresses
 |--------|------------------|
 | `scripts/find_d3d_calls.py <game.exe>` | D3D9/D3DX imports and call sites |
 | `scripts/find_vs_constants.py <game.exe>` | `SetVertexShaderConstantF` call sites and register/count args |
+| `scripts/find_ps_constants.py <game.exe>` | `SetPixelShaderConstantF/I/B` call sites and register/count args |
 | `scripts/find_device_calls.py <game.exe>` | Device vtable call patterns and device pointer refs |
+| `scripts/find_render_states.py <game.exe>` | SetRenderState args decoded by category (culling, blending, depth, fog) |
+| `scripts/find_texture_ops.py <game.exe>` | Texture pipeline: SetTexture stages, TSS ops, sampler states |
+| `scripts/find_transforms.py <game.exe>` | SetTransform/MultiplyTransform types (World, View, Projection, Texture) |
+| `scripts/find_surface_formats.py <game.exe>` | CreateTexture/RenderTarget/DepthStencil format extraction |
+| `scripts/find_stateblocks.py <game.exe>` | State block creation, recording, and apply patterns |
+| `scripts/decode_fvf.py <game.exe>` | FVF bitfield decode from SetFVF calls |
 | `scripts/find_vtable_calls.py <game.exe>` | D3DX constant table usage and D3D9 vtable calls |
 | `scripts/decode_vtx_decls.py <game.exe> --scan` | Vertex declaration formats (BLENDWEIGHT/BLENDINDICES -> skinning) |
+| `scripts/find_shader_bytecode.py <game.exe>` | Embedded shader bytecode extraction (version, size) |
+| `scripts/classify_draws.py <game.exe>` | Draw call classification by state context (FFP/shader/hybrid) |
 | `scripts/scan_d3d_region.py <game.exe> 0xSTART 0xEND` | Map all D3D9 vtable calls in a code region |
 
 Scripts are at `rtx_remix_tools/dx/scripts/`.

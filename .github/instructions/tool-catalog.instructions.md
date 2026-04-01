@@ -60,8 +60,17 @@ These are targeted D3D9 scanners under `rtx_remix_tools/dx/scripts/`. They run i
 
 - "How does the game use D3D9?" → `find_d3d_calls.py <game.exe>` (imports + call sites)
 - "Which VS constant registers hold matrices?" → `find_vs_constants.py <game.exe>` (SetVertexShaderConstantF call sites with register/count)
+- "Which PS constant registers are used?" → `find_ps_constants.py <game.exe>` (SetPixelShaderConstantF/I/B with register/count)
 - "Where does the game call the D3D device?" → `find_device_calls.py <game.exe>` (vtable call patterns + device pointer refs)
+- "What render states does the game set?" → `find_render_states.py <game.exe>` (SetRenderState args: culling, blending, depth, fog)
+- "How does the texture pipeline work?" → `find_texture_ops.py <game.exe>` (SetTexture stages, TSS ops, sampler filter/address modes)
+- "Which transform types are used?" → `find_transforms.py <game.exe>` (SetTransform: World, View, Projection, Texture)
+- "What surface formats does the game create?" → `find_surface_formats.py <game.exe>` (CreateTexture/RT/DS format extraction)
+- "Does the game use state blocks?" → `find_stateblocks.py <game.exe>` (state block creation/recording/apply)
+- "Does the game use FVF or vertex declarations?" → `decode_fvf.py <game.exe>` (FVF bitfield decoding)
 - "What vertex formats does the game use?" → `decode_vtx_decls.py <game.exe> --scan` (vertex declarations, detects skinning)
+- "Are shaders embedded in the binary?" → `find_shader_bytecode.py <game.exe>` (shader bytecode extraction with version/size)
+- "What's the FFP vs shader draw call mix?" → `classify_draws.py <game.exe>` (draw call classification by state context)
 - "D3DX constant table or vtable calls?" → `find_vtable_calls.py <game.exe>` (D3DX CTAB usage + D3D9 vtable calls)
 - "Map all D3D calls in a code region" → `scan_d3d_region.py <game.exe> 0xSTART 0xEND`
 

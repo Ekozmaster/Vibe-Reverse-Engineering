@@ -67,10 +67,22 @@ Each game folder under `patches/<GameName>/` is a self-contained remix-comp proj
 Run the analysis scripts to understand the game's D3D9 usage:
 
 ```bash
+# Core discovery
 python rtx_remix_tools/dx/scripts/find_d3d_calls.py "<game.exe>"
-python rtx_remix_tools/dx/scripts/find_vs_constants.py "<game.exe>"
-python rtx_remix_tools/dx/scripts/decode_vtx_decls.py "<game.exe>" --scan
 python rtx_remix_tools/dx/scripts/find_device_calls.py "<game.exe>"
+python rtx_remix_tools/dx/scripts/classify_draws.py "<game.exe>"
+
+# Shader constants and vertex formats
+python rtx_remix_tools/dx/scripts/find_vs_constants.py "<game.exe>"
+python rtx_remix_tools/dx/scripts/find_ps_constants.py "<game.exe>"
+python rtx_remix_tools/dx/scripts/decode_vtx_decls.py "<game.exe>" --scan
+python rtx_remix_tools/dx/scripts/decode_fvf.py "<game.exe>"
+
+# Render state and texture pipeline
+python rtx_remix_tools/dx/scripts/find_render_states.py "<game.exe>"
+python rtx_remix_tools/dx/scripts/find_texture_ops.py "<game.exe>"
+python rtx_remix_tools/dx/scripts/find_transforms.py "<game.exe>"
+python rtx_remix_tools/dx/scripts/find_surface_formats.py "<game.exe>"
 ```
 
 Scripts are fast first-pass scanners -- surface candidate addresses only. Always follow up with `retools` and `livetools` for deep analysis.
