@@ -84,9 +84,19 @@ Each file reads as if it was always designed this way. Comments guide the next d
 
 ---
 
+## DX9 FFP Porting
+
+When working on any of the following — invoke the **`dx9-ffp-port` skill** immediately before starting:
+- Editing `renderer.cpp`, `ffp_state.cpp`, `remix-comp.ini`, or draw routing logic
+- Porting a game for RTX Remix / fixed-function pipeline
+- Diagnosing VS constant registers, vertex declarations, matrix mapping, skinning
+- Building, deploying, or iterating on a remix-comp patch (`build.bat`, `diagnostics.log`, ImGui F4)
+
+---
+
 ## References
 
 - **Tool dispatch (which tool, run vs delegate)**: @.claude/rules/tool-dispatch.md
 - **Full tool syntax tables and caveats**: `.claude/references/tool-catalog.md` (read on demand, not auto-loaded)
 - **Subagent workflow and delegation rules**: @.claude/rules/subagent-workflow.md
-- **DX9 FFP proxy porting for RTX Remix**: @.claude/skills/dx9-ffp-port/SKILL.md
+- **DX9 FFP proxy porting for RTX Remix**: `.claude/skills/dx9-ffp-port/SKILL.md` (invoke `dx9-ffp-port` skill, not auto-loaded)

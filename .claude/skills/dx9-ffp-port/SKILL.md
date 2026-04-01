@@ -1,6 +1,6 @@
 ---
 name: dx9-ffp-port
-description: DX9 shader-to-FFP proxy porting for RTX Remix compatibility. Use when porting a DX9 shader-based game to the fixed-function pipeline so RTX Remix can inject path-traced lighting. Covers the full workflow: static analysis with scripts, discovering VS constant register layout, dynamic live tracing of SetVertexShaderConstantF, editing remix-comp.ini with register mappings, customizing draw routing in renderer.cpp, building with Premake5/VS2022, deploying and iterating with diagnostics.log and ImGui (F4). Includes draw call routing logic, common pitfalls, and skinning guidance.
+description: DX9 FFP Proxy -- Game Porting. TRIGGER when: user mentions porting a game for RTX Remix, working on renderer.cpp / ffp_state / remix-comp.ini / draw routing / VS constants / vertex declarations / matrix mapping / skinning, building or deploying a remix-comp patch, or diagnosing rendering issues in a patched game (white geometry, missing objects, wrong transforms, ImGui F4, diagnostics.log). Covers full workflow: static analysis, VS constant discovery, draw routing, INI config, build/deploy, pitfall diagnosis.
 ---
 
 # DX9 FFP Proxy -- Game Porting
