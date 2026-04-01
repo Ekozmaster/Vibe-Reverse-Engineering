@@ -256,14 +256,13 @@ namespace comp
 	void skinning::upload_bones(IDirect3DDevice9* dev)
 	{
 		auto& ffp = shared::common::ffp_state::get();
-		auto& cfg = shared::common::config::get().ffp;
 
 		int bone_start = ffp.bone_start_reg();
 		int num_bones = ffp.num_bones();
-		if (bone_start < cfg.vs_reg_bone_threshold || num_bones <= 0) return;
+		if (bone_start < ffp.reg_bone_threshold() || num_bones <= 0) return;
 
 		const float* vs_const = ffp.vs_const_data();
-		int regs_per_bone = cfg.vs_regs_per_bone;
+		int regs_per_bone = ffp.regs_per_bone();
 		int max_bones = (num_bones > 48) ? 48 : num_bones;
 
 		for (int i = 0; i < max_bones; i++)

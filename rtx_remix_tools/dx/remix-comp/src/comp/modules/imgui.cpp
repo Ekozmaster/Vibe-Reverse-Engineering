@@ -260,12 +260,12 @@ namespace comp
 				ImGui::Text("  Bones: %d (start reg %d)", ffp.num_bones(), ffp.bone_start_reg());
 		}
 
-		// Register layout (from config)
+		// Register layout
 		if (ImGui::CollapsingHeader("Register Layout"))
 		{
-			ImGui::Text("View:  c%d - c%d", cfg.ffp.vs_reg_view_start, cfg.ffp.vs_reg_view_end - 1);
-			ImGui::Text("Proj:  c%d - c%d", cfg.ffp.vs_reg_proj_start, cfg.ffp.vs_reg_proj_end - 1);
-			ImGui::Text("World: c%d - c%d", cfg.ffp.vs_reg_world_start, cfg.ffp.vs_reg_world_end - 1);
+			ImGui::Text("View:  c%d - c%d", ffp.reg_view_start(), ffp.reg_view_end() - 1);
+			ImGui::Text("Proj:  c%d - c%d", ffp.reg_proj_start(), ffp.reg_proj_end() - 1);
+			ImGui::Text("World: c%d - c%d", ffp.reg_world_start(), ffp.reg_world_end() - 1);
 			ImGui::Text("Albedo Stage: %d", cfg.ffp.albedo_stage);
 		}
 
@@ -316,9 +316,9 @@ namespace comp
 				}
 			};
 
-			show_matrix("View", cfg.ffp.vs_reg_view_start);
-			show_matrix("Projection", cfg.ffp.vs_reg_proj_start);
-			show_matrix("World", cfg.ffp.vs_reg_world_start);
+			show_matrix("View", ffp.reg_view_start());
+			show_matrix("Projection", ffp.reg_proj_start());
+			show_matrix("World", ffp.reg_world_start());
 		}
 
 		// Texture bindings

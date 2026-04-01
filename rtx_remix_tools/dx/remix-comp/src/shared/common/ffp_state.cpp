@@ -16,6 +16,10 @@ namespace shared::common
 		create_tick_ = GetTickCount();
 
 		log("FFP", std::format("State tracker initialized, FFP={}", enabled_ ? "ON" : "OFF"));
+		log("FFP", std::format("Registers: View=c{}-c{} Proj=c{}-c{} World=c{}-c{}",
+			vs_reg_view_start_, vs_reg_view_end_ - 1,
+			vs_reg_proj_start_, vs_reg_proj_end_ - 1,
+			vs_reg_world_start_, vs_reg_world_end_ - 1));
 	}
 
 	// ---- State mutators ----
@@ -26,25 +30,23 @@ namespace shared::common
 
 		std::memcpy(&vs_const_[start_reg * 4], data, count * 4 * sizeof(float));
 
-		if (!cfg_) return; // init() not yet called (race with module init thread)
-
 		// Dirty tracking keyed to game-specific register layout
 		UINT end_reg = start_reg + count;
-		if (start_reg < static_cast<UINT>(cfg_->vs_reg_proj_end) &&
-			end_reg > static_cast<UINT>(cfg_->vs_reg_view_start))
+		if (start_reg < static_cast<UINT>(vs_reg_proj_end_) &&
+			end_reg > static_cast<UINT>(vs_reg_view_start_))
 		{
 			view_proj_dirty_ = true;
 		}
-		if (start_reg < static_cast<UINT>(cfg_->vs_reg_world_end) &&
-			end_reg > static_cast<UINT>(cfg_->vs_reg_world_start))
+		if (start_reg < static_cast<UINT>(vs_reg_world_end_) &&
+			end_reg > static_cast<UINT>(vs_reg_world_start_))
 		{
 			world_dirty_ = true;
 		}
 
 		// Mark View+Proj valid once both ranges have been written
-		auto view_start = static_cast<UINT>(cfg_->vs_reg_view_start);
-		auto proj_start = static_cast<UINT>(cfg_->vs_reg_proj_start);
-		auto proj_end = static_cast<UINT>(cfg_->vs_reg_proj_end);
+		auto view_start = static_cast<UINT>(vs_reg_view_start_);
+		auto proj_start = static_cast<UINT>(vs_reg_proj_start_);
+		auto proj_end = static_cast<UINT>(vs_reg_proj_end_);
 
 		if (start_reg <= view_start && end_reg >= proj_end)
 		{
@@ -65,12 +67,12 @@ namespace shared::common
 
 		// Bone palette detection (for skinning module)
 		if (config::get().skinning.enabled &&
-			start_reg >= static_cast<UINT>(cfg_->vs_reg_bone_threshold) &&
-			count >= static_cast<UINT>(cfg_->vs_bone_min_regs) &&
-			(count % static_cast<UINT>(cfg_->vs_regs_per_bone)) == 0)
+			start_reg >= static_cast<UINT>(vs_reg_bone_threshold_) &&
+			count >= static_cast<UINT>(vs_bone_min_regs_) &&
+			(count % static_cast<UINT>(vs_regs_per_bone_)) == 0)
 		{
 			bone_start_reg_ = static_cast<int>(start_reg);
-			num_bones_ = static_cast<int>(count) / cfg_->vs_regs_per_bone;
+			num_bones_ = static_cast<int>(count) / vs_regs_per_bone_;
 		}
 	}
 
@@ -327,10 +329,10 @@ namespace shared::common
 
 		if (view_proj_dirty_)
 		{
-			mat4_transpose(transposed, &vs_const_[cfg_->vs_reg_view_start * 4]);
+			mat4_transpose(transposed, &vs_const_[vs_reg_view_start_ * 4]);
 			dev->SetTransform(D3DTS_VIEW, reinterpret_cast<const D3DMATRIX*>(transposed));
 
-			mat4_transpose(transposed, &vs_const_[cfg_->vs_reg_proj_start * 4]);
+			mat4_transpose(transposed, &vs_const_[vs_reg_proj_start_ * 4]);
 			dev->SetTransform(D3DTS_PROJECTION, reinterpret_cast<const D3DMATRIX*>(transposed));
 
 			view_proj_dirty_ = false;
@@ -338,7 +340,7 @@ namespace shared::common
 
 		if (world_dirty_)
 		{
-			mat4_transpose(transposed, &vs_const_[cfg_->vs_reg_world_start * 4]);
+			mat4_transpose(transposed, &vs_const_[vs_reg_world_start_ * 4]);
 			dev->SetTransform(D3DTS_WORLD, reinterpret_cast<const D3DMATRIX*>(transposed));
 
 			world_dirty_ = false;

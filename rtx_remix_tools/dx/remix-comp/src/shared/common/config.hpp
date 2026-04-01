@@ -19,17 +19,6 @@ namespace shared::common
 		{
 			bool enabled = true;
 			int albedo_stage = 0;
-
-			int vs_reg_view_start = 0;
-			int vs_reg_view_end = 4;
-			int vs_reg_proj_start = 4;
-			int vs_reg_proj_end = 8;
-			int vs_reg_world_start = 16;
-			int vs_reg_world_end = 20;
-
-			int vs_reg_bone_threshold = 20;
-			int vs_regs_per_bone = 3;
-			int vs_bone_min_regs = 3;
 		} ffp;
 
 		struct skinning_settings

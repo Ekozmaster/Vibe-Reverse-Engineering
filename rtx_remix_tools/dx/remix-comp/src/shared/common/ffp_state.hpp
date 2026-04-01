@@ -79,6 +79,17 @@ namespace shared::common
 		UINT stream_offset(UINT stream) const { return stream < 4 ? stream_offset_[stream] : 0; }
 		UINT stream_stride(UINT stream) const { return stream < 4 ? stream_stride_[stream] : 0; }
 
+		// VS constant register layout (game-specific, edit defaults when porting)
+		int reg_view_start() const { return vs_reg_view_start_; }
+		int reg_view_end() const { return vs_reg_view_end_; }
+		int reg_proj_start() const { return vs_reg_proj_start_; }
+		int reg_proj_end() const { return vs_reg_proj_end_; }
+		int reg_world_start() const { return vs_reg_world_start_; }
+		int reg_world_end() const { return vs_reg_world_end_; }
+		int reg_bone_threshold() const { return vs_reg_bone_threshold_; }
+		int regs_per_bone() const { return vs_regs_per_bone_; }
+		int bone_min_regs() const { return vs_bone_min_regs_; }
+
 		// Skinning data (populated by skinning module via on_set_vs_const_f bone detection)
 		int bone_start_reg() const { return bone_start_reg_; }
 		int num_bones() const { return num_bones_; }
@@ -134,6 +145,17 @@ namespace shared::common
 		int cur_decl_pos_off_ = 0;
 		int cur_decl_normal_off_ = 0;
 		int cur_decl_normal_type_ = -1;
+
+		// VS constant register layout (game-specific defaults — edit when porting)
+		int vs_reg_view_start_ = 0;
+		int vs_reg_view_end_ = 4;
+		int vs_reg_proj_start_ = 4;
+		int vs_reg_proj_end_ = 8;
+		int vs_reg_world_start_ = 16;
+		int vs_reg_world_end_ = 20;
+		int vs_reg_bone_threshold_ = 20;
+		int vs_regs_per_bone_ = 3;
+		int vs_bone_min_regs_ = 3;
 
 		// Bone detection
 		int bone_start_reg_ = 0;
