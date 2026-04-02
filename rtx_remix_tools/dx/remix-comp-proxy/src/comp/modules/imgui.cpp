@@ -71,11 +71,11 @@ namespace comp
 
 	void imgui::tab_about()
 	{
-		if (tex_addons::berry)
+		if (tex_addons::icon)
 		{
 			const float cursor_y = ImGui::GetCursorPosY();
 			ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() * 0.85f, 24));
-			ImGui::Image((ImTextureID)tex_addons::berry, ImVec2(48.0f, 48.0f), ImVec2(0.03f, 0.03f), ImVec2(0.96f, 0.96f));
+			ImGui::Image((ImTextureID)tex_addons::icon, ImVec2(48.0f, 48.0f), ImVec2(0.03f, 0.03f), ImVec2(0.96f, 0.96f));
 			ImGui::SetCursorPosY(cursor_y);
 		}
 

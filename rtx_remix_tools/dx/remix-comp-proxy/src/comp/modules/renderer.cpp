@@ -10,27 +10,27 @@ namespace comp
 	namespace tex_addons
 	{
 		bool initialized = false;
-		LPDIRECT3DTEXTURE9 berry = nullptr;
+		LPDIRECT3DTEXTURE9 icon = nullptr;
 
 		void init_texture_addons(bool release)
 		{
 			if (release)
 			{
-				if (tex_addons::berry) tex_addons::berry->Release();
+				if (tex_addons::icon) tex_addons::icon->Release();
 				return;
 			}
 
-			shared::common::log("Renderer", "Loading CompMod Textures ...", shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
-
-			auto load_texture = [](IDirect3DDevice9* dev, const char* path, LPDIRECT3DTEXTURE9* tex)
-				{
-					HRESULT hr;
-					hr = D3DXCreateTextureFromFileA(dev, path, tex);
-					if (FAILED(hr)) shared::common::log("Renderer", std::format("Failed to load {}", path), shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
-				};
-
 			const auto dev = shared::globals::d3d_device;
-			load_texture(dev, "rtx_comp\\textures\\berry.png", &tex_addons::berry);
+			const char* icon_path = "rtx_comp\\textures\\icon.png";
+
+			// Only load if the file exists — no icon is shipped by default
+			if (GetFileAttributesA(icon_path) != INVALID_FILE_ATTRIBUTES)
+			{
+				HRESULT hr = D3DXCreateTextureFromFileA(dev, icon_path, &tex_addons::icon);
+				if (FAILED(hr))
+					shared::common::log("Renderer", std::format("Failed to load {}", icon_path), shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
+			}
+
 			tex_addons::initialized = true;
 		}
 	}

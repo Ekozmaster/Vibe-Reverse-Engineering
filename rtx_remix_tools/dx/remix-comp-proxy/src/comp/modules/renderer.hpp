@@ -5,7 +5,7 @@ namespace comp
 	namespace tex_addons
 	{
 		extern bool initialized;
-		extern LPDIRECT3DTEXTURE9 berry;
+		extern LPDIRECT3DTEXTURE9 icon;
 		extern void init_texture_addons(bool release = false);
 	}
 
