@@ -160,9 +160,10 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 ## Dynamic Analysis (`livetools/`) -- Frida-based, attaches to running process
 
 ```
-python -m livetools attach <process>    # start session
-python -m livetools detach              # end session
-python -m livetools status              # check connection
+python -m livetools attach <process>                    # attach to running process by name or PID
+python -m livetools attach "C:/Games/game.exe" --spawn  # launch + instrument before init code runs
+python -m livetools detach                              # end session
+python -m livetools status                              # check connection
 ```
 
 | Command | Purpose |

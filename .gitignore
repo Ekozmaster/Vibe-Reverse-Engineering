@@ -25,6 +25,7 @@ dxtrace_frame.jsonl
 
 # livetools daemon state
 livetools/.state.json
+livetools/.daemon.log
 
 # IDE / Editor
 .vs/

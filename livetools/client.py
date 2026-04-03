@@ -10,6 +10,7 @@ from pathlib import Path
 HOST = "127.0.0.1"
 PORT = 27042
 STATE_FILE = Path(__file__).parent / ".state.json"
+DAEMON_LOG = Path(__file__).parent / ".daemon.log"
 RECV_BUF = 1 << 20
 
 

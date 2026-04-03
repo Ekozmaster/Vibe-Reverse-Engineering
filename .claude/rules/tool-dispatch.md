@@ -29,6 +29,8 @@ Everything else in `retools`. Tell it WHAT you need, not HOW. D3D9-specific ques
 
 ## Live tools (main agent, attached process)
 
+- `livetools attach <name_or_pid>` — attach to running process
+- `livetools attach <path> --spawn` — launch exe suspended, instrument, resume (catches init code)
 - `livetools trace` / `collect` — hit logging, register reads
 - `livetools bp` / `watch` / `regs` / `stack` / `bt` — breakpoints + inspection
 - `livetools mem read/write` / `scan` — memory ops

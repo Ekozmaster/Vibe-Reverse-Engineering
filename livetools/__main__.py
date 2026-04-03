@@ -55,6 +55,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from . import client
 
@@ -74,6 +75,13 @@ def _require_attached() -> bool:
 # ── session commands ───────────────────────────────────────────────────────
 
 def cmd_attach(args: argparse.Namespace) -> None:
+    spawn = getattr(args, "spawn", False)
+    if spawn:
+        target_path = Path(args.target).resolve()
+        if not target_path.is_file():
+            print(f"[error] --spawn target not found: {target_path}", file=sys.stderr)
+            sys.exit(1)
+
     if client.is_daemon_alive():
         try:
             resp = client.send_command({"cmd": "status"})
@@ -86,7 +94,7 @@ def cmd_attach(args: argparse.Namespace) -> None:
         print("Stale daemon detected, cleaning up...")
         _force_cleanup()
 
-    _spawn_daemon(args.target)
+    _spawn_daemon(args.target, spawn=spawn)
 
 
 def _force_cleanup() -> None:
@@ -98,8 +106,10 @@ def _force_cleanup() -> None:
     time.sleep(0.5)
 
 
-def _spawn_daemon(target: str) -> None:
+def _spawn_daemon(target: str, *, spawn: bool = False) -> None:
     daemon_cmd = [sys.executable, "-m", "livetools.server", target]
+    if spawn:
+        daemon_cmd.append("--spawn")
     kwargs: dict = {}
     if sys.platform == "win32":
         CREATE_NO_WINDOW = 0x08000000
@@ -107,8 +117,10 @@ def _spawn_daemon(target: str) -> None:
     else:
         kwargs["start_new_session"] = True
     kwargs["stdout"] = subprocess.DEVNULL
-    kwargs["stderr"] = subprocess.DEVNULL
+    log_fh = client.DAEMON_LOG.open("w")
+    kwargs["stderr"] = log_fh
     subprocess.Popen(daemon_cmd, **kwargs)
+    log_fh.close()
 
     deadline = time.time() + 15
     while time.time() < deadline:
@@ -116,9 +128,19 @@ def _spawn_daemon(target: str) -> None:
             resp = client.send_command({"cmd": "status"})
             print(client.format_status_line(resp))
             print(f"Attached to {target}.")
+            client.DAEMON_LOG.unlink(missing_ok=True)
             return
         time.sleep(0.3)
+
     print("[error] Daemon did not start within 15 seconds.", file=sys.stderr)
+    log_text = ""
+    try:
+        log_text = client.DAEMON_LOG.read_text().strip()
+    except OSError:
+        pass
+    if log_text:
+        print(f"[error] Daemon log:\n{log_text}", file=sys.stderr)
+    client.DAEMON_LOG.unlink(missing_ok=True)
     sys.exit(1)
 
 
@@ -666,11 +688,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Attach to a running process (starts background daemon)",
         description="Attach to a running process by name or PID. "
                     "Starts a background Frida daemon that stays connected.\n\n"
+                    "Use --spawn to launch the executable instead of attaching\n"
+                    "to an already-running process. The process starts suspended,\n"
+                    "Frida instruments it, then resumes -- catching all init code.\n\n"
                     "Example:\n"
                     "  python -m livetools attach game.exe\n"
-                    "  python -m livetools attach 12345")
+                    "  python -m livetools attach 12345\n"
+                    "  python -m livetools attach \"C:/Games/game.exe\" --spawn")
     sp.add_argument("target",
-        help="Process name (e.g. game.exe) or PID (e.g. 12345)")
+        help="Process name (e.g. game.exe), PID, or full path with --spawn")
+    sp.add_argument("--spawn", action="store_true",
+        help="Launch the executable with Frida (spawn mode) instead of "
+             "attaching to an already-running process")
 
     sub.add_parser("detach",
         help="Detach from the process and stop the daemon")

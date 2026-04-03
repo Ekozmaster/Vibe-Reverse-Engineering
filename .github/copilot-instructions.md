@@ -30,7 +30,7 @@ Run all tools from the repo root using `python -m <module>` syntax (e.g. `python
 
 ## Live Tools First
 
-The main agent owns `livetools` — always use them to verify static findings and act on leads from subagents. When a subagent returns addresses or candidates, immediately follow up with live tools (trace, breakpoint, mem read/write) rather than spawning more static analysis. Static analysis finds clues; live tools confirm and act on them. Do not wait idle for subagents — use live tools to explore independently while static analysis runs in the background.
+The main agent owns `livetools` — always use them to verify static findings and act on leads from subagents. Use `attach <name_or_pid>` for running processes, or `attach <path> --spawn` to launch + instrument before init code runs. When a subagent returns addresses or candidates, immediately follow up with live tools (trace, breakpoint, mem read/write) rather than spawning more static analysis. Static analysis finds clues; live tools confirm and act on them. Do not wait idle for subagents — use live tools to explore independently while static analysis runs in the background.
 
 ## Dual-Backend Decompilation
 

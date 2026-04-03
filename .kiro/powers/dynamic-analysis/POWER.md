@@ -18,9 +18,10 @@ All commands: `python -m livetools <command> [args]`
 
 ### Session
 ```
-python -m livetools attach <name_or_pid>     # start daemon, attach Frida
-python -m livetools detach                    # release target, stop daemon
-python -m livetools status                    # check state
+python -m livetools attach <name_or_pid>             # attach to running process
+python -m livetools attach <exe_path> --spawn        # launch + instrument before init code runs
+python -m livetools detach                            # release target, stop daemon
+python -m livetools status                            # check state
 ```
 
 ### Breakpoints (blocking)

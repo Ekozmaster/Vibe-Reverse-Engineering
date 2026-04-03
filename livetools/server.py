@@ -27,13 +27,16 @@ WORKSPACE = Path(__file__).resolve().parent.parent
 
 
 class Daemon:
-    def __init__(self, target: str):
+    def __init__(self, target: str, *, spawn: bool = False):
         self.target = target
+        self.spawn_mode = spawn
+        self.dev: frida.core.Device | None = None
         self.session: frida.core.Session | None = None
         self.script: frida.core.Script | None = None
         self.api = None
         self.pid: int | None = None
         self.target_name = target
+        self._cleaned_up = False
 
         self._hit: dict | None = None
         self._hit_event = threading.Event()
@@ -49,32 +52,53 @@ class Daemon:
     # ── Frida setup ────────────────────────────────────────────────────────
 
     def attach(self) -> None:
-        try:
-            pid = int(self.target)
-        except ValueError:
-            pid = None
+        self.dev = frida.get_local_device()
 
-        if pid is not None:
-            self.session = frida.attach(pid)
-            self.pid = pid
+        if self.spawn_mode:
+            exe_dir = str(Path(self.target).resolve().parent)
+            self.pid = self.dev.spawn([self.target], cwd=exe_dir)
+            self.target_name = Path(self.target).name
+            print(f"[livetools daemon] spawned {self.target_name} (pid {self.pid}), suspended")
+            self.session = self.dev.attach(self.pid)
         else:
-            dev = frida.get_local_device()
-            for proc in dev.enumerate_processes():
-                if proc.name.lower() == self.target.lower():
-                    self.pid = proc.pid
-                    break
-            if self.pid is None:
-                raise RuntimeError(f"Process '{self.target}' not found")
-            self.session = frida.attach(self.pid)
-            self.target_name = self.target
+            try:
+                pid = int(self.target)
+            except ValueError:
+                pid = None
+
+            if pid is not None:
+                self.session = frida.attach(pid)
+                self.pid = pid
+            else:
+                for proc in self.dev.enumerate_processes():
+                    if proc.name.lower() == self.target.lower():
+                        self.pid = proc.pid
+                        break
+                if self.pid is None:
+                    raise RuntimeError(f"Process '{self.target}' not found")
+                self.session = frida.attach(self.pid)
+                self.target_name = self.target
 
         self.session.on("detached", self._on_session_detached)
 
-        js_code = AGENT_JS.read_text(encoding="utf-8")
-        self.script = self.session.create_script(js_code)
-        self.script.on("message", self._on_message)
-        self.script.load()
-        self.api = self.script.exports_sync
+        try:
+            js_code = AGENT_JS.read_text(encoding="utf-8")
+            self.script = self.session.create_script(js_code)
+            self.script.on("message", self._on_message)
+            self.script.load()
+            self.api = self.script.exports_sync
+        except Exception:
+            if self.spawn_mode:
+                # Don't leave process suspended forever
+                try:
+                    self.dev.resume(self.pid)
+                except Exception:
+                    pass
+            raise
+
+        if self.spawn_mode:
+            self.dev.resume(self.pid)
+            print(f"[livetools daemon] resumed pid {self.pid}")
 
     def _on_session_detached(self, reason: str, crash) -> None:
         print(f"[livetools daemon] target detached: {reason}", file=sys.stderr)
@@ -122,9 +146,10 @@ class Daemon:
     # ── helpers ────────────────────────────────────────────────────────────
 
     def _base_resp(self) -> dict:
-        bp_list = self.api.list_bps() if self.api else []
-        is_frozen = self.api.is_frozen() if self.api else False
-        frozen_addr = self.api.get_frozen_addr() if is_frozen else None
+        api = self.api
+        bp_list = api.list_bps() if api else []
+        is_frozen = api.is_frozen() if api else False
+        frozen_addr = api.get_frozen_addr() if is_frozen else None
         return {
             "target": self.target_name,
             "pid": self.pid,
@@ -700,6 +725,9 @@ class Daemon:
         return b"".join(parts)
 
     def _cleanup(self) -> None:
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
         try:
             if self.script:
                 self.script.unload()
@@ -719,11 +747,13 @@ class Daemon:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python -m livetools.server <target_name_or_pid>", file=sys.stderr)
+        print("Usage: python -m livetools.server <target_name_or_pid> [--spawn]",
+              file=sys.stderr)
         sys.exit(1)
 
     target = sys.argv[1]
-    daemon = Daemon(target)
+    spawn = "--spawn" in sys.argv[2:]
+    daemon = Daemon(target, spawn=spawn)
 
     def _shutdown(sig, frame):
         daemon._running = False
@@ -731,8 +761,13 @@ def main() -> None:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    daemon.attach()
-    daemon.serve()
+    try:
+        daemon.attach()
+        daemon.serve()
+    except Exception as exc:
+        print(f"[livetools daemon] fatal: {exc}", file=sys.stderr)
+    finally:
+        daemon._cleanup()
 
 
 if __name__ == "__main__":
