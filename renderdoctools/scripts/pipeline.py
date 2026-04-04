@@ -33,18 +33,24 @@ for stage_name, stage_enum in STAGES:
     stage_info = {
         "bound": True,
         "entryPoint": refl.entryPoint,
-        "debugInfo": refl.debugInfo.files[0].filename if refl.debugInfo and len(refl.debugInfo.files) > 0 else "",
+        "debugInfo": "",
         "constantBuffers": [],
         "readOnlyResources": [],
         "readWriteResources": [],
     }
+
+    # Safe debugInfo access
+    try:
+        if refl.debugInfo and len(refl.debugInfo.files) > 0:
+            stage_info["debugInfo"] = refl.debugInfo.files[0].filename
+    except Exception:
+        pass
 
     for i, cb in enumerate(refl.constantBlocks):
         stage_info["constantBuffers"].append({
             "index": i,
             "name": cb.name,
             "byteSize": cb.byteSize,
-            "bindPoint": cb.bindPoint,
         })
 
     for i, res in enumerate(refl.readOnlyResources):
@@ -52,7 +58,6 @@ for stage_name, stage_enum in STAGES:
             "index": i,
             "name": res.name,
             "type": str(res.resType),
-            "bindPoint": res.bindPoint,
         })
 
     for i, res in enumerate(refl.readWriteResources):
@@ -60,7 +65,6 @@ for stage_name, stage_enum in STAGES:
             "index": i,
             "name": res.name,
             "type": str(res.resType),
-            "bindPoint": res.bindPoint,
         })
 
     pipeline["stages"][stage_name] = stage_info

@@ -65,5 +65,5 @@ compass_artifact_*
 # Superpowers specs/plans (session artifacts)
 docs/
 
-# RenderDoc (bundled via tools/renderdoc/)
-tools/renderdoc/
+# RenderDoc (bundled distribution)
+tools/renderdoc*/

@@ -301,7 +301,9 @@ def cmd_info(args: argparse.Namespace) -> None:
 
 
 def cmd_capture(args: argparse.Namespace) -> None:
-    renderdoccmd = core.WORKSPACE_ROOT / "tools" / "renderdoc" / "renderdoccmd.exe"
+    # renderdoccmd lives next to qrenderdoc
+    qrd = core.find_renderdoc()
+    renderdoccmd = qrd.parent / "renderdoccmd.exe"
     if not renderdoccmd.is_file():
         print("[error] renderdoccmd not found at %s" % renderdoccmd, file=sys.stderr)
         sys.exit(1)
