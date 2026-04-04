@@ -30,6 +30,11 @@ GHIDRA_DIR_NAME = f"ghidra_{GHIDRA_VERSION}_PUBLIC"
 JDK_VERSION = "21"
 JDK_ADOPTIUM_URL = "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse"
 
+RENDERDOC_VERSION = "1.43"
+RENDERDOC_ZIP = f"RenderDoc_{RENDERDOC_VERSION}_64.zip"
+RENDERDOC_URL = f"https://renderdoc.org/stable/{RENDERDOC_VERSION}/{RENDERDOC_ZIP}"
+RENDERDOC_DIR_NAME = f"RenderDoc_{RENDERDOC_VERSION}_64"
+
 
 def record(name: str, status: str, detail: str = ""):
     results.append((name, status, detail))
@@ -165,6 +170,32 @@ def check_pyghidra():
     except ImportError:
         record("pip:pyghidra", WARN,
                "pyghidra not installed -- run: python verify_install.py --setup")
+
+
+def _find_renderdoc_dir() -> Path | None:
+    """Find RenderDoc installation in tools/."""
+    for name in ["renderdoc", RENDERDOC_DIR_NAME]:
+        candidate = TOOLS_DIR / name
+        if candidate.is_dir() and (candidate / "qrenderdoc.exe").exists():
+            return candidate
+    if TOOLS_DIR.is_dir():
+        for d in sorted(TOOLS_DIR.iterdir(), reverse=True):
+            if d.name.lower().startswith("renderdoc") and d.is_dir():
+                if (d / "qrenderdoc.exe").exists():
+                    return d
+    return None
+
+
+def check_renderdoc() -> bool:
+    """Check for RenderDoc installation. Returns True if found."""
+    rd = _find_renderdoc_dir()
+    if rd:
+        record("renderdoc", PASS, str(rd))
+        return True
+    record("renderdoc", WARN,
+           "RenderDoc not found in tools/ -- "
+           "run: python verify_install.py --setup")
+    return False
 
 
 def check_retools_import():
@@ -306,6 +337,34 @@ def setup_pyghidra():
         return False
 
 
+def setup_renderdoc():
+    """Download and extract RenderDoc to tools/."""
+    existing = _find_renderdoc_dir()
+    if existing:
+        print(f"  RenderDoc already at {existing}")
+        return True
+
+    print(f"\n  Downloading RenderDoc {RENDERDOC_VERSION} (~23 MB)...")
+    try:
+        data = _download(RENDERDOC_URL, f"RenderDoc {RENDERDOC_VERSION}")
+        TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+        zip_path = TOOLS_DIR / RENDERDOC_ZIP
+        zip_path.write_bytes(data)
+        print("  Extracting...")
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(TOOLS_DIR)
+        zip_path.unlink()
+        rd_dir = TOOLS_DIR / RENDERDOC_DIR_NAME
+        if rd_dir.is_dir() and (rd_dir / "qrenderdoc.exe").exists():
+            record("setup:renderdoc", PASS, f"Installed to {rd_dir}")
+            return True
+        record("setup:renderdoc", FAIL, "Extraction succeeded but qrenderdoc.exe not found")
+        return False
+    except Exception as e:
+        record("setup:renderdoc", FAIL, f"Download failed: {e}")
+        return False
+
+
 def run_setup():
     """Auto-install optional pyghidra dependencies: JDK, Ghidra, pyghidra."""
     print("=" * 60)
@@ -341,6 +400,7 @@ def main():
     check_java()
     check_ghidra()
     check_pyghidra()
+    check_renderdoc()
     check_r2_runs()
     check_retools_import()
     check_sigdb()
@@ -359,17 +419,27 @@ def main():
             n in ("java", "ghidra-install", "pip:pyghidra")
             for n, s, _ in results if s == WARN
         )
+        renderdoc_warn = any(
+            n == "renderdoc" for n, s, _ in results if s == WARN
+        )
+        if renderdoc_warn:
+            print("=" * 60)
+            print("RenderDoc Setup (GPU capture analysis)")
+            print("=" * 60)
+            setup_renderdoc()
+            print()
         if ghidra_warns:
             run_setup()
-            # Re-check after setup
-            results.clear()
-            print("Re-checking after setup...\n")
-            check_java()
-            check_ghidra()
-            check_pyghidra()
+        # Re-check after setup
+        results.clear()
+        print("Re-checking after setup...\n")
+        check_java()
+        check_ghidra()
+        check_pyghidra()
+        check_renderdoc()
     elif warns:
         print(f"ALL REQUIRED CHECKS PASSED ({warns} optional warning(s)).")
-        print("Run 'python verify_install.py --setup' to auto-install optional Ghidra backend.")
+        print("Run 'python verify_install.py --setup' to auto-install optional dependencies.")
     else:
         print("ALL CHECKS PASSED.")
 

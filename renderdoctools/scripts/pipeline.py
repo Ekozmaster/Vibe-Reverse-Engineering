@@ -57,14 +57,14 @@ for stage_name, stage_enum in STAGES:
         stage_info["readOnlyResources"].append({
             "index": i,
             "name": res.name,
-            "type": str(res.resType),
+            "type": str(res.textureType),
         })
 
     for i, res in enumerate(refl.readWriteResources):
         stage_info["readWriteResources"].append({
             "index": i,
             "name": res.name,
-            "type": str(res.resType),
+            "type": str(res.textureType),
         })
 
     pipeline["stages"][stage_name] = stage_info

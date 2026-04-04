@@ -26,6 +26,39 @@ Analysis:
 Capture info:
     python -m renderdoctools info <capture.rdc>
 
+Pixel history:
+    python -m renderdoctools pixel-history <capture.rdc> --event <EID> --resource <RID> --x 100 --y 200
+
+Debug shader:
+    python -m renderdoctools debug-shader <capture.rdc> --event <EID> --mode pixel --x 100 --y 200
+
+Resource usage:
+    python -m renderdoctools usage <capture.rdc> --resource <RID> [--filter read]
+
+Pick pixel:
+    python -m renderdoctools pick-pixel <capture.rdc> --resource <RID> --x 100 --y 200
+
+Texture stats:
+    python -m renderdoctools tex-stats <capture.rdc> --resource <RID> [--histogram]
+
+Debug messages:
+    python -m renderdoctools messages <capture.rdc> [--severity high]
+
+Frame info:
+    python -m renderdoctools frame-info <capture.rdc>
+
+Descriptors:
+    python -m renderdoctools descriptors <capture.rdc> --event <EID> [--type sampler]
+
+Custom shader:
+    python -m renderdoctools custom-shader <capture.rdc> --event <EID> --source shader.hlsl --output out.dds
+
+Texture data:
+    python -m renderdoctools tex-data <capture.rdc> --resource <RID> [--output-file dump.bin]
+
+API calls:
+    python -m renderdoctools api-calls <capture.rdc> [--event <EID>] [--filter DrawIndexed]
+
 Utilities:
     python -m renderdoctools open <capture.rdc>
     python -m renderdoctools capture <exe> [--output FILE]
@@ -318,6 +351,304 @@ def cmd_capture(args: argparse.Namespace) -> None:
     subprocess.run(cmd)
 
 
+def _parse_xyz(val):
+    parts = val.split(",")
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError("expected X,Y,Z (three comma-separated ints)")
+    return [int(p) for p in parts]
+
+
+def cmd_pixel_history(args: argparse.Namespace) -> None:
+    config = {
+        "event_id": args.event,
+        "resource_id": args.resource,
+        "x": args.x,
+        "y": args.y,
+        "sub_mip": args.sub_mip or 0,
+        "sub_slice": args.sub_slice or 0,
+        "sub_sample": args.sub_sample or 0,
+    }
+    result = core.run_script("pixel_history", args.capture, config)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    print("=== Pixel History @ (%d, %d) ===" % (args.x, args.y))
+    for mod in result.get("modifications", []):
+        status = "PASS" if mod.get("passed") else "FAIL"
+        pre = mod.get("preRGBA", [0, 0, 0, 0])
+        post = mod.get("postRGBA", [0, 0, 0, 0])
+        print("  EID %d [%s] pre=(%.3f, %.3f, %.3f, %.3f) post=(%.3f, %.3f, %.3f, %.3f)" % (
+            mod["eid"], status, pre[0], pre[1], pre[2], pre[3],
+            post[0], post[1], post[2], post[3]))
+
+
+def cmd_debug_shader(args: argparse.Namespace) -> None:
+    config = {
+        "event_id": args.event,
+        "mode": args.mode,
+        "vertex_index": args.vertex_index or 0,
+        "instance": args.instance or 0,
+        "view": args.view or 0,
+        "x": args.x or 0,
+        "y": args.y or 0,
+        "sample": args.sample or 0,
+        "primitive": args.primitive or 0,
+        "group": args.group or [0, 0, 0],
+        "thread": args.thread or [0, 0, 0],
+        "max_steps": args.max_steps or 10000,
+    }
+    result = core.run_script("debug_shader", args.capture, config, timeout=300)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    print("=== Shader Debug Trace @ EID %d [%s] ===" % (args.event, args.mode))
+    for step in result.get("steps", []):
+        line = "  step %d: " % step["index"]
+        if step.get("source"):
+            line += "%s " % step["source"]
+        for var in step.get("variables", []):
+            line += "%s=%s " % (var["name"], var["value"])
+        print(line.rstrip())
+
+
+def cmd_usage(args: argparse.Namespace) -> None:
+    config = {
+        "resource_id": args.resource,
+        "usage_filter": args.filter or "all",
+    }
+    result = core.run_script("usage", args.capture, config)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    print("=== Resource Usage for %s ===" % args.resource)
+    for entry in result.get("usages", []):
+        print("  EID %d: %s (%s)" % (entry["eventId"], entry["eventName"], entry["usage"]))
+
+
+def cmd_pick_pixel(args: argparse.Namespace) -> None:
+    config = {
+        "resource_id": args.resource,
+        "x": args.x,
+        "y": args.y,
+        "sub_mip": args.sub_mip or 0,
+        "sub_slice": args.sub_slice or 0,
+        "sub_sample": args.sub_sample or 0,
+        "comp_type": args.comp_type or "",
+    }
+    result = core.run_script("pick_pixel", args.capture, config)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    print("=== Pixel @ (%d, %d) RID %s ===" % (args.x, args.y, args.resource))
+    if "floatValue" in result:
+        v = result["floatValue"]
+        print("  float: (%.6f, %.6f, %.6f, %.6f)" % (v[0], v[1], v[2], v[3]))
+    if "intValue" in result:
+        v = result["intValue"]
+        print("  int:   (%d, %d, %d, %d)" % (v[0], v[1], v[2], v[3]))
+    if "uintValue" in result:
+        v = result["uintValue"]
+        print("  uint:  (%d, %d, %d, %d)" % (v[0], v[1], v[2], v[3]))
+
+
+def cmd_tex_stats(args: argparse.Namespace) -> None:
+    config = {
+        "resource_id": args.resource,
+        "sub_mip": args.mip or 0,
+        "sub_slice": args.slice or 0,
+        "sub_sample": args.sample or 0,
+        "histogram": args.histogram,
+        "histogram_min": args.hist_min if args.hist_min is not None else 0.0,
+        "histogram_max": args.hist_max if args.hist_max is not None else 1.0,
+    }
+    result = core.run_script("tex_stats", args.capture, config)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    print("=== Texture Stats for %s ===" % args.resource)
+    if "minRGBA" in result:
+        v = result["minRGBA"]
+        print("  min: (%.4f, %.4f, %.4f, %.4f)" % (v[0], v[1], v[2], v[3]))
+    if "maxRGBA" in result:
+        v = result["maxRGBA"]
+        print("  max: (%.4f, %.4f, %.4f, %.4f)" % (v[0], v[1], v[2], v[3]))
+    if "histogram" in result:
+        print("  histogram: %d buckets" % len(result["histogram"]))
+        for i, count in enumerate(result["histogram"]):
+            print("    [%d] %d" % (i, count))
+
+
+def cmd_messages(args: argparse.Namespace) -> None:
+    config = {
+        "severity_filter": args.severity or "all",
+    }
+    result = core.run_script("messages", args.capture, config)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    msgs = result.get("messages", [])
+    print("=== %d Debug Messages ===" % len(msgs))
+    for m in msgs:
+        print("  [%s] %s: %s" % (m.get("severity", "?"), m.get("category", "?"), m.get("description", "")))
+
+
+def cmd_frame_info(args: argparse.Namespace) -> None:
+    result = core.run_script("frame_info", args.capture)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    print("=== Frame Info ===")
+    for k, v in result.items():
+        print("  %s: %s" % (k, v))
+
+
+def cmd_descriptors(args: argparse.Namespace) -> None:
+    config = {
+        "event_id": args.event,
+        "type_filter": args.type or "all",
+    }
+    result = core.run_script("descriptors", args.capture, config)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    descs = result.get("descriptors", [])
+    print("=== %d Descriptors @ EID %d ===" % (len(descs), args.event))
+    for d in descs:
+        print("  [%s] %s: %s (%s)" % (d.get("stage", "?"), d.get("type", "?"),
+              d.get("resource", "?"), d.get("format", "?")))
+
+
+def cmd_custom_shader(args: argparse.Namespace) -> None:
+    source_path = Path(args.source)
+    if not source_path.is_file():
+        print("[error] shader source not found: %s" % args.source, file=sys.stderr)
+        sys.exit(1)
+    shader_source = source_path.read_text()
+
+    config = {
+        "event_id": args.event,
+        "shader_source": shader_source,
+        "output_path": str(Path(args.output_path).resolve()),
+        "encoding": args.encoding or "",
+        "entry_point": args.entry_point or "main",
+    }
+    result = core.run_script("custom_shader", args.capture, config)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    if result.get("success"):
+        print("Custom shader applied successfully.")
+        if result.get("saved"):
+            print("Saved to: %s" % result["saved"])
+    else:
+        print("Custom shader failed.")
+
+
+def cmd_tex_data(args: argparse.Namespace) -> None:
+    config = {
+        "resource_id": args.resource,
+        "sub_mip": args.sub_mip or 0,
+        "sub_slice": args.sub_slice or 0,
+        "sub_sample": args.sub_sample or 0,
+        "output_path": str(Path(args.output_file).resolve()) if args.output_file else "",
+        "hex_preview_bytes": args.preview_bytes or 256,
+    }
+    result = core.run_script("tex_data", args.capture, config)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    print("=== Texture Data for %s ===" % args.resource)
+    if result.get("width"):
+        print("  %dx%d %s" % (result["width"], result["height"], result.get("format", "")))
+    if result.get("saved"):
+        print("  Saved to: %s" % result["saved"])
+    if result.get("hexPreview"):
+        print("  Hex preview:\n    %s" % result["hexPreview"])
+
+
+def cmd_api_calls(args: argparse.Namespace) -> None:
+    config = {
+        "event_id": args.event or 0,
+        "filter": args.filter or "",
+        "range_start": args.range[0] if args.range else 0,
+        "range_end": args.range[1] if args.range else 0,
+    }
+    result = core.run_script("api_calls", args.capture, config)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    if "error" in result:
+        print("[error] %s" % result["error"], file=sys.stderr)
+        sys.exit(1)
+
+    calls = result.get("calls", [])
+    print("=== %d API Calls ===" % len(calls))
+    for c in calls:
+        print("  EID %d: %s" % (c.get("eid", 0), c.get("name", "")))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="renderdoctools",
@@ -412,6 +743,134 @@ def main() -> None:
     p_cap.add_argument("exe_args", nargs="*", help="Arguments to pass to executable")
     p_cap.add_argument("--output", "-o", type=str, dest="output_file", help="Output capture filename template")
     p_cap.set_defaults(func=cmd_capture)
+
+    # pixel-history
+    p_ph = sub.add_parser("pixel-history", help="Trace pixel modification history")
+    p_ph.add_argument("capture", help="Path to .rdc capture file")
+    p_ph.add_argument("--event", type=int, required=True, help="Event ID")
+    p_ph.add_argument("--resource", type=str, required=True, help="Resource ID")
+    p_ph.add_argument("--x", type=int, required=True, help="Pixel X coordinate")
+    p_ph.add_argument("--y", type=int, required=True, help="Pixel Y coordinate")
+    p_ph.add_argument("--sub-mip", type=int, default=0, help="Sub-resource mip level")
+    p_ph.add_argument("--sub-slice", type=int, default=0, help="Sub-resource slice")
+    p_ph.add_argument("--sub-sample", type=int, default=0, help="Sub-resource sample")
+    p_ph.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_ph.add_argument("--output", type=str, help="Write output to file")
+    p_ph.set_defaults(func=cmd_pixel_history)
+
+    # debug-shader
+    p_ds = sub.add_parser("debug-shader", help="Debug a shader invocation step by step")
+    p_ds.add_argument("capture", help="Path to .rdc capture file")
+    p_ds.add_argument("--event", type=int, required=True, help="Event ID")
+    p_ds.add_argument("--mode", type=str, required=True, choices=["vertex", "pixel", "compute"], help="Shader stage to debug")
+    p_ds.add_argument("--vertex-index", type=int, default=0, help="Vertex index for vertex debug")
+    p_ds.add_argument("--instance", type=int, default=0, help="Instance index")
+    p_ds.add_argument("--view", type=int, default=0, help="Multiview index")
+    p_ds.add_argument("--x", type=int, default=0, help="Pixel X for pixel debug")
+    p_ds.add_argument("--y", type=int, default=0, help="Pixel Y for pixel debug")
+    p_ds.add_argument("--sample", type=int, default=0, help="MSAA sample index")
+    p_ds.add_argument("--primitive", type=int, default=0, help="Primitive index")
+    p_ds.add_argument("--group", type=_parse_xyz, default=None, help="Compute group X,Y,Z")
+    p_ds.add_argument("--thread", type=_parse_xyz, default=None, help="Compute thread X,Y,Z")
+    p_ds.add_argument("--max-steps", type=int, default=10000, help="Maximum debug steps")
+    p_ds.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_ds.add_argument("--output", type=str, help="Write output to file")
+    p_ds.set_defaults(func=cmd_debug_shader)
+
+    # usage
+    p_usg = sub.add_parser("usage", help="Show which events use a resource")
+    p_usg.add_argument("capture", help="Path to .rdc capture file")
+    p_usg.add_argument("--resource", type=str, required=True, help="Resource ID")
+    p_usg.add_argument("--filter", type=str, default="all", choices=["read", "write", "all"], help="Filter by usage type")
+    p_usg.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_usg.add_argument("--output", type=str, help="Write output to file")
+    p_usg.set_defaults(func=cmd_usage)
+
+    # pick-pixel
+    p_pp = sub.add_parser("pick-pixel", help="Read pixel value from a texture")
+    p_pp.add_argument("capture", help="Path to .rdc capture file")
+    p_pp.add_argument("--resource", type=str, required=True, help="Resource ID")
+    p_pp.add_argument("--x", type=int, required=True, help="Pixel X coordinate")
+    p_pp.add_argument("--y", type=int, required=True, help="Pixel Y coordinate")
+    p_pp.add_argument("--sub-mip", type=int, default=0, help="Sub-resource mip level")
+    p_pp.add_argument("--sub-slice", type=int, default=0, help="Sub-resource slice")
+    p_pp.add_argument("--sub-sample", type=int, default=0, help="Sub-resource sample")
+    p_pp.add_argument("--comp-type", type=str, default="", help="Component type override")
+    p_pp.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_pp.add_argument("--output", type=str, help="Write output to file")
+    p_pp.set_defaults(func=cmd_pick_pixel)
+
+    # tex-stats
+    p_ts = sub.add_parser("tex-stats", help="Get texture min/max stats and histogram")
+    p_ts.add_argument("capture", help="Path to .rdc capture file")
+    p_ts.add_argument("--resource", type=str, required=True, help="Resource ID")
+    p_ts.add_argument("--mip", type=int, default=0, help="Mip level")
+    p_ts.add_argument("--slice", type=int, default=0, help="Array slice")
+    p_ts.add_argument("--sample", type=int, default=0, help="MSAA sample")
+    p_ts.add_argument("--histogram", action="store_true", help="Include histogram data")
+    p_ts.add_argument("--hist-min", type=float, default=None, help="Histogram range minimum")
+    p_ts.add_argument("--hist-max", type=float, default=None, help="Histogram range maximum")
+    p_ts.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_ts.add_argument("--output", type=str, help="Write output to file")
+    p_ts.set_defaults(func=cmd_tex_stats)
+
+    # messages
+    p_msg = sub.add_parser("messages", help="List debug messages from the capture")
+    p_msg.add_argument("capture", help="Path to .rdc capture file")
+    p_msg.add_argument("--severity", type=str, default="all", choices=["high", "medium", "low", "info", "all"], help="Filter by severity")
+    p_msg.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_msg.add_argument("--output", type=str, help="Write output to file")
+    p_msg.set_defaults(func=cmd_messages)
+
+    # frame-info
+    p_fi = sub.add_parser("frame-info", help="Show frame statistics")
+    p_fi.add_argument("capture", help="Path to .rdc capture file")
+    p_fi.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_fi.add_argument("--output", type=str, help="Write output to file")
+    p_fi.set_defaults(func=cmd_frame_info)
+
+    # descriptors
+    p_desc = sub.add_parser("descriptors", help="List descriptors accessed at an event")
+    p_desc.add_argument("capture", help="Path to .rdc capture file")
+    p_desc.add_argument("--event", type=int, required=True, help="Event ID")
+    p_desc.add_argument("--type", type=str, default="all", choices=["sampler", "cbuffer", "srv", "uav", "all"], help="Filter by descriptor type")
+    p_desc.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_desc.add_argument("--output", type=str, help="Write output to file")
+    p_desc.set_defaults(func=cmd_descriptors)
+
+    # custom-shader
+    p_cs = sub.add_parser("custom-shader", help="Apply a custom shader to a texture output")
+    p_cs.add_argument("capture", help="Path to .rdc capture file")
+    p_cs.add_argument("--event", type=int, required=True, help="Event ID")
+    p_cs.add_argument("--source", type=str, required=True, help="Path to shader source file")
+    p_cs.add_argument("--output", type=str, dest="output_path", required=True, help="Output file path")
+    p_cs.add_argument("--encoding", type=str, default="", help="Texture encoding")
+    p_cs.add_argument("--entry-point", type=str, default="main", help="Shader entry point name")
+    p_cs.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_cs.set_defaults(func=cmd_custom_shader)
+
+    # tex-data
+    p_td = sub.add_parser("tex-data", help="Export raw texture data")
+    p_td.add_argument("capture", help="Path to .rdc capture file")
+    p_td.add_argument("--resource", type=str, required=True, help="Resource ID")
+    p_td.add_argument("--sub-mip", type=int, default=0, help="Sub-resource mip level")
+    p_td.add_argument("--sub-slice", type=int, default=0, help="Sub-resource slice")
+    p_td.add_argument("--sub-sample", type=int, default=0, help="Sub-resource sample")
+    p_td.add_argument("--output-file", type=str, default="", help="Save raw data to file")
+    p_td.add_argument("--preview-bytes", type=int, default=256, help="Number of bytes for hex preview")
+    p_td.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_td.add_argument("--output", type=str, help="Write output to file")
+    p_td.set_defaults(func=cmd_tex_data)
+
+    # api-calls
+    p_api = sub.add_parser("api-calls", help="List API calls in the capture")
+    p_api.add_argument("capture", help="Path to .rdc capture file")
+    p_api.add_argument("--event", type=int, default=0, help="Show detail for specific event ID")
+    p_api.add_argument("--filter", type=str, default="", help="Filter calls by name")
+    p_api.add_argument("--range", type=int, nargs=2, metavar=("START", "END"), help="Event ID range")
+    p_api.add_argument("--json", action="store_true", help="Output raw JSON")
+    p_api.add_argument("--output", type=str, help="Write output to file")
+    p_api.set_defaults(func=cmd_api_calls)
 
     args = parser.parse_args()
 

@@ -28,6 +28,11 @@ _all_textures = {}
 for t in _controller.GetTextures():
     _all_textures[int(t.resourceId)] = t
 
+# Build a lookup of resource names (TextureDescription has no .name)
+_resource_names = {}
+for r in _controller.GetResources():
+    _resource_names[int(r.resourceId)] = r.name
+
 
 def get_texture_info(rid):
     """Get texture metadata for a resource ID."""
@@ -47,7 +52,7 @@ def get_texture_info(rid):
 
     return {
         "resourceId": str(rid_int),
-        "name": tex_desc.name if hasattr(tex_desc, "name") else "",
+        "name": _resource_names.get(rid_int, ""),
         "width": tex_desc.width,
         "height": tex_desc.height,
         "depth": tex_desc.depth,
@@ -120,16 +125,21 @@ for stage_name, stage_enum in [("vertex", rd.ShaderStage.Vertex), ("hull", rd.Sh
         ro_binds = state.GetReadOnlyResources(stage_enum)
     except Exception:
         continue
+    # Build index -> UsedDescriptor lookup via access.index
+    bind_map = {}
+    for used in ro_binds:
+        bind_map[used.access.index] = used
     for i, res in enumerate(refl.readOnlyResources):
-        if i < len(ro_binds) and len(ro_binds[i].resources) > 0:
-            bind = ro_binds[i].resources[0]
-            rid = bind.resourceId
-            if rid != rd.ResourceId.Null() and int(rid) not in seen:
-                seen.add(int(rid))
-                info = get_texture_info(rid)
-                if info:
-                    info["binding"] = "%s:SRV[%d] %s" % (stage_name, i, res.name)
-                    textures.append(info)
+        used = bind_map.get(i)
+        if used is None:
+            continue
+        rid = used.descriptor.resource
+        if rid != rd.ResourceId.Null() and int(rid) not in seen:
+            seen.add(int(rid))
+            info = get_texture_info(rid)
+            if info:
+                info["binding"] = "%s:SRV[%d] %s" % (stage_name, i, res.name)
+                textures.append(info)
 
 # Handle save operations
 saved = []
