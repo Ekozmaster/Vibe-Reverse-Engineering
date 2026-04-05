@@ -88,6 +88,7 @@ for mod in modifications:
         "shaderDiscarded": mod.shaderDiscarded,
         "depthTestFailed": mod.depthTestFailed,
         "stencilTestFailed": mod.stencilTestFailed,
+        "predicationSkipped": mod.predicationSkipped,
     }
 
     # Gather failed tests as a list for convenience

@@ -82,7 +82,8 @@ if mode == "vertex":
         _write_error("--vertex-index is required for vertex mode")
     instance = _cfg.get("instance", 0)
     view = _cfg.get("view", 0)
-    trace = _controller.DebugVertex(vertex_index, instance, vertex_index, view)
+    raw_index = _cfg.get("raw_index", vertex_index)
+    trace = _controller.DebugVertex(vertex_index, instance, raw_index, view)
 
 elif mode == "pixel":
     x = _cfg.get("x")

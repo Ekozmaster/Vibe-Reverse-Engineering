@@ -48,7 +48,10 @@ elif zero_samples:
         draw = actions[r.eventId]
         if not (draw.flags & rd.ActionFlags.Drawcall):
             continue
-        val = r.value.u32 if desc.resultByteWidth == 4 else r.value.u64
+        if desc.resultType == rd.CompType.Float:
+            val = r.value.f if desc.resultByteWidth == 4 else r.value.d
+        else:
+            val = r.value.u32 if desc.resultByteWidth == 4 else r.value.u64
         if val == 0:
             zero_draws.append({
                 "eid": r.eventId,
@@ -79,7 +82,10 @@ else:
         if r.eventId not in actions:
             continue
         draw = actions[r.eventId]
-        val = r.value.u32 if desc.resultByteWidth == 4 else r.value.u64
+        if desc.resultType == rd.CompType.Float:
+            val = r.value.f if desc.resultByteWidth == 4 else r.value.d
+        else:
+            val = r.value.u32 if desc.resultByteWidth == 4 else r.value.u64
         entries.append({
             "eid": r.eventId,
             "name": draw.GetName(sf),
