@@ -646,7 +646,7 @@ def cmd_api_calls(args: argparse.Namespace) -> None:
     calls = result.get("calls", [])
     print("=== %d API Calls ===" % len(calls))
     for c in calls:
-        print("  EID %d: %s" % (c.get("eid", 0), c.get("name", "")))
+        print("  EID %d: %s(%s)" % (c.get("eid", 0), c.get("function", ""), c.get("params_inline", "")))
 
 
 def main() -> None:

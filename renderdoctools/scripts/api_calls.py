@@ -18,7 +18,7 @@ def format_value(obj):
         return None
 
     if bt == rd.SDBasic.String:
-        return obj.data.str
+        return obj.data.string
 
     if bt == rd.SDBasic.Boolean:
         return obj.data.basic.b
@@ -34,7 +34,7 @@ def format_value(obj):
 
     if bt == rd.SDBasic.Enum:
         # Enums have a custom string and integer storage
-        s = obj.data.str
+        s = obj.data.string
         if s:
             return s
         return obj.data.basic.u
@@ -76,7 +76,7 @@ def format_value_inline(obj):
         return "NULL"
 
     if bt == rd.SDBasic.String:
-        s = obj.data.str
+        s = obj.data.string
         if len(s) > 40:
             return '"%s..."' % s[:37]
         return '"%s"' % s
@@ -97,7 +97,7 @@ def format_value_inline(obj):
         return "%.4g" % obj.data.basic.d
 
     if bt == rd.SDBasic.Enum:
-        s = obj.data.str
+        s = obj.data.string
         if s:
             return s
         return str(obj.data.basic.u)
