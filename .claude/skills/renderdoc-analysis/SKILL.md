@@ -27,12 +27,25 @@ python -m renderdoctools open <rdc>              # open existing capture in GUI
 ### Capture tips
 - Navigate to the exact game state first, then capture. The captured frame is whatever's rendering at trigger time.
 - For games with launchers, use `--opt-hook-children` to capture the child game process.
-- D3D11/D3D12/Vulkan/OpenGL supported. DX9 is NOT supported.
+- D3D11/D3D12/Vulkan/OpenGL/DX9 supported. DX9 requires a custom RenderDoc build with the D3D9 driver.
 - If the game crashes on inject, try `--opt-ref-all-resources` (slower but more compatible).
 - Capture files can be 100MB-1GB+. Each contains full texture/buffer data for that frame.
 
 ### When to guide the user to capture
 If no `.rdc` exists, walk through: (1) what game state to be in, (2) launch method (GUI attach vs CLI), (3) how to trigger (F12), (4) where the `.rdc` file ends up.
+
+## DX9 Captures
+
+DX9 support requires a custom RenderDoc build with the D3D9 replay driver. When working with DX9 captures:
+
+- **Texture export must use DDS format.** PNG export hangs or corrupts on DX9 BC/DXT textures. Always pass `--format dds`:
+  ```
+  python -m renderdoctools textures capture.rdc --event <EID> --save-all ./dump --format dds
+  ```
+- **Supported commands:** `events`, `analyze`, `pipeline`, `textures` (list + DDS export), `mesh`, `tex-data`, `api-calls`, `usage`, `frame-info`
+- **Limited/unsupported:** `shaders` (disassembly not available for SM1-3 bytecode), `debug-shader`, `custom-shader`, `counters`, `pixel-history`, `tex-stats`, `pick-pixel`
+- **Pipeline state** reports vertex and pixel shader stages with constant buffers and sampler bindings. Hull/domain/geometry/compute stages don't exist in DX9.
+- **Mesh data** decodes vertex attributes (POSITION, NORMAL, TEXCOORD, etc.) from the vertex declaration.
 
 ## Quick Reference
 
@@ -43,7 +56,8 @@ If no `.rdc` exists, walk through: (1) what game state to be in, (2) launch meth
 | `pipeline <rdc> --event EID` | Pipeline state at event |
 | `pipeline <rdc> --event EID --stage pixel` | Single stage |
 | `textures <rdc> --event EID` | List bound textures |
-| `textures <rdc> --event EID --save-all DIR` | Export all textures |
+| `textures <rdc> --event EID --save-all DIR` | Export all textures (PNG) |
+| `textures <rdc> --event EID --save-all DIR --format dds` | Export all textures (DDS, required for DX9) |
 | `shaders <rdc> --event EID` | Disassemble bound shaders |
 | `shaders <rdc> --event EID --cbuffers` | Include constant buffer values |
 | `mesh <rdc> --event EID` | Vertex input data |
@@ -86,6 +100,7 @@ Always verify you're looking at the right thing before deep analysis.
 **Dump and check render targets:**
 ```
 python -m renderdoctools textures capture.rdc --event <EID> --save-all ./verify
+python -m renderdoctools textures capture.rdc --event <EID> --save-all ./verify --format dds  # DX9 captures
 ```
 Open the images. Confirm the render target matches expected game output. If it's a depth buffer, GBuffer, or intermediate pass you don't recognize — wrong draw.
 
