@@ -14,6 +14,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
@@ -31,8 +32,8 @@ JDK_VERSION = "21"
 JDK_ADOPTIUM_URL = "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse"
 
 RENDERDOC_VERSION = "1.43"
-RENDERDOC_ZIP = "RenderDoc_DX9_Windows_x64.zip"
-RENDERDOC_URL = "https://github.com/Kim2091/renderdoc/releases/download/v1.43_dx9/RenderDoc_DX9_Windows_x64.zip"
+RENDERDOC_URL = "https://github.com/Kim2091/renderdoc/releases/download/v1.43_dx9_v2/RenderDoc_DX9_Windows_x86_x64.zip"
+RENDERDOC_ZIP = Path(urlparse(RENDERDOC_URL).path).name
 RENDERDOC_DIR_NAME = "RenderDoc_DX9"
 
 
@@ -352,9 +353,26 @@ def setup_renderdoc():
         zip_path.write_bytes(data)
         print("  Extracting...")
         with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(TOOLS_DIR)
+            members = [Path(name) for name in zf.namelist() if name and not name.endswith("/")]
+            top_levels = {member.parts[0] for member in members if member.parts}
+
+            # Support both archive layouts:
+            # 1. A wrapped folder like RenderDoc_DX9/qrenderdoc.exe
+            # 2. A flat runtime zip with qrenderdoc.exe and x86/ at archive root
+            if "qrenderdoc.exe" in top_levels or len(top_levels) != 1:
+                rd_dir = TOOLS_DIR / RENDERDOC_DIR_NAME
+                rd_dir.mkdir(parents=True, exist_ok=True)
+                zf.extractall(rd_dir)
+            else:
+                extracted_root = TOOLS_DIR / next(iter(top_levels))
+                zf.extractall(TOOLS_DIR)
+                rd_dir = TOOLS_DIR / RENDERDOC_DIR_NAME
+                if extracted_root != rd_dir:
+                    if rd_dir.exists():
+                        shutil.rmtree(rd_dir)
+                    extracted_root.rename(rd_dir)
         zip_path.unlink()
-        rd_dir = TOOLS_DIR / RENDERDOC_DIR_NAME
+        rd_dir = _find_renderdoc_dir() or (TOOLS_DIR / RENDERDOC_DIR_NAME)
         if rd_dir.is_dir() and (rd_dir / "qrenderdoc.exe").exists():
             record("setup:renderdoc", PASS, f"Installed to {rd_dir}")
             return True
