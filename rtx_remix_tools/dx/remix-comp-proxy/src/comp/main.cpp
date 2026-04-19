@@ -10,8 +10,15 @@ namespace comp
 {
 	std::unordered_set<HWND> wnd_class_list;
 
-	// #Step 1: Start the game and copy the class name from the console window and put it in here:
-	#define WINDOW_CLASS_NAME "YOUR_WINDOW_CLASS_NAME" // Eg: "GameFrame"
+	// #Step 1: First launch will dump every visible top-level window's class in the debug
+	// console. Copy the class name of the render viewport (the main game window) here.
+	// Matching is substring-based (std::string_view::contains), so pick a distinctive portion
+	// that won't collide with dialogs (#32770), consoles (ConsoleWindowClass), or our
+	// D3DProxyWindow. Examples by engine:
+	//   UE2.5 (Tribes Vengeance): "UnrealWWindowsViewport"
+	//   Mount & Blade Warband:    "mb_warband"
+	//   etc.
+	#define WINDOW_CLASS_NAME "YOUR_WINDOW_CLASS_NAME"
 
 	BOOL CALLBACK enum_windows_proc(HWND hwnd, LPARAM lParam)
 	{
@@ -79,6 +86,20 @@ BOOL APIENTRY DllMain(HMODULE hmodule, const DWORD ul_reason_for_call, LPVOID)
 {
 	if (ul_reason_for_call == DLL_PROCESS_ATTACH)
 	{
+		// Self-pin. Many engines probe d3d9.dll with LoadLibrary → call one export → FreeLibrary
+		// before the real CreateDevice. Without pinning, Windows unloads our proxy image while
+		// the game still holds wrapped COM objects whose vtables point into our code; the next
+		// virtual call lands in decommitted pages and DEP-faults. Pinning forces the image to
+		// stay mapped for the process lifetime. Same technique as dxvk / d9vk / ReShade.
+		// Confirmed needed on UE2.5 (Tribes Vengeance). If a future game doesn't need it, the
+		// call is harmless — it just keeps us resident.
+		{
+			HMODULE self = nullptr;
+			GetModuleHandleExW(
+				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+				reinterpret_cast<LPCWSTR>(&DllMain), &self);
+		}
+
 		shared::common::console();
 		shared::globals::setup_dll_module(hmodule);
 		shared::globals::setup_exe_module();
