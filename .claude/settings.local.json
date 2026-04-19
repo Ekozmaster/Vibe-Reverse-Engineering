@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/session-init.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-init.sh\""
           }
         ]
       }
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/validate-retools-cmd.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/validate-retools-cmd.sh\""
           }
         ]
       },
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/ghidra-readiness-gate.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/ghidra-readiness-gate.sh\""
           }
         ]
       },
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/guard-template.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-template.sh\""
           }
         ]
       },
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/guard-template.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-template.sh\""
           }
         ]
       }
@@ -86,7 +86,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/notify-findings.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify-findings.sh\""
           }
         ]
       },
@@ -95,7 +95,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/notify-findings.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/notify-findings.sh\""
           }
         ]
       }
@@ -105,7 +105,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/daemon-cleanup.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/daemon-cleanup.sh\""
           }
         ]
       }
