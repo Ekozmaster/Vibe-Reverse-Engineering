@@ -10,7 +10,7 @@ These directories are **shared tooling and templates**. Do not modify them for g
 - `livetools/` — Frida-based dynamic analysis (shared tooling)
 - `graphics/` — DX9 tracer framework (shared tooling)
 
-**Per-game work goes in `patches/<GameName>/`.** When starting a new game, copy `rtx_remix_tools/dx/remix-comp-proxy/` (excluding `build/`) to `patches/<GameName>/` and edit the copy. If the user says "edit remix-comp-proxy code" without specifying, ask whether they mean the template or a game copy.
+**Per-game work goes in `patches/<GameName>/`.** When starting a new game, use the **`/new-game <GameName>` skill** — it copies the template, stubs `kb.h` and `findings.md`, and prints the bootstrap command sequence. If the user says "edit remix-comp-proxy code" without specifying, ask whether they mean the template or a game copy.
 
 Shared tooling can be modified to improve the tools themselves — just not for game-specific customization.
 
@@ -105,3 +105,9 @@ When working on any of the following — invoke the **`dx9-ffp-port` skill** imm
 - **Subagent workflow and delegation rules**: @.claude/rules/subagent-workflow.md
 - **DX9 FFP proxy porting for RTX Remix**: `.claude/skills/dx9-ffp-port/SKILL.md` (invoke `dx9-ffp-port` skill, not auto-loaded)
 - **Frida-based dynamic analysis**: `/dynamic-analysis` skill
+- **New game setup**: `/new-game <GameName>` skill — copies template, stubs KB + findings + addresses.json + per-game CLAUDE.md, prints bootstrap steps
+- **Game analysis status**: `/game-status <GameName>` skill — KB entries, Ghidra state, findings line count, build date
+- **Path-scoped FFP rules**: `.claude/rules/dx9-porting.md` — auto-loaded when editing renderer.cpp, ffp_state.*, or .ini files
+- **Symbol bridge**: `patches/<GameName>/addresses.json` — confirmed addresses from static analysis; use `/trace-address <GameName> <addr>` to generate livetools commands from it
+- **Tracer → ffp_state automation**: `/apply-trace-findings <GameName> <trace.jsonl>` — parses `--matrix-flow` output and patches register defaults in ffp_state.hpp
+- **Per-game context**: `patches/<GameName>/CLAUDE.md` — confirmed register layout, binary info, known quirks; update as analysis progresses

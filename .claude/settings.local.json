@@ -4,7 +4,111 @@
       "Bash(git checkout:*)",
       "Bash(git branch:*)",
       "Bash(git rebase:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(git push:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(python verify_install.py*)",
+      "Bash(python -m retools.*)",
+      "Bash(python -m graphics.*)",
+      "Bash(python rtx_remix_tools/dx/scripts/*)",
+      "Bash(livetools *)",
+      "Bash(ls *)",
+      "Bash(find patches/*)",
+      "Bash(grep *)",
+      "Bash(wc *)",
+      "Bash(stat *)",
+      "Bash(tail *)",
+      "Bash(head *)",
+      "Bash(cat patches/*)",
+      "Bash(rsync *)",
+      "Bash(touch *)",
+      "Bash(mkdir *)",
+      "Bash(chmod *)",
+      "Bash(python3 *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/session-init.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/validate-retools-cmd.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/ghidra-readiness-gate.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/guard-template.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/guard-template.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/notify-findings.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/notify-findings.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/daemon-cleanup.sh"
+          }
+        ]
+      }
     ]
   }
 }

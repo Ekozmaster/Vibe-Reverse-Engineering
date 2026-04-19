@@ -137,6 +137,18 @@ Format:
 
 Also update `patches/<project>/kb.h` with any new function signatures, structs, or globals discovered.
 
+When you find confirmed addresses (call sites, function entries, globals), append them to `patches/<project>/addresses.json`:
+```json
+{
+  "addr": "0x401000",
+  "label": "descriptive_label",
+  "category": "vs_const|ps_const|draw|matrix|texture|render_state|skinning|misc",
+  "read_specs": [],
+  "notes": "what this address is and why it matters"
+}
+```
+Create the file with `{"game": "<name>", "binary": "<exe>", "addresses": []}` if it doesn't exist. Append to the `addresses` array — never overwrite.
+
 In your return message, state the file path you wrote to and give a brief summary. The main agent will read the file for full details.
 
 Update your agent memory with significant architectural discoveries, identified subsystems, and class hierarchies that will be useful in future sessions.
