@@ -60,6 +60,17 @@ Under `rtx_remix_tools/dx/scripts/`. Use BEFORE retools for D3D9 questions. Run 
 - `find_blend_states.py $B` — D3DRS_VERTEXBLEND / INDEXEDVERTEXBLENDENABLE + WORLDMATRIX transforms
 - `scan_d3d_region.py $B 0xSTART 0xEND` — D3D calls in code region
 
+## RenderDoc capture analysis (main agent)
+
+- `python -m renderdoctools events <rdc>` — list events/draw calls
+- `python -m renderdoctools analyze <rdc> --summary` — capture overview
+- `python -m renderdoctools pipeline <rdc> --event EID` — pipeline state
+- `python -m renderdoctools textures <rdc> --event EID` — bound textures
+- `python -m renderdoctools shaders <rdc> --event EID` — shader disassembly
+- `python -m renderdoctools mesh <rdc> --event EID` — vertex data
+- `python -m renderdoctools counters <rdc>` — GPU counters
+- `python -m renderdoctools open <rdc>` — launch RenderDoc GUI
+
 ## dx9tracer
 
 - Capture (main agent): `python -m graphics.directx.dx9.tracer trigger --game-dir <DIR>`

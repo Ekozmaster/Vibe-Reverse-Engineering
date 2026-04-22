@@ -5,6 +5,17 @@ alwaysApply: true
 
 # Project Workspace
 
+## Read-Only Templates
+
+Do not modify for game-specific work — per-game changes go in `patches/<GameName>/`.
+
+- `rtx_remix_tools/dx/remix-comp-proxy/` — proxy framework **template** (copy per-game)
+- `rtx_remix_tools/dx/scripts/`, `retools/`, `livetools/`, `graphics/`, `renderdoctools/` — shared tooling
+
+Shared tooling can be modified to improve tools themselves — not for game-specific customization.
+
+## Per-Game Work
+
 Use `patches/<project_name>/` (git-ignored) for all project-specific artifacts:
 - Knowledge base files (`kb.h`)
 - One-off analysis scripts

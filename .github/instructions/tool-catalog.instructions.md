@@ -23,6 +23,8 @@ These are fast and can be run inline without delegation:
 - "Get full context before reasoning about a function" → `python -m retools.context assemble $B $VA --project $P`
 - "Clean up decompiler output with known names" → pipe through `python -m retools.context postprocess`
 - "Read a typed value from the PE file" → `python -m retools.readmem $B $VA $TYPE`
+- "What constant flows into this register?" → `python -m retools.dataflow $B $VA --constants`
+- "Trace where a value comes from" → `python -m retools.dataflow $B $VA --slice TARGET_VA:REG`
 - "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json`
 
 ### Delegate to the static-analyzer agent
@@ -33,7 +35,7 @@ Everything else. Specify WHAT you need, not HOW to run it — the agent has the 
 
 - "What does this function do?" → decompile + callgraph + xrefs
 - "Who calls this function?" → xrefs or callgraph --up
-- "What does this function call?" → callgraph --down
+- "What does this function call?" → callgraph --down (add `--indirect` for vtable calls)
 - "Find a string and who uses it" → string search with xrefs
 - "Where is this global read/written?" → datarefs
 - "Where is struct field +0x54 used?" → structrefs
@@ -92,10 +94,15 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 |------|---------|---------|
 | `disasm.py $B $VA` | Disassemble N instructions at VA | `disasm.py binary.exe 0x401000 -n 50` |
 | `decompiler.py $B $VA --types` | **Ghidra-quality C decompilation** with knowledge base | `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h` |
+| `decompiler.py $B $VA --types --project` | **Auto-backend** (pyghidra if project exists, else r2ghidra) | `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h --project patches/proj` |
+| `pyghidra_backend.py analyze $B --project $P` | Full Ghidra analysis -- one-time, reusable project (5-15 min) | `pyghidra_backend.py analyze game.exe --project patches/MyGame` |
+| `pyghidra_backend.py decompile $B $VA --project $P` | Decompile via saved Ghidra project | `pyghidra_backend.py decompile game.exe 0x401000 --project patches/MyGame` |
+| `pyghidra_backend.py status $B --project $P` | Check if Ghidra project exists (<1s) | `pyghidra_backend.py status game.exe --project patches/MyGame` |
 | `funcinfo.py $B $VA` | Find function start/end, rets, calling convention, callees | `funcinfo.py binary.exe 0x401000` |
-| `cfg.py $B $VA` | Control flow graph (basic blocks + edges, text or mermaid) | `cfg.py binary.exe 0x401000 --format mermaid` |
-| `callgraph.py $B $VA` | Caller/callee tree (multi-level, --up/--down N) | `callgraph.py binary.exe 0x401000 --up 3` |
-| `xrefs.py $B $VA` | Find all calls/jumps TO an address | `xrefs.py binary.exe 0x401000 -t call` |
+| `cfg.py $B $VA` | Control flow graph (resolves MSVC switch/jump tables). `--switch-details` shows table info | `cfg.py binary.exe 0x401000 --format mermaid` |
+| `callgraph.py $B $VA` | Caller/callee tree (--up/--down N). `--indirect` adds vtable/fptr calls | `callgraph.py binary.exe 0x401000 --down 2 --indirect` |
+| `xrefs.py $B $VA` | Find all calls/jumps TO an address. `--indirect` scans for indirect calls too | `xrefs.py binary.exe 0x401000 --indirect` |
+| `dataflow.py $B $VA` | Forward constant propagation (`--constants`) or backward register slice (`--slice VA:REG`) | `dataflow.py binary.exe 0x401000 --constants` |
 | `datarefs.py $B $VA` | Find instructions that reference a global address (mem deref + `--imm` for push/mov constants) | `datarefs.py binary.exe 0x7A0000 --imm` |
 | `structrefs.py $B $OFF` | Find all `[reg+offset]` accesses (struct field usage) | `structrefs.py binary.exe 0x54 --base esi` |
 | `structrefs.py $B --aggregate` | Reconstruct C struct from all field accesses in a function | `structrefs.py binary.exe --aggregate --fn 0x401000 --base esi` |
@@ -151,9 +158,10 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 ## Dynamic Analysis (`livetools/`) -- Frida-based, attaches to running process
 
 ```
-python -m livetools attach <process>    # start session
-python -m livetools detach              # end session
-python -m livetools status              # check connection
+python -m livetools attach <process>                    # attach to running process by name or PID
+python -m livetools attach "C:/Games/game.exe" --spawn  # launch + instrument before init code runs
+python -m livetools detach                              # end session
+python -m livetools status                              # check connection
 ```
 
 | Command | Purpose |

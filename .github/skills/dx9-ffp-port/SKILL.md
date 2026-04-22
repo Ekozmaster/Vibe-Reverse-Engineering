@@ -8,6 +8,8 @@ argument-hint: '<game.exe path>'
 
 You are helping a user port a DX9 shader-based game to the fixed-function pipeline using the `rtx_remix_tools/dx/remix-comp-proxy/` codebase in this workspace. The goal is RTX Remix compatibility: Remix requires FFP geometry to inject path-traced lighting and replaceable assets. Also use the Vibe RE tools (retools, livetools) for static and dynamic analysis to assist with developing this wrapper. They are meant to be used together.
 
+**NEVER MODIFY TEMPLATE CODE.** `rtx_remix_tools/dx/remix-comp-proxy/` is read-only. Copy to `patches/<GameName>/` and edit the copy. If the user says "edit remix-comp-proxy code", confirm whether they mean the template or a game copy.
+
 **SKINNING IS OFF BY DEFAULT.** Do NOT enable skinning, modify skinning code, or discuss skinning infrastructure unless the user explicitly asks for character model / bone / skeletal animation support. Until then, treat skinning as non-existent. When the user does request it, read `src/comp/modules/skinning.hpp` and `src/comp/modules/skinning.cpp` for the full implementation.
 
 **SKINNING APPROACH: FFP indexed vertex blending, NOT CPU matrix math.** When skinning is enabled, keep BLENDINDICES and BLENDWEIGHT in the vertex declaration and buffer, upload bone matrices via `SetTransform(D3DTS_WORLDMATRIX(n), &boneMatrix[n])`, enable `D3DRS_INDEXEDVERTEXBLENDENABLE = TRUE`, and set `D3DRS_VERTEXBLEND` to the weight count. CPU-side vertex skinning is a **last resort** -- it is extremely expensive and tanks frame rate. Always prefer the hardware path.
@@ -37,8 +39,9 @@ The codebase is a d3d9.dll proxy based on remix-comp-base that intercepts `IDire
 | `src/comp/modules/renderer.cpp` | Draw call routing -- `on_draw_indexed_prim()` and `on_draw_primitive()` |
 | `src/comp/modules/d3d9ex.cpp` | `IDirect3DDevice9` hook layer -- intercepts all 119 methods |
 | `src/comp/modules/skinning.cpp` | Skinning module (vertex expansion, bone upload, FFP blending) |
-| `src/comp/modules/diagnostics.cpp` | Diagnostic logging to `ffp_proxy.log` |
+| `src/comp/modules/diagnostics.cpp` | Diagnostic logging to `rtx_comp/diagnostics.log` |
 | `src/comp/modules/imgui.cpp` | ImGui debug overlay (F4 toggle) |
+| `src/comp/game/game.cpp` | Per-game address init (patterns, hooks) |
 | `src/shared/common/ffp_state.cpp` | FFP state tracker -- engage/disengage, matrix transforms, texture stages |
 | `src/shared/common/ffp_state.hpp` | `ffp_state` class with all state accessors |
 | `src/shared/common/config.hpp` | Config structures: `ffp_settings`, `skinning_settings`, etc. |
@@ -109,7 +112,7 @@ Key things to find:
 
 This is the **most critical** step. You must determine which VS constant registers hold View, Projection, and World matrices.
 
-**Remix REQUIRES separate World, View, and Projection matrices.** A concatenated WorldViewProj (WVP) or ViewProj (VP) will NOT work -- Remix needs individual matrices for its own camera and per-object transforms. If the game uploads a pre-multiplied WVP, the proxy must intercept the individual matrices *before* concatenation. This is the #1 source of broken Remix ports. Use `find_matrix_registers.py` to detect this pattern.
+**Remix REQUIRES separate World, View, and Projection matrices.** A concatenated WorldViewProj (WVP) or ViewProj (VP) will NOT work -- Remix needs individual matrices for its own camera and per-object transforms. If the game uploads a pre-multiplied WVP, the proxy must intercept the individual matrices *before* concatenation. **This is the #1 source of broken Remix ports.** Use `find_matrix_registers.py` to detect this pattern -- if CTAB shows "WorldViewProj" or only one matrix range per draw, you have this problem.
 
 **Static approach:** Decompile functions that call `SetVertexShaderConstantF`:
 ```bash
@@ -123,6 +126,13 @@ python -m livetools trace <call_addr> --count 50 \
 ```
 This captures: startRegister, Vector4fCount, and the actual float data (first 4 vec4 constants, dereferenced from `pConstantData`).
 
+**DX9 Tracer approach:** Capture a frame and analyze:
+```bash
+python -m graphics.directx.dx9.tracer analyze <JSONL> --const-provenance
+python -m graphics.directx.dx9.tracer analyze <JSONL> --matrix-flow
+python -m graphics.directx.dx9.tracer analyze <JSONL> --shader-map
+```
+
 **How to identify matrices:**
 - View matrix: changes with camera movement, contains camera orientation
 - Projection matrix: contains aspect ratio and FOV, rarely changes
@@ -131,11 +141,13 @@ This captures: startRegister, Vector4fCount, and the actual float data (first 4 
 
 ### Step 3: Copy comp/ and Configure
 
-1. Copy `rtx_remix_tools/dx/remix-comp-proxy/src/comp/` to `patches/<GameName>/proxy/comp/`
-2. Copy `remix-comp-proxy.ini` from `assets/` to `patches/<GameName>/proxy/`
+1. Copy the entire `rtx_remix_tools/dx/remix-comp-proxy/` folder to `patches/<GameName>/` (excluding `build/`)
+2. Edit `src/comp/` directly in the game's copy
 3. Edit register layout defaults in `src/shared/common/ffp_state.hpp`
-4. Use `build.bat` for the game-specific build
-5. Update `kb.h` with any function signatures, structs, or globals discovered
+4. Edit `src/comp/main.cpp`: set `WINDOW_CLASS_NAME`
+5. Customize `src/comp/modules/renderer.cpp` draw routing if needed
+6. Customize `src/comp/game/game.cpp` with game-specific hooks
+7. Update `kb.h` with discovered function signatures, structs, globals
 
 ### Step 4: Build and Deploy
 
@@ -144,11 +156,11 @@ cd patches/<GameName>
 build.bat release --name <GameName>
 ```
 
-Deploy: `d3d9.dll` + `remix-comp-proxy.ini` to game directory. Place `d3d9_remix.dll` there if using Remix.
+Build output: `patches/<GameName>/build/bin/release/d3d9.dll`. Deploy `d3d9.dll` + `remix-comp-proxy.ini` to game directory. Place `d3d9_remix.dll` there if using Remix.
 
 ### Step 5: Diagnose with Log and ImGui
 
-The proxy writes `ffp_proxy.log` in the game directory. After a configurable delay (default 50 seconds via `[Diagnostics] DelayMs`), it logs frames of detailed draw call data:
+The proxy writes `rtx_comp/diagnostics.log` in the game directory. After a configurable delay (default 50 seconds via `[Diagnostics] DelayMs`), it logs frames of detailed draw call data:
 
 - **VS regs written**: shows which constant registers the game actually fills
 - **Vertex declarations**: what vertex elements each draw uses (POSITION, NORMAL, TEXCOORD, BLENDWEIGHT, etc.)

@@ -3,6 +3,18 @@
 This is a reverse engineering toolkit for PE binaries (`.exe` / `.dll`) combining static analysis (`retools`), dynamic analysis (`livetools` via Frida), and D3D9 frame tracing. Work is organized around knowledge base files (`kb.h`) that accumulate discoveries and feed back into richer decompilation.
 
 
+## Read-Only Templates
+
+These directories are **shared tooling and templates** — do not modify for game-specific work:
+- `rtx_remix_tools/dx/remix-comp-proxy/` — proxy framework template (copy per-game)
+- `rtx_remix_tools/dx/scripts/`, `retools/`, `livetools/`, `graphics/`, `renderdoctools/` — shared tooling
+
+**Per-game work goes in `patches/<GameName>/`.** Copy the template there and edit the copy.
+
+## DX9 FFP Porting
+
+When editing `renderer.cpp`, `ffp_state.cpp`, `remix-comp-proxy.ini`, draw routing, VS constants, vertex declarations, matrix mapping, or skinning — read the **dx9-ffp-port** skill (`skills/dx9-ffp-port/SKILL.md`) before starting.
+
 ## Bootstrap
 
 On first use, or if `kb.h` is missing or contains only minimal content, automatically run:
@@ -61,8 +73,10 @@ Each file reads as if it was always designed this way. Comments guide the next d
 
 Detailed guidance lives in scoped instruction files — consult these before acting:
 
-- **Tool catalog** (all retools / livetools / dx9tracer commands and caveats): `.github/instructions/tool-catalog.instructions.md`
-- **Knowledge base format** (kb.h conventions, when to update, struct/function/global notation): `.github/instructions/kb-format.instructions.md`
-- **FFP proxy porting for RTX Remix** (DX9 fixed-function pipeline port workflow): `.github/instructions/ffp-proxy.instructions.md`
-- **Static analyzer agent** (delegation workflow, what to tell it, output file conventions): `.github/agents/static-analyzer.agent.md`
-- **Web researcher agent** (when and how to delegate web research): `.github/agents/web-researcher.agent.md`
+- **Tool dispatch** (quick decision guide — which tool, run vs delegate): `.github/instructions/tool-dispatch.instructions.md`
+- **Subagent workflow** (delegation, parallel work, anti-patterns): `.github/instructions/subagent-workflow.instructions.md`
+- **Tool catalog** (full syntax tables and caveats): `.github/instructions/tool-catalog.instructions.md`
+- **Knowledge base format** (kb.h conventions): `.github/instructions/kb-format.instructions.md`
+- **FFP proxy porting** (DX9 FFP port workflow): `.github/instructions/ffp-proxy.instructions.md`
+- **Static analyzer agent**: `.github/agents/static-analyzer.agent.md`
+- **Web researcher agent**: `.github/agents/web-researcher.agent.md`

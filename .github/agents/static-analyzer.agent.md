@@ -15,12 +15,20 @@ On first invocation, read the full tool catalog at `.claude/rules/tool-catalog.m
 
 Before any analysis, run these checks in order:
 
-**1. Signature DB**: If `retools/data/signatures.db` does not exist, pull it first:
+**1. Verify install**: Run `python verify_install.py` on first invocation. If pyghidra/Ghidra/Java show WARN, run `python verify_install.py --setup`.
+
+**2. Signature DB**: If `retools/data/signatures.db` does not exist, pull it first:
 ```bash
 test -f retools/data/signatures.db || python retools/sigdb.py pull
 ```
 
-**2. Bootstrap**: Check if the project KB needs bootstrapping:
+**3. Ghidra project**: Check if a Ghidra project exists:
+```bash
+python retools/pyghidra_backend.py status <binary> --project patches/<Project>
+```
+If "Not analyzed", run `python retools/pyghidra_backend.py analyze <binary> --project patches/<Project>` (2-15 min, then near-instant decompilations).
+
+**4. Bootstrap**: Check if the project KB needs bootstrapping:
 ```bash
 grep -cE '^[@$]|^struct |^enum ' patches/<project>/kb.h 2>/dev/null || echo 0
 ```
@@ -28,10 +36,19 @@ If the count is under 50 (or the file doesn't exist), run `python -m retools.boo
 
 ## Running Tools
 
-Run all tools from the repo root using `python -m retools.<module>` syntax:
+Run all tools from the repo root using `python -m retools.<module>` syntax.
 
+### Decompilation (two backends)
+
+- **pyghidra (preferred)** — better type propagation, library resolution. Needs Ghidra project:
+  `python retools/pyghidra_backend.py decompile binary.exe 0x401000 --project patches/proj`
+- **r2ghidra (fallback)** — better `__thiscall`, no JVM:
+  `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h --backend pdg`
+- **Auto mode** (tries pyghidra first):
+  `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h --project patches/proj`
+
+### Other tools
 ```
-python -m retools.decompiler binary.exe 0x401000
 python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h
 python -m retools.search binary.exe strings -f "error" --xrefs
 python -m retools.xrefs binary.exe 0x401000 -t call
@@ -80,7 +97,12 @@ Update KB when you: identify a function's purpose, reconstruct a struct, identif
 
 ## Output
 
-Write all findings to `patches/<project>/findings.md`, creating the file if it doesn't exist. Append to it if it already exists — do not overwrite previous findings. Use clear headings per analysis task so the main agent can read specific sections.
+Write findings to the appropriate file, creating if needed. Append — do not overwrite.
+
+- **Default**: `patches/<project>/findings.md`
+- **If told to use r2ghidra for dual-backend comparison**: `patches/<project>/findings_r2.md`
+
+Use clear headings per analysis task so the main agent can read specific sections.
 
 Format:
 ```markdown

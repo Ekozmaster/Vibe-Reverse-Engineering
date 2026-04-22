@@ -9,6 +9,7 @@ These directories are **shared tooling and templates**. Do not modify them for g
 - `retools/` — static analysis toolkit (shared tooling)
 - `livetools/` — Frida-based dynamic analysis (shared tooling)
 - `graphics/` — DX9 tracer framework (shared tooling)
+- `renderdoctools/` — RenderDoc capture analysis toolkit (shared tooling)
 
 **Per-game work goes in `patches/<GameName>/`.** When starting a new game, copy `rtx_remix_tools/dx/remix-comp-proxy/` (excluding `build/`) to `patches/<GameName>/` and edit the copy. If the user says "edit remix-comp-proxy code" without specifying, ask whether they mean the template or a game copy.
 
@@ -105,3 +106,4 @@ When working on any of the following — invoke the **`dx9-ffp-port` skill** imm
 - **Subagent workflow and delegation rules**: @.claude/rules/subagent-workflow.md
 - **DX9 FFP proxy porting for RTX Remix**: `.claude/skills/dx9-ffp-port/SKILL.md` (invoke `dx9-ffp-port` skill, not auto-loaded)
 - **Frida-based dynamic analysis**: `/dynamic-analysis` skill
+- **RenderDoc capture analysis**: `/renderdoc-analysis` skill
