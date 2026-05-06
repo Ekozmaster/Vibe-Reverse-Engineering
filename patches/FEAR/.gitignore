@@ -1,0 +1,55 @@
+# Whitelist .gitignore — only tracked file types and directories are allowed.
+# Everything else (build artifacts, IDE files, OS junk) is ignored by default.
+# Goal: Prevent uploading files that may be copyrighted or are otherwise unnecessary.
+
+# Ignore everything
+*
+
+# Allow looking into subdirectories
+!*/
+
+# Source code
+!*.cpp
+!*.hpp
+!*.h
+!*.c
+!*.inc
+!*.inl
+
+# Build script and config
+!build.bat
+!*.ini
+!*.conf
+!.gitignore
+!.editorconfig
+!deploy.ps1
+!*.template
+!bootstrap_report.txt
+
+# Dependency libraries needed for linking
+!*.lib
+
+# Deployed binaries (ASI loader)
+!*.dll
+!*.def
+
+# Assets
+!*.png
+
+# Documentation
+!*.md
+!LICENSE
+
+# Re-ignore build output (overrides the above)
+build/
+
+# Re-ignore large redistributable vendor dependencies — re-downloadable, not
+# our work, would bloat the repo. DXSDK headers come from Microsoft's June 2010
+# redist; remix-bridge-x86/ holds the Nvidia bridge client binaries we deploy;
+# remix-test-2026-03-13/ is a 380 MB stashed Remix runtime test bundle.
+deps/dxsdk/
+deps/remix-bridge-x86/
+deps/remix-test-2026-03-13/
+
+# Local-only PDB next to the build (already covered by root *.pdb but explicit here)
+*.pdb

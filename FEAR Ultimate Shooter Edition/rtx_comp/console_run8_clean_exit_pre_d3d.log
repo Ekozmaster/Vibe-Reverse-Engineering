@@ -1,0 +1,8 @@
+[INFO] [Config] Loaded from: C:\Users\skurtyy\Documents\GitHub\FEARRTX\Vibe-Reverse-Engineering\FEAR Ultimate Shooter Edition\remix-comp-proxy.ini
+[INFO] [Config] FFP=0 AlbedoStage=0
+[INFO] [Proxy] Loaded Remix bridge: d3d9_remix.dll
+[INFO] [Game] Getting offsets ...
+[OK] [Game] Found all '0' Patterns.
+[INFO] [Main] Waiting for window with classname containing 'FEAR' ...
+[INFO] [Main] > HWND: 10D10C4E, PID: 100708, Class: ConsoleWindowClass, Visible: 1 
+

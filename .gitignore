@@ -6,7 +6,7 @@ __pycache__/
 venv/
 *.egg-info/
 
-# Build artifacts
+# Build artifacts (compiled objects)
 *.obj
 *.o
 *.asi
@@ -15,8 +15,19 @@ venv/
 *.pdb
 *.ilk
 
-# Generated patch output (asi_patcher)
-patches/
+# Compiled binaries — allowlist for the few reference DLLs we actually track
+*.dll
+*.exe
+!graphics/directx/dx9/tracer/src/*.dll
+!rtx_remix_tools/dx/remix-comp-proxy/assets/*.dll
+
+# Per-game patches: track docs/source/configs, skip large vendor/build outputs.
+# (build/ artefacts and *.pdb/*.dll/*.exe/*.lib are already excluded above; these
+# are belt-and-braces so a stray addition can't sneak in.)
+patches/*/build/
+patches/*/deps/dxsdk/
+patches/*/deps/remix-bridge-x86/
+rtx_remix_tools/dx/remix-comp-proxy/build/
 
 # D3D9 tracer runtime artifacts
 dxtrace_capture.trigger
@@ -49,18 +60,27 @@ retools/data/sources/
 tools/ghidra_*/
 tools/jdk-*/
 
-# Target binaries (not part of the toolkit)
-*.exe
-*.dll
-!graphics/directx/dx9/tracer/src/*.dll
-!rtx_remix_tools/dx/remix-comp-proxy/assets/*.dll
+# Large downloaded archives (RTX Remix runtime staging)
+tools/rtx_remix_dl/
 
+# Game install: ignore by default, allowlist diagnostic logs + our helper scripts.
+FEAR Ultimate Shooter Edition/*
+!FEAR Ultimate Shooter Edition/rtx_comp/
+FEAR Ultimate Shooter Edition/rtx_comp/*
+!FEAR Ultimate Shooter Edition/rtx_comp/*.log
+!FEAR Ultimate Shooter Edition/capture_nvremix_cmdline.ps1
+!FEAR Ultimate Shooter Edition/capture_nvremix_cmdline.log
+!FEAR Ultimate Shooter Edition/launch_remix_test.ps1
+
+# FEARRTX/ is its own git repo (placeholder content); not absorbed here.
+FEARRTX/
 
 # Research artifacts
 compass_artifact_*
 
-# Agent memory (machine-specific, regenerated per session)
+# Agent memory & transient harness state (machine-specific)
 .claude/agent-memory/
+.claude/scheduled_tasks.lock
 
 # Superpowers specs/plans (session artifacts)
 docs/

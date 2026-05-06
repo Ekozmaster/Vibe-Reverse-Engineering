@@ -1,0 +1,18 @@
+[INFO] [Config] Loaded from: C:\Users\skurtyy\Documents\GitHub\FEARRTX\Vibe-Reverse-Engineering\FEAR Ultimate Shooter Edition\remix-comp-proxy.ini
+[INFO] [Config] FFP=0 AlbedoStage=0
+[INFO] [Proxy] Loaded Remix bridge: d3d9_remix.dll
+[INFO] [Game] Getting offsets ...
+[OK] [Game] Found all '0' Patterns.
+[INFO] [Main] Waiting for window with classname containing 'FEAR' ...
+[INFO] [Main] > HWND: 000B0D6A, PID: 45164, Class: ConsoleWindowClass, Visible: 1 
+
+[INFO] [Main] > HWND: 01770DD2, PID: 45164, Class: FEAR, Visible: 1 
+
+[INFO] [d3d9] Direct3DCreate9 called. Creating proxy interface.
+[STATUS] [RemixApi] Initialized RemixApi
+[INFO] [Tracer] Module initialized.
+[INFO] [ImGui] Module initialized.
+[INFO] [FFP] State tracker initialized, FFP=OFF
+[INFO] [FFP] Registers: View=c0-c3 Proj=c4-c7 World=c16-c19
+[INFO] [Renderer] Module initialized.
+[INFO] [Diagnostics] Module initialized, auto=1 delay=180000ms frames=3

@@ -1,0 +1,8087 @@
+FFP Proxy Diagnostic Log
+========================
+
+Capture: 3 frames
+Categories: draws=1 vsconst=1 vtxdata=1 decls=1 tex=1 present=1
+
+  SetVS shader=0x00000000
+==== PRESENT frame 31800
+  diagFrame: 0
+  drawCalls: 113
+  scenes: 1
+  VS regs written: c0
+c1
+c2
+c3
+c4
+c5
+c6
+c7
+c8
+c9
+c10
+c11
+c12
+c13
+c14
+c15
+c16
+c17
+c18
+c19
+c20
+c21
+c22
+c23
+c24
+c25
+c26
+c27
+c28
+c29
+c30
+c31
+c32
+c33
+c34
+c35
+c36
+c37
+c38
+c39
+c40
+c41
+c42
+c43
+c44
+c45
+c46
+c47
+c48
+c49
+c50
+c51
+c52
+c53
+c54
+c55
+c56
+c57
+c58
+c59
+c60
+c61
+c62
+c63
+c64
+c65
+c66
+c67
+c68
+c69
+c70
+c71
+c72
+c73
+c74
+c75
+c76
+c77
+c78
+c79
+c80
+c81
+c82
+c83
+
+  Unique textures per stage:
+-- BeginScene #1
+  SetVS shader=0x1b70fea0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.466818, 0.000000, 0.653778, -1333.615967
+  row1: -0.174690, 1.411925, 0.124734, 210.996155
+  row2: -0.804587, -0.150300, 0.574500, 694.707214
+  row3: -0.804587, -0.150300, 0.574500, 699.007202
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -0.000050
+  row1: 0.124734, 1.411925, 0.174690, 0.000184
+  row2: 0.574500, -0.150300, 0.804587, -0.009845
+  row3: 0.574500, -0.150300, 0.804587, 0.000164
+  DIP #1
+    decl=0x32acce80
+    type=4
+    baseVtx=481846
+    numVerts=24
+    primCount=12
+    stride0=32
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fc0cb40
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (32
+ bytes):
+      00 00 FA C3 00 00 FA 43 00 00 FA 43 | 3D CD 13 3F | 34 CD 13 BF | 3D CD 13 BF | 00 00 00 00 | 00 00 00 00 | 
+      pos: -500.000000, 500.000000, 500.000000
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -0.000050
+  row1: 0.124734, 1.411925, 0.174690, 0.000184
+  row2: 0.574500, -0.150300, 0.804587, -0.009845
+  row3: 0.574500, -0.150300, 0.804587, 0.000164
+    c4-c7:
+  row0: -0.000150, 0.000000, 0.000034, 0.481800
+  row1: 0.000040, -0.000130, 0.000176, 0.594513
+  row2: -0.000029, -0.000180, -0.000127, 0.168384
+  row3: -0.128598, -0.811064, -0.570644, 0.000000
+    c8-c11:
+  row0: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  row1: 0.000000, 0.000000, 1.000000, 0.000000
+  row2: -0.128598, -0.811064, -0.570644, 0.000000
+  row3: 1278.561279, -1377.001831, -1025.170898, 0.000000
+    c12-c15:
+  row0: 0.985945, 0.031457, -0.164079, 1.217656
+  row1: 0.000051, 0.982056, 0.188587, 1.673915
+  row2: 0.167068, -0.185945, 0.968252, 1.947453
+  row3: 0.982699, 0.085911, -0.164079, 0.903763
+    c16-c19:
+  row0: -0.054236, 0.980558, 0.188587, 1.682378
+  row1: 0.177091, -0.176425, 0.968252, 1.892537
+  row2: 0.982699, 0.085911, -0.164079, 0.903763
+  row3: -0.054236, 0.980558, 0.188587, 1.682378
+    c20-c23:
+  row0: 0.177091, -0.176425, 0.968252, 1.892536
+  row1: 0.982699, 0.085911, -0.164079, 0.903763
+  row2: -0.054236, 0.980558, 0.188587, 1.682378
+  row3: 0.177091, -0.176425, 0.968252, 1.892537
+  DECL decl=0x32acce80
+    numElems=4
+    [s0 +0] POSITION[0] FLOAT3
+    [s0 +12] NORMAL[0] FLOAT3
+    [s0 +24] TEXCOORD[0] FLOAT2
+  SetVS shader=0x3665c480
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -0.000050
+  row1: 0.124734, 1.411925, 0.174690, 0.000184
+  row2: 0.574500, -0.150300, 0.804587, -0.009845
+  row3: 0.574500, -0.150300, 0.804587, 0.000164
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, 131.292160
+  row1: 0.124734, 1.411925, 0.174690, 2337.089355
+  row2: 0.574500, -0.150300, 0.804587, 3871.297852
+  row3: 0.574500, -0.150300, 0.804587, 3871.307861
+  DIP #2
+    decl=0x04a5c8e0
+    type=4
+    baseVtx=0
+    numVerts=8
+    primCount=4
+    stride0=60
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1c165b20
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (60
+ bytes):
+      23 3D 35 C5 7A 12 62 C4 05 B4 42 C5 | FF FF FF 7F | 00 00 00 00 | 00 00 00 00 | D2 4F DD 3A | 84 EC 81 BE | C7 9E 77 BF E8 FF 7F 3F E2 91 93 2D 0A CD E4 3A 68 3D E8 B9 DE 9E 77 BF 76 EC 81 3E 
+      pos: -2899.821045, -904.288696, -3115.251221
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, 131.292160
+  row1: 0.124734, 1.411925, 0.174690, 2337.089355
+  row2: 0.574500, -0.150300, 0.804587, 3871.297852
+  row3: 0.574500, -0.150300, 0.804587, 3871.307861
+    c4-c7:
+  row0: -0.000150, 0.000000, 0.000034, 0.481800
+  row1: 0.000040, -0.000130, 0.000176, 0.594513
+  row2: -0.000029, -0.000180, -0.000127, 0.168384
+  row3: -0.128598, -0.811064, -0.570644, 0.000000
+    c8-c11:
+  row0: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  row1: 0.000000, 0.000000, 1.000000, 0.000000
+  row2: -0.128598, -0.811064, -0.570644, 0.000000
+  row3: 1278.561279, -1377.001831, -1025.170898, 0.000000
+    c12-c15:
+  row0: 0.985945, 0.031457, -0.164079, 1.217656
+  row1: 0.000051, 0.982056, 0.188587, 1.673915
+  row2: 0.167068, -0.185945, 0.968252, 1.947453
+  row3: 0.982699, 0.085911, -0.164079, 0.903763
+    c16-c19:
+  row0: -0.054236, 0.980558, 0.188587, 1.682378
+  row1: 0.177091, -0.176425, 0.968252, 1.892537
+  row2: 0.982699, 0.085911, -0.164079, 0.903763
+  row3: -0.054236, 0.980558, 0.188587, 1.682378
+    c20-c23:
+  row0: 0.177091, -0.176425, 0.968252, 1.892536
+  row1: 0.982699, 0.085911, -0.164079, 0.903763
+  row2: -0.054236, 0.980558, 0.188587, 1.682378
+  row3: 0.177091, -0.176425, 0.968252, 1.892537
+  DECL decl=0x04a5c8e0
+    numElems=7
+    [s0 +0] POSITION[0] FLOAT3
+    [s0 +12] COLOR[0] D3DCOLOR
+    [s0 +16] TEXCOORD[0] FLOAT2
+    [s0 +24] NORMAL[0] FLOAT3
+    [s0 +36] TANGENT[0] FLOAT3
+    [s0 +48] BINORMAL[0] FLOAT3
+  SetVS shader=0x1b711800
+  SetVSConstF start=0
+    count=7
+    (large write, first 4x4):
+      0.653778, 0.000000, -0.466818, 131.292160, 0.124734, 1.411925, 0.174690, 2337.089355, 0.574500, -0.150300, 0.804587, 3871.297852, 0.574500, -0.150300, 0.804587, 3871.307861
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -2.978774
+  row1: 0.124734, 1.411925, 0.174690, 85.739182
+  row2: 0.574500, -0.150300, 0.804587, -12.587376
+  row3: 0.574500, -0.150300, 0.804587, -12.577366
+  SetVSConstF start=6
+    count=1
+    data: 0.559265, 0.055927, 0.000000, 0.000000
+  SetVSConstF start=5
+    count=1
+    data: 1.000000, 1.000000, 1.000000, 1.000000
+  SetVSConstF start=4
+    count=1
+    data: 1.000000, 1.000000, 1.000000, 1.000000
+  DIP #3
+    decl=0x32acc140
+    type=4
+    baseVtx=481878
+    numVerts=4
+    primCount=2
+    stride0=32
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b830ca0
+    tex1
+     =0x1b831140
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (32
+ bytes):
+      00 80 93 C3 00 2C 9F BF 90 4F 96 43 | FF FF FF FF | 00 00 00 BF | 00 00 00 BF | 00 00 00 00 | 00 00 00 00 | 
+      pos: -295.000000, -1.243530, 300.621582
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -2.978774
+  row1: 0.124734, 1.411925, 0.174690, 85.739182
+  row2: 0.574500, -0.150300, 0.804587, -12.587376
+  row3: 0.574500, -0.150300, 0.804587, -12.577366
+    c4-c7:
+  row0: 1.000000, 1.000000, 1.000000, 1.000000
+  row1: 1.000000, 1.000000, 1.000000, 1.000000
+  row2: 0.559265, 0.055927, 0.000000, 0.000000
+  row3: -0.128598, -0.811064, -0.570644, 0.000000
+    c8-c11:
+  row0: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  row1: 0.000000, 0.000000, 1.000000, 0.000000
+  row2: -0.128598, -0.811064, -0.570644, 0.000000
+  row3: 1278.561279, -1377.001831, -1025.170898, 0.000000
+    c12-c15:
+  row0: 0.985945, 0.031457, -0.164079, 1.217656
+  row1: 0.000051, 0.982056, 0.188587, 1.673915
+  row2: 0.167068, -0.185945, 0.968252, 1.947453
+  row3: 0.982699, 0.085911, -0.164079, 0.903763
+    c16-c19:
+  row0: -0.054236, 0.980558, 0.188587, 1.682378
+  row1: 0.177091, -0.176425, 0.968252, 1.892537
+  row2: 0.982699, 0.085911, -0.164079, 0.903763
+  row3: -0.054236, 0.980558, 0.188587, 1.682378
+    c20-c23:
+  row0: 0.177091, -0.176425, 0.968252, 1.892536
+  row1: 0.982699, 0.085911, -0.164079, 0.903763
+  row2: -0.054236, 0.980558, 0.188587, 1.682378
+  row3: 0.177091, -0.176425, 0.968252, 1.892537
+  DECL decl=0x32acc140
+    numElems=5
+    [s0 +0] POSITION[0] FLOAT3
+    [s0 +12] COLOR[0] D3DCOLOR
+    [s0 +16] TEXCOORD[0] FLOAT2
+    [s0 +24] TEXCOORD[1] FLOAT2
+  SetVS shader=0x0f7b37e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -2.978774
+  row1: 0.124734, 1.411925, 0.174690, 85.739182
+  row2: 0.574500, -0.150300, 0.804587, -12.587376
+  row3: 0.574500, -0.150300, 0.804587, -12.577366
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #4
+    decl=0x32acc4a0
+    type=4
+    baseVtx=150672
+    numVerts=1988
+    primCount=994
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x32aa3f40
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      14 32 E3 C3 9A 79 BA C4 E2 93 96 45 | 76 8D 76 BF | 97 9B 33 3E | 87 0F 51 BE | 8C E3 19 3D | CA CC 5C C0 | 72 2F BD 3E A6 40 0E BE 9F 35 6B BF B9 C4 45 BE DF 88 7A BF BD F8 8F 3D 
+      pos: -454.391235, -1491.800049, 4818.485352
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+    c4-c7:
+  row0: 1.000000, 1.000000, 1.000000, 1.000000
+  row1: 1.000000, 1.000000, 1.000000, 1.000000
+  row2: 0.559265, 0.055927, 0.000000, 0.000000
+  row3: -0.128598, -0.811064, -0.570644, 0.000000
+    c8-c11:
+  row0: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  row1: 0.000000, 0.000000, 1.000000, 0.000000
+  row2: -0.128598, -0.811064, -0.570644, 0.000000
+  row3: 1278.561279, -1377.001831, -1025.170898, 0.000000
+    c12-c15:
+  row0: 0.985945, 0.031457, -0.164079, 1.217656
+  row1: 0.000051, 0.982056, 0.188587, 1.673915
+  row2: 0.167068, -0.185945, 0.968252, 1.947453
+  row3: 0.982699, 0.085911, -0.164079, 0.903763
+    c16-c19:
+  row0: -0.054236, 0.980558, 0.188587, 1.682378
+  row1: 0.177091, -0.176425, 0.968252, 1.892537
+  row2: 0.982699, 0.085911, -0.164079, 0.903763
+  row3: -0.054236, 0.980558, 0.188587, 1.682378
+    c20-c23:
+  row0: 0.177091, -0.176425, 0.968252, 1.892536
+  row1: 0.982699, 0.085911, -0.164079, 0.903763
+  row2: -0.054236, 0.980558, 0.188587, 1.682378
+  row3: 0.177091, -0.176425, 0.968252, 1.892537
+  DECL decl=0x32acc4a0
+    numElems=6
+    [s0 +0] POSITION[0] FLOAT3
+    [s0 +12] NORMAL[0] FLOAT3
+    [s0 +24] TEXCOORD[0] FLOAT2
+    [s0 +32] TANGENT[0] FLOAT3
+    [s0 +44] BINORMAL[0] FLOAT3
+  DIP #5
+    decl=0x32acc4a0
+    type=4
+    baseVtx=146967
+    numVerts=53
+    primCount=35
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x32a9f660
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      00 00 48 C3 00 80 FE C4 00 F0 96 45 | 00 00 00 00 | AC C5 A7 36 | 00 00 80 BF | AB AA 2A BF | 00 00 80 3F | 00 00 80 3F 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80 BF AC C5 A7 B6 
+      pos: -200.000000, -2036.000000, 4830.000000
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+    c4-c7:
+  row0: 1.000000, 1.000000, 1.000000, 1.000000
+  row1: 1.000000, 1.000000, 1.000000, 1.000000
+  row2: 0.559265, 0.055927, 0.000000, 0.000000
+  row3: -0.128598, -0.811064, -0.570644, 0.000000
+    c8-c11:
+  row0: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  row1: 0.000000, 0.000000, 1.000000, 0.000000
+  row2: -0.128598, -0.811064, -0.570644, 0.000000
+  row3: 1278.561279, -1377.001831, -1025.170898, 0.000000
+    c12-c15:
+  row0: 0.985945, 0.031457, -0.164079, 1.217656
+  row1: 0.000051, 0.982056, 0.188587, 1.673915
+  row2: 0.167068, -0.185945, 0.968252, 1.947453
+  row3: 0.982699, 0.085911, -0.164079, 0.903763
+    c16-c19:
+  row0: -0.054236, 0.980558, 0.188587, 1.682378
+  row1: 0.177091, -0.176425, 0.968252, 1.892537
+  row2: 0.982699, 0.085911, -0.164079, 0.903763
+  row3: -0.054236, 0.980558, 0.188587, 1.682378
+    c20-c23:
+  row0: 0.177091, -0.176425, 0.968252, 1.892536
+  row1: 0.982699, 0.085911, -0.164079, 0.903763
+  row2: -0.054236, 0.980558, 0.188587, 1.682378
+  row3: 0.177091, -0.176425, 0.968252, 1.892537
+  DIP #6
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110797
+    numVerts=252
+    primCount=174
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de82bc0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      00 AA CD 46 00 00 8F C3 00 30 45 C6 | 00 00 80 BF | BA C0 5C 38 | 00 00 00 00 | AB AA 32 C2 | FE FF 5F C0 | 00 00 00 00 00 00 00 00 00 00 80 BF BA C0 5C B8 00 00 80 BF 00 00 00 80 
+      pos: 26325.000000, -286.000000, -12620.000000
+  DIP #7
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110455
+    numVerts=11
+    primCount=9
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de82160
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      00 80 BB C4 00 80 FE C4 00 A0 8C 45 | 00 00 00 00 | 00 00 80 3F | 00 00 00 00 | 00 00 F0 BF | 99 99 75 C0 | 00 00 80 3F 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80 BF 
+      pos: -1500.000000, -2036.000000, 4500.000000
+  DIP #8
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110455
+    numVerts=35
+    primCount=36
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de82160
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      00 80 BB C4 00 80 FE C4 00 A0 8C 45 | 00 00 00 00 | 00 00 80 3F | 00 00 00 00 | 00 00 F0 BF | 99 99 75 C0 | 00 00 80 3F 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80 BF 
+      pos: -1500.000000, -2036.000000, 4500.000000
+  DIP #9
+    decl=0x32acc4a0
+    type=4
+    baseVtx=111858
+    numVerts=135
+    primCount=78
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de82e20
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      00 AA CD 46 00 80 9A C4 00 58 45 C6 | 00 00 80 BF | 6C F3 E5 38 | 00 00 00 00 | 89 88 32 C2 | 16 09 50 41 | 00 00 00 00 00 00 00 00 00 00 80 BF 6C F3 E5 B8 00 00 80 BF 00 00 00 80 
+      pos: 26325.000000, -1236.000000, -12630.000000
+  DIP #10
+    decl=0x32acc4a0
+    type=4
+    baseVtx=114136
+    numVerts=2412
+    primCount=1450
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de84540
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      34 33 DF C3 00 C0 FA C4 CD 92 96 45 | C6 0A 35 3F | D2 96 E2 3A | FD FE 34 BF | 83 F2 DC 3C | 48 ED 15 42 | E6 E5 34 BF 48 C6 2E 3D 97 CF 34 BF 66 22 ED 3C 38 C4 7F 3F 79 9A 00 3D 
+      pos: -446.400024, -2006.000000, 4818.350098
+  DIP #11
+    decl=0x32acc4a0
+    type=4
+    baseVtx=138410
+    numVerts=16
+    primCount=8
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de7ec40
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #12
+    decl=0x32acc4a0
+    type=4
+    baseVtx=136110
+    numVerts=748
+    primCount=374
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de858e0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #13
+    decl=0x32acc4a0
+    type=4
+    baseVtx=139094
+    numVerts=43
+    primCount=27
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de7e660
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #14
+    decl=0x32acc4a0
+    type=4
+    baseVtx=113815
+    numVerts=37
+    primCount=30
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de83060
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #15
+    decl=0x32acc4a0
+    type=4
+    baseVtx=122419
+    numVerts=3287
+    primCount=1702
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x32a9c4a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #16
+    decl=0x32acc4a0
+    type=4
+    baseVtx=139388
+    numVerts=856
+    primCount=428
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x32aa6ea0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.060841, -0.799433, -0.050488, -934.668152
+  row1: 1.066262, -0.021160, -0.949866, 26.316797
+  row2: 0.660943, -0.097295, 0.744102, 1001.783264
+  row3: 0.660943, -0.097295, 0.744102, 1006.083252
+  DIP #17
+    decl=0x32acc4a0
+    type=4
+    baseVtx=178203
+    numVerts=120
+    primCount=92
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x39e2b6c0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -93.235367
+  row2: 0.579395, -0.130159, 0.804587, 37.489754
+  row3: 0.579395, -0.130159, 0.804587, 41.789757
+  DIP #18
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x39e2cde0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -29.698763
+  row2: 0.579395, -0.130159, 0.804587, 30.726244
+  row3: 0.579395, -0.130159, 0.804587, 35.026245
+  DIP #19
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x39e2cde0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.634358, 0.158163, -0.466818, -44.756859
+  row1: -0.462604, -1.339809, 0.174690, 36.527660
+  row2: -0.521074, 0.284819, 0.804587, 29.465065
+  row3: -0.521074, 0.284819, 0.804587, 33.765068
+  DIP #20
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x39e2cde0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -93.235367
+  row2: 0.579395, -0.130159, 0.804587, 37.489754
+  row3: 0.579395, -0.130159, 0.804587, 41.789757
+  DIP #21
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x42cf7580
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -29.698763
+  row2: 0.579395, -0.130159, 0.804587, 30.726244
+  row3: 0.579395, -0.130159, 0.804587, 35.026245
+  DIP #22
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x42cf7580
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.634358, 0.158163, -0.466818, -44.756859
+  row1: -0.462604, -1.339809, 0.174690, 36.527660
+  row2: -0.521074, 0.284819, 0.804587, 29.465065
+  row3: -0.521074, 0.284819, 0.804587, 33.765068
+  DIP #23
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x42cf7580
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x0fb3dfe0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.634358, 0.158163, -0.466818, -44.756859
+  row1: -0.462604, -1.339809, 0.174690, 36.527660
+  row2: -0.521074, 0.284819, 0.804587, 29.465065
+  row3: -0.521074, 0.284819, 0.804587, 33.765068
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.799474, 0.070640, 0.034585, -894.228455
+  row1: -0.042176, 0.213704, -1.411438, 49.305721
+  row2: -0.093347, -0.984823, -0.146321, 1036.316895
+  row3: -0.093347, -0.984823, -0.146321, 1040.616821
+  DIP #24
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x008ca8e0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653084, 0.001336, -0.467786, -899.750610
+  row1: 0.125619, 1.411254, 0.179409, 50.850044
+  row2: 0.575627, -0.153347, 0.803205, 1083.208496
+  row3: 0.575627, -0.153347, 0.803205, 1087.508545
+  DIP #25
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x008ca8e0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.656665, -0.000292, -0.462747, -901.399902
+  row1: 0.124317, 1.411858, 0.175522, 23.614605
+  row2: 0.569419, -0.150606, 0.808134, 1089.824829
+  row3: 0.569419, -0.150606, 0.808134, 1094.124878
+  DIP #26
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x008ca8e0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653764, -0.001129, -0.466836, -318.767273
+  row1: 0.128224, 1.411430, 0.176155, -105.002441
+  row2: 0.574148, -0.152556, 0.804414, 497.315430
+  row3: 0.574148, -0.152556, 0.804414, 501.615448
+  DIP #27
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x008ca8e0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #28
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43952
+    numVerts=20
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32aa2a60
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #29
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43992
+    numVerts=646
+    primCount=376
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32aa2820
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #30
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43941
+    numVerts=11
+    primCount=7
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32aa2cc0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #31
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43972
+    numVerts=20
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32aa3ce0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #32
+    decl=0x32acc4a0
+    type=4
+    baseVtx=44654
+    numVerts=28
+    primCount=16
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0f79a620
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #33
+    decl=0x32acc4a0
+    type=4
+    baseVtx=44654
+    numVerts=168
+    primCount=90
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0f79a620
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #34
+    decl=0x32acc4a0
+    type=4
+    baseVtx=70152
+    numVerts=462
+    primCount=268
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x39e2b5a0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #35
+    decl=0x32acc4a0
+    type=4
+    baseVtx=81682
+    numVerts=1056
+    primCount=528
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x478bb5a0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #36
+    decl=0x32acc4a0
+    type=4
+    baseVtx=80626
+    numVerts=1056
+    primCount=528
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x478bb100
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x2d329ea0
+  SetVSConstF start=0
+    count=80
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  SetVSConstF start=76
+    count=3
+  SetVSConstF start=72
+    count=4
+    c72-c75:
+  row0: 0.803333, 0.000000, 0.000000, -3.251045
+  row1: -0.000000, 1.411925, 0.214651, -100.561012
+  row2: -0.000000, -0.150300, 0.988640, -9.061210
+  row3: -0.000000, -0.150300, 0.988640, -4.761206
+  SetVSConstF start=79
+    count=1
+    data: 4.046948, 68.898193, 15.290283, 0.000000
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.856502, 0.054857, 0.513221, 0.373669, 0.105228, 0.954893, -0.277680, -3.734459, -0.505304, 0.291838, 0.812095, -24.649080, 0.989532, 0.140367, -0.033534, -8.003070
+  DIP #37
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=240
+    primCount=394
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1c143a00
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DECL decl=0x0fc25260
+    numElems=8
+    SKINNED numWeights=3
+    [s0 +0] POSITION[0] FLOAT3
+    [s0 +12] NORMAL[0] FLOAT3
+    [s0 +24] TEXCOORD[0] FLOAT2
+    [s0 +32] TANGENT[0] FLOAT3
+    [s0 +44] BINORMAL[0] FLOAT3
+    [s0 +56] BLENDWEIGHT[0] D3DCOLOR
+    [s0 +60] BLENDINDICES[0] D3DCOLOR
+  SetVS shader=0x1bc1eb00
+  SetVSConstF start=0
+    count=76
+    (large write, first 4x4):
+      0.856502, 0.054857, 0.513221, 0.373669, 0.105228, 0.954893, -0.277680, -3.734459, -0.505304, 0.291838, 0.812095, -24.649080, 0.989532, 0.140367, -0.033534, -8.003070
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.931067, -0.032073, 0.363435, 1.162989, 0.097578, 0.981732, -0.163341, -1.679090, -0.351557, 0.187544, 0.917188, -23.377998, 0.967627, 0.059947, 0.245163, -2.012510
+  DIP #38
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=1000
+    primCount=1312
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b831840
+    tex1
+     =0x1c144b60
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.816566, 0.548663, -0.179411, -14.507702, -0.035006, 0.357297, 0.933335, 29.329191, 0.576189, -0.755849, 0.310963, 30.707472, 0.984417, -0.116307, -0.131893, -15.677097
+  DIP #39
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=172
+    primCount=242
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b831840
+    tex1
+     =0x1c144b60
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.036335, -0.957837, -0.285005, 20.726103, 0.865339, -0.112497, 0.488399, 64.296928, -0.499869, -0.264371, 0.824766, 31.180073, 0.685218, -0.726359, -0.053660, 42.633606
+  DIP #40
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=175
+    primCount=242
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b831840
+    tex1
+     =0x1c144b60
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=72
+    count=4
+    c72-c75:
+  row0: 0.787401, -0.053661, 0.149880, 10.263902
+  row1: 0.142161, 1.399645, -0.245742, -32.408024
+  row2: -0.171355, 0.187230, 0.967255, 50.250923
+  row3: -0.171355, 0.187230, 0.967255, 54.550926
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  DIP #41
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=505
+    primCount=530
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b831840
+    tex1
+     =0x1c160ee0
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  DIP #42
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=554
+    primCount=566
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b831840
+    tex1
+     =0x1c160ee0
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x2de7bb20
+  SetVSConstF start=0
+    count=8
+    (large write, first 4x4):
+      0.787401, -0.053661, 0.149880, 10.263902, 0.142161, 1.399645, -0.245742, -32.408024, -0.171355, 0.187230, 0.967255, 50.250923, -0.171355, 0.187230, 0.967255, 54.550926
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=7
+    count=1
+    data: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  DIP #43
+    decl=0x32acc4a0
+    type=4
+    baseVtx=33989
+    numVerts=280
+    primCount=228
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x39e2c4a0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x39e2c6e0
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x1c15eb00
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #44
+    decl=0x32acc4a0
+    type=4
+    baseVtx=250219
+    numVerts=314
+    primCount=196
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x39e2c6e0
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #45
+    decl=0x32acc4a0
+    type=4
+    baseVtx=251233
+    numVerts=368
+    primCount=190
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32a99660
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x39e2c6e0
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x2de76f20
+  SetVSConstF start=0
+    count=5
+    (large write, first 4x4):
+      0.653778, 0.000000, -0.466818, -1314.462891, 0.124734, 1.411925, 0.174690, 1963.829834, 0.574500, -0.150300, 0.804587, -120.957855, 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #46
+    decl=0x32acc4a0
+    type=4
+    baseVtx=24510
+    numVerts=246
+    primCount=252
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32a9dbc0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x32a9d040
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #47
+    decl=0x32acc4a0
+    type=4
+    baseVtx=3403
+    numVerts=3569
+    primCount=1821
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x2de7f0e0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x2de80100
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #48
+    decl=0x32acc4a0
+    type=4
+    baseVtx=22079
+    numVerts=288
+    primCount=152
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32aa7da0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x32aa7580
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #49
+    decl=0x32acc4a0
+    type=4
+    baseVtx=22743
+    numVerts=200
+    primCount=108
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32a9eac0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x32a9e3e0
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x0f7b3ce0
+  SetVSConstF start=0
+    count=9
+    (large write, first 4x4):
+      0.653778, 0.000000, -0.466818, -1314.462891, 0.124734, 1.411925, 0.174690, 1963.829834, 0.574500, -0.150300, 0.804587, -120.957855, 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=7
+    count=1
+    data: -0.128598, -0.811064, -0.570644, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=8
+    count=1
+    data: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  DIP #50
+    decl=0x32acc4a0
+    type=4
+    baseVtx=150672
+    numVerts=1988
+    primCount=994
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa3f40
+    tex4
+     =0x32aa5c20
+    tex5
+     =0x32aa4e40
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #51
+    decl=0x32acc4a0
+    type=4
+    baseVtx=146967
+    numVerts=53
+    primCount=35
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9f660
+    tex4
+     =0x32a9f780
+    tex5
+     =0x32aa0440
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #52
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110797
+    numVerts=252
+    primCount=174
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de82bc0
+    tex4
+     =0x2de84660
+    tex5
+     =0x2de840a0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #53
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110455
+    numVerts=11
+    primCount=9
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de82160
+    tex4
+     =0x2de80920
+    tex5
+     =0x2de81cc0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #54
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110455
+    numVerts=35
+    primCount=36
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de82160
+    tex4
+     =0x2de80920
+    tex5
+     =0x2de81cc0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #55
+    decl=0x32acc4a0
+    type=4
+    baseVtx=111858
+    numVerts=135
+    primCount=78
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de82e20
+    tex4
+     =0x2de84b00
+    tex5
+     =0x2de840a0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #56
+    decl=0x32acc4a0
+    type=4
+    baseVtx=114136
+    numVerts=2412
+    primCount=1450
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de84540
+    tex4
+     =0x2de85ea0
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #57
+    decl=0x32acc4a0
+    type=4
+    baseVtx=138410
+    numVerts=16
+    primCount=8
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de7ec40
+    tex4
+     =0x2de7e9e0
+    tex5
+     =0x2de85d80
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #58
+    decl=0x32acc4a0
+    type=4
+    baseVtx=136110
+    numVerts=748
+    primCount=374
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de858e0
+    tex4
+     =0x2de85a00
+    tex5
+     =0x2de85c60
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #59
+    decl=0x32acc4a0
+    type=4
+    baseVtx=139094
+    numVerts=43
+    primCount=27
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de7e660
+    tex4
+     =0x2de7f320
+    tex5
+     =0x2de7e8c0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #60
+    decl=0x32acc4a0
+    type=4
+    baseVtx=113815
+    numVerts=37
+    primCount=30
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de83060
+    tex4
+     =0x2de831a0
+    tex5
+     =0x2de82aa0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #61
+    decl=0x32acc4a0
+    type=4
+    baseVtx=122419
+    numVerts=3287
+    primCount=1702
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9c4a0
+    tex4
+     =0x32a9bc80
+    tex5
+     =0x32a9bb60
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #62
+    decl=0x32acc4a0
+    type=4
+    baseVtx=139388
+    numVerts=856
+    primCount=428
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa6ea0
+    tex4
+     =0x32aa77e0
+    tex5
+     =0x32aa6440
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.948074, -0.172763, 0.267038, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.060841, -0.799433, -0.050488, -934.668152
+  row1: 1.066262, -0.021160, -0.949866, 26.316797
+  row2: 0.660943, -0.097295, 0.744102, 1001.783264
+  row3: 0.660943, -0.097295, 0.744102, 1006.083252
+  SetVSConstF start=8
+    count=1
+    data: -766.839844, -1059.679565, -809.495300, 0.000000
+  DIP #63
+    decl=0x32acc4a0
+    type=4
+    baseVtx=178203
+    numVerts=120
+    primCount=92
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2b6c0
+    tex4
+     =0x39e2ccc0
+    tex5
+     =0x39e2c380
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.100214, -0.815059, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -93.235367
+  row2: 0.579395, -0.130159, 0.804587, 37.489754
+  row3: 0.579395, -0.130159, 0.804587, 41.789757
+  SetVSConstF start=8
+    count=1
+    data: 31.065989, 71.951698, -62.670837, 0.000000
+  DIP #64
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2cde0
+    tex4
+     =0x39e2ac60
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.100214, -0.815059, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -29.698763
+  row2: 0.579395, -0.130159, 0.804587, 30.726244
+  row3: 0.579395, -0.130159, 0.804587, 35.026245
+  SetVSConstF start=8
+    count=1
+    data: 32.636547, 26.979040, -62.670837, 0.000000
+  DIP #65
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2cde0
+    tex4
+     =0x39e2ac60
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: 0.320992, 0.755862, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.634358, 0.158163, -0.466818, -44.756859
+  row1: -0.462604, -1.339809, 0.174690, 36.527660
+  row2: -0.521074, 0.284819, 0.804587, 29.465065
+  row3: -0.521074, 0.284819, 0.804587, 33.765068
+  SetVSConstF start=8
+    count=1
+    data: -18.116106, 25.347210, -62.671082, 0.000000
+  DIP #66
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2cde0
+    tex4
+     =0x39e2ac60
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.100214, -0.815059, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -93.235367
+  row2: 0.579395, -0.130159, 0.804587, 37.489754
+  row3: 0.579395, -0.130159, 0.804587, 41.789757
+  SetVSConstF start=8
+    count=1
+    data: 31.065989, 71.951698, -62.670837, 0.000000
+  DIP #67
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x42cf7580
+    tex4
+     =0x42cf7a20
+    tex5
+     =0x42cf77c0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.100214, -0.815059, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -29.698763
+  row2: 0.579395, -0.130159, 0.804587, 30.726244
+  row3: 0.579395, -0.130159, 0.804587, 35.026245
+  SetVSConstF start=8
+    count=1
+    data: 32.636547, 26.979040, -62.670837, 0.000000
+  DIP #68
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x42cf7580
+    tex4
+     =0x42cf7a20
+    tex5
+     =0x42cf77c0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: 0.320992, 0.755862, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.634358, 0.158163, -0.466818, -44.756859
+  row1: -0.462604, -1.339809, 0.174690, 36.527660
+  row2: -0.521074, 0.284819, 0.804587, 29.465065
+  row3: -0.521074, 0.284819, 0.804587, 33.765068
+  SetVSConstF start=8
+    count=1
+    data: -18.116106, 25.347210, -62.671082, 0.000000
+  DIP #69
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x42cf7580
+    tex4
+     =0x42cf7a20
+    tex5
+     =0x42cf77c0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x0fb3c400
+  SetVSConstF start=0
+    count=9
+    (large write, first 4x4):
+      -0.634358, 0.158163, -0.466818, -44.756859, -0.462604, -1.339809, 0.174690, 36.527660, -0.521074, 0.284819, 0.804587, 29.465065, -0.521074, 0.284819, 0.804587, 33.765068
+  SetVSConstF start=7
+    count=1
+    data: -0.161406, 0.292715, 0.942479, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.799474, 0.070640, 0.034585, -894.228455
+  row1: -0.042176, 0.213704, -1.411438, 49.305721
+  row2: -0.093347, -0.984823, -0.146321, 1036.316895
+  row3: -0.093347, -0.984823, -0.146321, 1040.616821
+  SetVSConstF start=8
+    count=1
+    data: -1009.641541, 1117.540771, 234.307693, 0.000000
+  DIP #70
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x008ca8e0
+    tex4
+     =0x008caa00
+    tex5
+     =0x008ca680
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.129805, -0.809020, -0.573268, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653084, 0.001336, -0.467786, -899.750610
+  row1: 0.125619, 1.411254, 0.179409, 50.850044
+  row2: 0.575627, -0.153347, 0.803205, 1083.208496
+  row3: 0.575627, -0.153347, 0.803205, 1087.508545
+  SetVSConstF start=8
+    count=1
+    data: 281.410675, 133.445175, -1530.160645, 0.000000
+  DIP #71
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x008ca8e0
+    tex4
+     =0x008caa00
+    tex5
+     =0x008ca680
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.125436, -0.810981, -0.571468, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.656665, -0.000292, -0.462747, -901.399902
+  row1: 0.124317, 1.411858, 0.175522, 23.614605
+  row2: 0.569419, -0.150606, 0.808134, 1089.824829
+  row3: 0.569419, -0.150606, 0.808134, 1094.124878
+  SetVSConstF start=8
+    count=1
+    data: 292.757843, 148.026871, -1532.584473, 0.000000
+  DIP #72
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x008ca8e0
+    tex4
+     =0x008caa00
+    tex5
+     =0x008ca680
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.130615, -0.810151, -0.571485, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653764, -0.001129, -0.466836, -318.767273
+  row1: 0.128224, 1.411430, 0.176155, -105.002441
+  row2: 0.574148, -0.152556, 0.804414, 497.315430
+  row3: 0.574148, -0.152556, 0.804414, 501.615448
+  SetVSConstF start=8
+    count=1
+    data: 41.526024, 148.629715, -625.030762, 0.000000
+  DIP #73
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x008ca8e0
+    tex4
+     =0x008caa00
+    tex5
+     =0x008ca680
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.128598, -0.811064, -0.570644, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=8
+    count=1
+    data: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  DIP #74
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43952
+    numVerts=20
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa2a60
+    tex4
+     =0x32aa33a0
+    tex5
+     =0x32aa1da0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #75
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43992
+    numVerts=646
+    primCount=376
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa2820
+    tex4
+     =0x32aa1b60
+    tex5
+     =0x32aa3020
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #76
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43941
+    numVerts=11
+    primCount=7
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa2cc0
+    tex4
+     =0x32aa24a0
+    tex5
+     =0x32aa3bc0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #77
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43972
+    numVerts=20
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa3ce0
+    tex4
+     =0x32aa34c0
+    tex5
+     =0x32aa2000
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #78
+    decl=0x32acc4a0
+    type=4
+    baseVtx=44654
+    numVerts=28
+    primCount=16
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x0f79a620
+    tex4
+     =0x0fcb51a0
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #79
+    decl=0x32acc4a0
+    type=4
+    baseVtx=44654
+    numVerts=168
+    primCount=90
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x0f79a620
+    tex4
+     =0x0fcb51a0
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #80
+    decl=0x32acc4a0
+    type=4
+    baseVtx=70152
+    numVerts=462
+    primCount=268
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2b5a0
+    tex4
+     =0x39e2c240
+    tex5
+     =0x2de83ae0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #81
+    decl=0x32acc4a0
+    type=4
+    baseVtx=81682
+    numVerts=1056
+    primCount=528
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x478bb5a0
+    tex4
+     =0x0fcb51a0
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #82
+    decl=0x32acc4a0
+    type=4
+    baseVtx=80626
+    numVerts=1056
+    primCount=528
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x478bb100
+    tex4
+     =0x0fcb51a0
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x2d32a8c0
+  SetVSConstF start=0
+    count=84
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  SetVSConstF start=82
+    count=1
+    data: 0.226945, -0.811065, -0.539138, 0.000000
+  SetVSConstF start=76
+    count=3
+  SetVSConstF start=79
+    count=3
+  SetVSConstF start=72
+    count=4
+    c72-c75:
+  row0: 0.803333, 0.000000, 0.000000, -3.251045
+  row1: -0.000000, 1.411925, 0.214651, -100.561012
+  row2: -0.000000, -0.150300, 0.988640, -9.061210
+  row3: -0.000000, -0.150300, 0.988640, -4.761206
+  SetVSConstF start=83
+    count=1
+    data: 4.046948, 68.898193, 15.290283, 0.000000
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.856502, 0.054857, 0.513221, 0.373669, 0.105228, 0.954893, -0.277680, -3.734459, -0.505304, 0.291838, 0.812095, -24.649080, 0.989532, 0.140367, -0.033534, -8.003070
+  DIP #83
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=240
+    primCount=394
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c143a00
+    tex4
+     =0x1c144220
+    tex5
+     =0x1c145000
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVS shader=0x1bc1ca20
+  SetVSConstF start=0
+    count=81
+    (large write, first 4x4):
+      0.856502, 0.054857, 0.513221, 0.373669, 0.105228, 0.954893, -0.277680, -3.734459, -0.505304, 0.291838, 0.812095, -24.649080, 0.989532, 0.140367, -0.033534, -8.003070
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.931067, -0.032073, 0.363435, 1.162989, 0.097578, 0.981732, -0.163341, -1.679090, -0.351557, 0.187544, 0.917188, -23.377998, 0.967627, 0.059947, 0.245163, -2.012510
+  DIP #84
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=1000
+    primCount=1312
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c144b60
+    tex4
+     =0x1c144340
+    tex5
+     =0x1c143ea0
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.816566, 0.548663, -0.179411, -14.507702, -0.035006, 0.357297, 0.933335, 29.329191, 0.576189, -0.755849, 0.310963, 30.707472, 0.984417, -0.116307, -0.131893, -15.677097
+  DIP #85
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=172
+    primCount=242
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c144b60
+    tex4
+     =0x1c144340
+    tex5
+     =0x1c143ea0
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.036335, -0.957837, -0.285005, 20.726103, 0.865339, -0.112497, 0.488399, 64.296928, -0.499869, -0.264371, 0.824766, 31.180073, 0.685218, -0.726359, -0.053660, 42.633606
+  DIP #86
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=175
+    primCount=242
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c144b60
+    tex4
+     =0x1c144340
+    tex5
+     =0x1c143ea0
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVSConstF start=79
+    count=1
+    data: 0.205006, -0.957395, -0.203388, 0.000000
+  SetVSConstF start=76
+    count=3
+  SetVSConstF start=72
+    count=4
+    c72-c75:
+  row0: 0.787401, -0.053661, 0.149880, 10.263902
+  row1: 0.142161, 1.399645, -0.245742, -32.408024
+  row2: -0.171355, 0.187230, 0.967255, 50.250923
+  row3: -0.171355, 0.187230, 0.967255, 54.550926
+  SetVSConstF start=80
+    count=1
+    data: -0.916844, 12.879453, -59.053127, 0.000000
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  DIP #87
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=505
+    primCount=530
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c160ee0
+    tex4
+     =0x1c1616e0
+    tex5
+     =0x1c160340
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  DIP #88
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=554
+    primCount=566
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c160ee0
+    tex4
+     =0x1c1616e0
+    tex5
+     =0x1c160340
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVS shader=0x2de7dc00
+  SetVSConstF start=0
+    count=12
+    (large write, first 4x4):
+      0.787401, -0.053661, 0.149880, 10.263902, 0.142161, 1.399645, -0.245742, -32.408024, -0.171355, 0.187230, 0.967255, 50.250923, -0.171355, 0.187230, 0.967255, 54.550926
+  SetVSConstF start=10
+    count=1
+    data: -0.128598, -0.811064, -0.570644, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=7
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=11
+    count=1
+    data: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  DIP #89
+    decl=0x32acc4a0
+    type=4
+    baseVtx=33989
+    numVerts=280
+    primCount=228
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2c4a0
+    tex4
+     =0x39e2c120
+    tex5
+     =0x39e2c6e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x1c15e600
+  SetVSConstF start=0
+    count=8
+    (large write, first 4x4):
+      0.653778, 0.000000, -0.466818, -1314.462891, 0.124734, 1.411925, 0.174690, 1963.829834, 0.574500, -0.150300, 0.804587, -120.957855, 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #90
+    decl=0x32acc4a0
+    type=4
+    baseVtx=250219
+    numVerts=314
+    primCount=196
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x0fcb51a0
+    tex4
+     =0x0f79a860
+    tex5
+     =0x39e2c6e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #91
+    decl=0x32acc4a0
+    type=4
+    baseVtx=251233
+    numVerts=368
+    primCount=190
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a99660
+    tex4
+     =0x32a990a0
+    tex5
+     =0x39e2c6e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x2de780e0
+  SetVSConstF start=0
+    count=9
+    (large write, first 4x4):
+      0.653778, 0.000000, -0.466818, -1314.462891, 0.124734, 1.411925, 0.174690, 1963.829834, 0.574500, -0.150300, 0.804587, -120.957855, 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #92
+    decl=0x32acc4a0
+    type=4
+    baseVtx=24510
+    numVerts=246
+    primCount=252
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9dbc0
+    tex4
+     =0x008cac40
+    tex5
+     =0x32a9d040
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #93
+    decl=0x32acc4a0
+    type=4
+    baseVtx=3403
+    numVerts=3569
+    primCount=1821
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de7f0e0
+    tex4
+     =0x2de7f440
+    tex5
+     =0x2de80100
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #94
+    decl=0x32acc4a0
+    type=4
+    baseVtx=22079
+    numVerts=288
+    primCount=152
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa7da0
+    tex4
+     =0x32aa7a20
+    tex5
+     =0x32aa7580
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #95
+    decl=0x32acc4a0
+    type=4
+    baseVtx=22743
+    numVerts=200
+    primCount=108
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x28da7740
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, 2284.034668
+  row1: 0.124734, 1.411925, 0.174690, 1099.503540
+  row2: 0.574500, -0.150300, 0.804587, 6071.096680
+  row3: 0.574500, -0.150300, 0.804587, 6075.396484
+  DIP #96
+    decl=0x32acd380
+    type=4
+    baseVtx=257171
+    numVerts=112
+    primCount=56
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a621940
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DECL decl=0x32acd380
+    numElems=4
+    [s0 +0] POSITION[0] FLOAT3
+    [s0 +12] COLOR[0] D3DCOLOR
+    [s0 +16] TEXCOORD[0] FLOAT2
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1312.558350
+  row1: 0.124734, 1.411925, 0.174690, 135.887711
+  row2: 0.574500, -0.150300, 0.804587, 348.772278
+  row3: 0.574500, -0.150300, 0.804587, 353.072266
+  DIP #97
+    decl=0x32acd380
+    type=4
+    baseVtx=256691
+    numVerts=20
+    primCount=14
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x2de86100
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.466818, 0.000000, 0.653778, -1333.615967
+  row1: -0.174690, 1.411925, 0.124734, 210.996155
+  row2: -0.804587, -0.150300, 0.574500, 694.707214
+  row3: -0.804587, -0.150300, 0.574500, 699.007202
+  DIP #98
+    decl=0x32acd380
+    type=4
+    baseVtx=256691
+    numVerts=12
+    primCount=6
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x2de86100
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #99
+    decl=0x04d24e60
+    type=4
+    baseVtx=20
+    numVerts=44
+    primCount=22
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0f999060
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DECL decl=0x04d24e60
+    numElems=4
+    [s0 +0] POSITION[0] FLOAT3
+    [s0 +12] COLOR[0] D3DCOLOR
+    [s0 +16] TEXCOORD[0] FLOAT2
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #100
+    decl=0x04d24e60
+    type=4
+    baseVtx=64
+    numVerts=44
+    primCount=22
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0f999060
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #101
+    decl=0x04d24e60
+    type=4
+    baseVtx=108
+    numVerts=4
+    primCount=2
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x04d4ce00
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #102
+    decl=0x04d24e60
+    type=4
+    baseVtx=112
+    numVerts=4
+    primCount=2
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x04d4e2c0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #103
+    decl=0x04d24e60
+    type=4
+    baseVtx=116
+    numVerts=36
+    primCount=18
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #104
+    decl=0x04d24e60
+    type=4
+    baseVtx=152
+    numVerts=36
+    primCount=18
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a614480
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #105
+    decl=0x04d24e60
+    type=4
+    baseVtx=188
+    numVerts=36
+    primCount=18
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a614480
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #106
+    decl=0x04d24e60
+    type=4
+    baseVtx=224
+    numVerts=36
+    primCount=18
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a614480
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #107
+    decl=0x04d24e60
+    type=4
+    baseVtx=260
+    numVerts=36
+    primCount=18
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a613fe0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #108
+    decl=0x04d24e60
+    type=4
+    baseVtx=296
+    numVerts=28
+    primCount=14
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a6146c0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #109
+    decl=0x04d24e60
+    type=4
+    baseVtx=324
+    numVerts=40
+    primCount=20
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a6172c0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #110
+    decl=0x04d24e60
+    type=4
+    baseVtx=364
+    numVerts=44
+    primCount=22
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a616280
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #111
+    decl=0x04d24e60
+    type=4
+    baseVtx=408
+    numVerts=16
+    primCount=8
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a617500
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #112
+    decl=0x04d24e60
+    type=4
+    baseVtx=424
+    numVerts=4
+    primCount=2
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a617760
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #113
+    decl=0x04d24e60
+    type=4
+    baseVtx=428
+    numVerts=44
+    primCount=22
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a615f00
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  SetVS shader=0x00000000
+==== PRESENT frame 31801
+  diagFrame: 1
+  drawCalls: 113
+  scenes: 1
+  VS regs written: c0
+c1
+c2
+c3
+c4
+c5
+c6
+c7
+c8
+c9
+c10
+c11
+c12
+c13
+c14
+c15
+c16
+c17
+c18
+c19
+c20
+c21
+c22
+c23
+c24
+c25
+c26
+c27
+c28
+c29
+c30
+c31
+c32
+c33
+c34
+c35
+c36
+c37
+c38
+c39
+c40
+c41
+c42
+c43
+c44
+c45
+c46
+c47
+c48
+c49
+c50
+c51
+c52
+c53
+c54
+c55
+c56
+c57
+c58
+c59
+c60
+c61
+c62
+c63
+c64
+c65
+c66
+c67
+c68
+c69
+c70
+c71
+c72
+c73
+c74
+c75
+c76
+c77
+c78
+c79
+c80
+c81
+c82
+c83
+
+  Unique textures per stage:
+    stage 0
+      unique=32
+    stage 1
+      unique=20
+    stage 2
+      unique=7
+    stage 3
+      unique=32
+    stage 4
+      unique=32
+    stage 5
+      unique=27
+    stage 6
+      unique=2
+    stage 7
+      unique=2
+-- BeginScene #1
+  SetVS shader=0x1b70fea0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.466818, 0.000000, 0.653778, -1333.615967
+  row1: -0.174690, 1.411925, 0.124734, 210.996155
+  row2: -0.804587, -0.150300, 0.574500, 694.707214
+  row3: -0.804587, -0.150300, 0.574500, 699.007202
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -0.000050
+  row1: 0.124734, 1.411925, 0.174690, 0.000184
+  row2: 0.574500, -0.150300, 0.804587, -0.009845
+  row3: 0.574500, -0.150300, 0.804587, 0.000164
+  DIP #1
+    decl=0x32acce80
+    type=4
+    baseVtx=481846
+    numVerts=24
+    primCount=12
+    stride0=32
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fc0cb40
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (32
+ bytes):
+      00 00 FA C3 00 00 FA 43 00 00 FA 43 | 3D CD 13 3F | 34 CD 13 BF | 3D CD 13 BF | 00 00 00 00 | 00 00 00 00 | 
+      pos: -500.000000, 500.000000, 500.000000
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -0.000050
+  row1: 0.124734, 1.411925, 0.174690, 0.000184
+  row2: 0.574500, -0.150300, 0.804587, -0.009845
+  row3: 0.574500, -0.150300, 0.804587, 0.000164
+    c4-c7:
+  row0: -0.000150, 0.000000, 0.000034, 0.481800
+  row1: 0.000040, -0.000130, 0.000176, 0.594513
+  row2: -0.000029, -0.000180, -0.000127, 0.168384
+  row3: -0.128598, -0.811064, -0.570644, 0.000000
+    c8-c11:
+  row0: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  row1: 0.000000, 0.000000, 1.000000, 0.000000
+  row2: -0.128598, -0.811064, -0.570644, 0.000000
+  row3: 1278.561279, -1377.001831, -1025.170898, 0.000000
+    c12-c15:
+  row0: 0.985945, 0.031457, -0.164079, 1.217656
+  row1: 0.000051, 0.982056, 0.188587, 1.673915
+  row2: 0.167068, -0.185945, 0.968252, 1.947453
+  row3: 0.982699, 0.085911, -0.164079, 0.903763
+    c16-c19:
+  row0: -0.054236, 0.980558, 0.188587, 1.682378
+  row1: 0.177091, -0.176425, 0.968252, 1.892537
+  row2: 0.982699, 0.085911, -0.164079, 0.903763
+  row3: -0.054236, 0.980558, 0.188587, 1.682378
+    c20-c23:
+  row0: 0.177091, -0.176425, 0.968252, 1.892536
+  row1: 0.982699, 0.085911, -0.164079, 0.903763
+  row2: -0.054236, 0.980558, 0.188587, 1.682378
+  row3: 0.177091, -0.176425, 0.968252, 1.892537
+  SetVS shader=0x3665c480
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -0.000050
+  row1: 0.124734, 1.411925, 0.174690, 0.000184
+  row2: 0.574500, -0.150300, 0.804587, -0.009845
+  row3: 0.574500, -0.150300, 0.804587, 0.000164
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, 131.292160
+  row1: 0.124734, 1.411925, 0.174690, 2337.089355
+  row2: 0.574500, -0.150300, 0.804587, 3871.297852
+  row3: 0.574500, -0.150300, 0.804587, 3871.307861
+  DIP #2
+    decl=0x04a5c8e0
+    type=4
+    baseVtx=0
+    numVerts=8
+    primCount=4
+    stride0=60
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1c165b20
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (60
+ bytes):
+      23 3D 35 C5 7A 12 62 C4 05 B4 42 C5 | FF FF FF 7F | 00 00 00 00 | 00 00 00 00 | D2 4F DD 3A | 84 EC 81 BE | C7 9E 77 BF E8 FF 7F 3F E2 91 93 2D 0A CD E4 3A 68 3D E8 B9 DE 9E 77 BF 76 EC 81 3E 
+      pos: -2899.821045, -904.288696, -3115.251221
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, 131.292160
+  row1: 0.124734, 1.411925, 0.174690, 2337.089355
+  row2: 0.574500, -0.150300, 0.804587, 3871.297852
+  row3: 0.574500, -0.150300, 0.804587, 3871.307861
+    c4-c7:
+  row0: -0.000150, 0.000000, 0.000034, 0.481800
+  row1: 0.000040, -0.000130, 0.000176, 0.594513
+  row2: -0.000029, -0.000180, -0.000127, 0.168384
+  row3: -0.128598, -0.811064, -0.570644, 0.000000
+    c8-c11:
+  row0: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  row1: 0.000000, 0.000000, 1.000000, 0.000000
+  row2: -0.128598, -0.811064, -0.570644, 0.000000
+  row3: 1278.561279, -1377.001831, -1025.170898, 0.000000
+    c12-c15:
+  row0: 0.985945, 0.031457, -0.164079, 1.217656
+  row1: 0.000051, 0.982056, 0.188587, 1.673915
+  row2: 0.167068, -0.185945, 0.968252, 1.947453
+  row3: 0.982699, 0.085911, -0.164079, 0.903763
+    c16-c19:
+  row0: -0.054236, 0.980558, 0.188587, 1.682378
+  row1: 0.177091, -0.176425, 0.968252, 1.892537
+  row2: 0.982699, 0.085911, -0.164079, 0.903763
+  row3: -0.054236, 0.980558, 0.188587, 1.682378
+    c20-c23:
+  row0: 0.177091, -0.176425, 0.968252, 1.892536
+  row1: 0.982699, 0.085911, -0.164079, 0.903763
+  row2: -0.054236, 0.980558, 0.188587, 1.682378
+  row3: 0.177091, -0.176425, 0.968252, 1.892537
+  SetVS shader=0x1b711800
+  SetVSConstF start=0
+    count=7
+    (large write, first 4x4):
+      0.653778, 0.000000, -0.466818, 131.292160, 0.124734, 1.411925, 0.174690, 2337.089355, 0.574500, -0.150300, 0.804587, 3871.297852, 0.574500, -0.150300, 0.804587, 3871.307861
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -2.978774
+  row1: 0.124734, 1.411925, 0.174690, 85.739182
+  row2: 0.574500, -0.150300, 0.804587, -12.587376
+  row3: 0.574500, -0.150300, 0.804587, -12.577366
+  SetVSConstF start=6
+    count=1
+    data: 0.559265, 0.055927, 0.000000, 0.000000
+  SetVSConstF start=5
+    count=1
+    data: 1.000000, 1.000000, 1.000000, 1.000000
+  SetVSConstF start=4
+    count=1
+    data: 1.000000, 1.000000, 1.000000, 1.000000
+  DIP #3
+    decl=0x32acc140
+    type=4
+    baseVtx=481878
+    numVerts=4
+    primCount=2
+    stride0=32
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b830ca0
+    tex1
+     =0x1b831140
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (32
+ bytes):
+      00 80 93 C3 00 2C 9F BF 90 4F 96 43 | FF FF FF FF | 00 00 00 BF | 00 00 00 BF | 00 00 00 00 | 00 00 00 00 | 
+      pos: -295.000000, -1.243530, 300.621582
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -2.978774
+  row1: 0.124734, 1.411925, 0.174690, 85.739182
+  row2: 0.574500, -0.150300, 0.804587, -12.587376
+  row3: 0.574500, -0.150300, 0.804587, -12.577366
+    c4-c7:
+  row0: 1.000000, 1.000000, 1.000000, 1.000000
+  row1: 1.000000, 1.000000, 1.000000, 1.000000
+  row2: 0.559265, 0.055927, 0.000000, 0.000000
+  row3: -0.128598, -0.811064, -0.570644, 0.000000
+    c8-c11:
+  row0: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  row1: 0.000000, 0.000000, 1.000000, 0.000000
+  row2: -0.128598, -0.811064, -0.570644, 0.000000
+  row3: 1278.561279, -1377.001831, -1025.170898, 0.000000
+    c12-c15:
+  row0: 0.985945, 0.031457, -0.164079, 1.217656
+  row1: 0.000051, 0.982056, 0.188587, 1.673915
+  row2: 0.167068, -0.185945, 0.968252, 1.947453
+  row3: 0.982699, 0.085911, -0.164079, 0.903763
+    c16-c19:
+  row0: -0.054236, 0.980558, 0.188587, 1.682378
+  row1: 0.177091, -0.176425, 0.968252, 1.892537
+  row2: 0.982699, 0.085911, -0.164079, 0.903763
+  row3: -0.054236, 0.980558, 0.188587, 1.682378
+    c20-c23:
+  row0: 0.177091, -0.176425, 0.968252, 1.892536
+  row1: 0.982699, 0.085911, -0.164079, 0.903763
+  row2: -0.054236, 0.980558, 0.188587, 1.682378
+  row3: 0.177091, -0.176425, 0.968252, 1.892537
+  SetVS shader=0x0f7b37e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -2.978774
+  row1: 0.124734, 1.411925, 0.174690, 85.739182
+  row2: 0.574500, -0.150300, 0.804587, -12.587376
+  row3: 0.574500, -0.150300, 0.804587, -12.577366
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #4
+    decl=0x32acc4a0
+    type=4
+    baseVtx=150672
+    numVerts=1988
+    primCount=994
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x32aa3f40
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      14 32 E3 C3 9A 79 BA C4 E2 93 96 45 | 76 8D 76 BF | 97 9B 33 3E | 87 0F 51 BE | 8C E3 19 3D | CA CC 5C C0 | 72 2F BD 3E A6 40 0E BE 9F 35 6B BF B9 C4 45 BE DF 88 7A BF BD F8 8F 3D 
+      pos: -454.391235, -1491.800049, 4818.485352
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+    c4-c7:
+  row0: 1.000000, 1.000000, 1.000000, 1.000000
+  row1: 1.000000, 1.000000, 1.000000, 1.000000
+  row2: 0.559265, 0.055927, 0.000000, 0.000000
+  row3: -0.128598, -0.811064, -0.570644, 0.000000
+    c8-c11:
+  row0: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  row1: 0.000000, 0.000000, 1.000000, 0.000000
+  row2: -0.128598, -0.811064, -0.570644, 0.000000
+  row3: 1278.561279, -1377.001831, -1025.170898, 0.000000
+    c12-c15:
+  row0: 0.985945, 0.031457, -0.164079, 1.217656
+  row1: 0.000051, 0.982056, 0.188587, 1.673915
+  row2: 0.167068, -0.185945, 0.968252, 1.947453
+  row3: 0.982699, 0.085911, -0.164079, 0.903763
+    c16-c19:
+  row0: -0.054236, 0.980558, 0.188587, 1.682378
+  row1: 0.177091, -0.176425, 0.968252, 1.892537
+  row2: 0.982699, 0.085911, -0.164079, 0.903763
+  row3: -0.054236, 0.980558, 0.188587, 1.682378
+    c20-c23:
+  row0: 0.177091, -0.176425, 0.968252, 1.892536
+  row1: 0.982699, 0.085911, -0.164079, 0.903763
+  row2: -0.054236, 0.980558, 0.188587, 1.682378
+  row3: 0.177091, -0.176425, 0.968252, 1.892537
+  DIP #5
+    decl=0x32acc4a0
+    type=4
+    baseVtx=146967
+    numVerts=53
+    primCount=35
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x32a9f660
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      00 00 48 C3 00 80 FE C4 00 F0 96 45 | 00 00 00 00 | AC C5 A7 36 | 00 00 80 BF | AB AA 2A BF | 00 00 80 3F | 00 00 80 3F 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80 BF AC C5 A7 B6 
+      pos: -200.000000, -2036.000000, 4830.000000
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+    c4-c7:
+  row0: 1.000000, 1.000000, 1.000000, 1.000000
+  row1: 1.000000, 1.000000, 1.000000, 1.000000
+  row2: 0.559265, 0.055927, 0.000000, 0.000000
+  row3: -0.128598, -0.811064, -0.570644, 0.000000
+    c8-c11:
+  row0: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  row1: 0.000000, 0.000000, 1.000000, 0.000000
+  row2: -0.128598, -0.811064, -0.570644, 0.000000
+  row3: 1278.561279, -1377.001831, -1025.170898, 0.000000
+    c12-c15:
+  row0: 0.985945, 0.031457, -0.164079, 1.217656
+  row1: 0.000051, 0.982056, 0.188587, 1.673915
+  row2: 0.167068, -0.185945, 0.968252, 1.947453
+  row3: 0.982699, 0.085911, -0.164079, 0.903763
+    c16-c19:
+  row0: -0.054236, 0.980558, 0.188587, 1.682378
+  row1: 0.177091, -0.176425, 0.968252, 1.892537
+  row2: 0.982699, 0.085911, -0.164079, 0.903763
+  row3: -0.054236, 0.980558, 0.188587, 1.682378
+    c20-c23:
+  row0: 0.177091, -0.176425, 0.968252, 1.892536
+  row1: 0.982699, 0.085911, -0.164079, 0.903763
+  row2: -0.054236, 0.980558, 0.188587, 1.682378
+  row3: 0.177091, -0.176425, 0.968252, 1.892537
+  DIP #6
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110797
+    numVerts=252
+    primCount=174
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de82bc0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      00 AA CD 46 00 00 8F C3 00 30 45 C6 | 00 00 80 BF | BA C0 5C 38 | 00 00 00 00 | AB AA 32 C2 | FE FF 5F C0 | 00 00 00 00 00 00 00 00 00 00 80 BF BA C0 5C B8 00 00 80 BF 00 00 00 80 
+      pos: 26325.000000, -286.000000, -12620.000000
+  DIP #7
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110455
+    numVerts=11
+    primCount=9
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de82160
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      00 80 BB C4 00 80 FE C4 00 A0 8C 45 | 00 00 00 00 | 00 00 80 3F | 00 00 00 00 | 00 00 F0 BF | 99 99 75 C0 | 00 00 80 3F 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80 BF 
+      pos: -1500.000000, -2036.000000, 4500.000000
+  DIP #8
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110455
+    numVerts=35
+    primCount=36
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de82160
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      00 80 BB C4 00 80 FE C4 00 A0 8C 45 | 00 00 00 00 | 00 00 80 3F | 00 00 00 00 | 00 00 F0 BF | 99 99 75 C0 | 00 00 80 3F 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80 BF 
+      pos: -1500.000000, -2036.000000, 4500.000000
+  DIP #9
+    decl=0x32acc4a0
+    type=4
+    baseVtx=111858
+    numVerts=135
+    primCount=78
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de82e20
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      00 AA CD 46 00 80 9A C4 00 58 45 C6 | 00 00 80 BF | 6C F3 E5 38 | 00 00 00 00 | 89 88 32 C2 | 16 09 50 41 | 00 00 00 00 00 00 00 00 00 00 80 BF 6C F3 E5 B8 00 00 80 BF 00 00 00 80 
+      pos: 26325.000000, -1236.000000, -12630.000000
+  DIP #10
+    decl=0x32acc4a0
+    type=4
+    baseVtx=114136
+    numVerts=2412
+    primCount=1450
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de84540
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+    vtx0 raw (56
+ bytes):
+      34 33 DF C3 00 C0 FA C4 CD 92 96 45 | C6 0A 35 3F | D2 96 E2 3A | FD FE 34 BF | 83 F2 DC 3C | 48 ED 15 42 | E6 E5 34 BF 48 C6 2E 3D 97 CF 34 BF 66 22 ED 3C 38 C4 7F 3F 79 9A 00 3D 
+      pos: -446.400024, -2006.000000, 4818.350098
+  DIP #11
+    decl=0x32acc4a0
+    type=4
+    baseVtx=138410
+    numVerts=16
+    primCount=8
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de7ec40
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #12
+    decl=0x32acc4a0
+    type=4
+    baseVtx=136110
+    numVerts=748
+    primCount=374
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de858e0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #13
+    decl=0x32acc4a0
+    type=4
+    baseVtx=139094
+    numVerts=43
+    primCount=27
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de7e660
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #14
+    decl=0x32acc4a0
+    type=4
+    baseVtx=113815
+    numVerts=37
+    primCount=30
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x2de83060
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #15
+    decl=0x32acc4a0
+    type=4
+    baseVtx=122419
+    numVerts=3287
+    primCount=1702
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x32a9c4a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #16
+    decl=0x32acc4a0
+    type=4
+    baseVtx=139388
+    numVerts=856
+    primCount=428
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x32aa6ea0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.060841, -0.799433, -0.050488, -934.668152
+  row1: 1.066262, -0.021160, -0.949866, 26.316797
+  row2: 0.660943, -0.097295, 0.744102, 1001.783264
+  row3: 0.660943, -0.097295, 0.744102, 1006.083252
+  DIP #17
+    decl=0x32acc4a0
+    type=4
+    baseVtx=178203
+    numVerts=120
+    primCount=92
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x39e2b6c0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -93.235367
+  row2: 0.579395, -0.130159, 0.804587, 37.489754
+  row3: 0.579395, -0.130159, 0.804587, 41.789757
+  DIP #18
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x39e2cde0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -29.698763
+  row2: 0.579395, -0.130159, 0.804587, 30.726244
+  row3: 0.579395, -0.130159, 0.804587, 35.026245
+  DIP #19
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x39e2cde0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.634358, 0.158163, -0.466818, -44.756859
+  row1: -0.462604, -1.339809, 0.174690, 36.527660
+  row2: -0.521074, 0.284819, 0.804587, 29.465065
+  row3: -0.521074, 0.284819, 0.804587, 33.765068
+  DIP #20
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x39e2cde0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -93.235367
+  row2: 0.579395, -0.130159, 0.804587, 37.489754
+  row3: 0.579395, -0.130159, 0.804587, 41.789757
+  DIP #21
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x42cf7580
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -29.698763
+  row2: 0.579395, -0.130159, 0.804587, 30.726244
+  row3: 0.579395, -0.130159, 0.804587, 35.026245
+  DIP #22
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x42cf7580
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.634358, 0.158163, -0.466818, -44.756859
+  row1: -0.462604, -1.339809, 0.174690, 36.527660
+  row2: -0.521074, 0.284819, 0.804587, 29.465065
+  row3: -0.521074, 0.284819, 0.804587, 33.765068
+  DIP #23
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x42cf7580
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x0fb3dfe0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.634358, 0.158163, -0.466818, -44.756859
+  row1: -0.462604, -1.339809, 0.174690, 36.527660
+  row2: -0.521074, 0.284819, 0.804587, 29.465065
+  row3: -0.521074, 0.284819, 0.804587, 33.765068
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.799474, 0.070640, 0.034585, -894.228455
+  row1: -0.042176, 0.213704, -1.411438, 49.305721
+  row2: -0.093347, -0.984823, -0.146321, 1036.316895
+  row3: -0.093347, -0.984823, -0.146321, 1040.616821
+  DIP #24
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x008ca8e0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653084, 0.001336, -0.467786, -899.750610
+  row1: 0.125619, 1.411254, 0.179409, 50.850044
+  row2: 0.575627, -0.153347, 0.803205, 1083.208496
+  row3: 0.575627, -0.153347, 0.803205, 1087.508545
+  DIP #25
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x008ca8e0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.656665, -0.000292, -0.462747, -901.399902
+  row1: 0.124317, 1.411858, 0.175522, 23.614605
+  row2: 0.569419, -0.150606, 0.808134, 1089.824829
+  row3: 0.569419, -0.150606, 0.808134, 1094.124878
+  DIP #26
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x008ca8e0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653764, -0.001129, -0.466836, -318.767273
+  row1: 0.128224, 1.411430, 0.176155, -105.002441
+  row2: 0.574148, -0.152556, 0.804414, 497.315430
+  row3: 0.574148, -0.152556, 0.804414, 501.615448
+  DIP #27
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x008ca8e0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #28
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43952
+    numVerts=20
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32aa2a60
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #29
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43992
+    numVerts=646
+    primCount=376
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32aa2820
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #30
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43941
+    numVerts=11
+    primCount=7
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32aa2cc0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #31
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43972
+    numVerts=20
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32aa3ce0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #32
+    decl=0x32acc4a0
+    type=4
+    baseVtx=44654
+    numVerts=28
+    primCount=16
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0f79a620
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #33
+    decl=0x32acc4a0
+    type=4
+    baseVtx=44654
+    numVerts=168
+    primCount=90
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0f79a620
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #34
+    decl=0x32acc4a0
+    type=4
+    baseVtx=70152
+    numVerts=462
+    primCount=268
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x39e2b5a0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #35
+    decl=0x32acc4a0
+    type=4
+    baseVtx=81682
+    numVerts=1056
+    primCount=528
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x478bb5a0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #36
+    decl=0x32acc4a0
+    type=4
+    baseVtx=80626
+    numVerts=1056
+    primCount=528
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x478bb100
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x2d329ea0
+  SetVSConstF start=0
+    count=80
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  SetVSConstF start=76
+    count=3
+  SetVSConstF start=72
+    count=4
+    c72-c75:
+  row0: 0.803333, 0.000000, 0.000000, -3.251045
+  row1: -0.000000, 1.411925, 0.214651, -100.561012
+  row2: -0.000000, -0.150300, 0.988640, -9.061210
+  row3: -0.000000, -0.150300, 0.988640, -4.761206
+  SetVSConstF start=79
+    count=1
+    data: 4.046948, 68.898193, 15.290283, 0.000000
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.856502, 0.054857, 0.513221, 0.373669, 0.105228, 0.954893, -0.277680, -3.734459, -0.505304, 0.291838, 0.812095, -24.649080, 0.989532, 0.140367, -0.033534, -8.003070
+  DIP #37
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=240
+    primCount=394
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1c143a00
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x1bc1eb00
+  SetVSConstF start=0
+    count=76
+    (large write, first 4x4):
+      0.856502, 0.054857, 0.513221, 0.373669, 0.105228, 0.954893, -0.277680, -3.734459, -0.505304, 0.291838, 0.812095, -24.649080, 0.989532, 0.140367, -0.033534, -8.003070
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.931067, -0.032073, 0.363435, 1.162989, 0.097578, 0.981732, -0.163341, -1.679090, -0.351557, 0.187544, 0.917188, -23.377998, 0.967627, 0.059947, 0.245163, -2.012510
+  DIP #38
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=1000
+    primCount=1312
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b831840
+    tex1
+     =0x1c144b60
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.816566, 0.548663, -0.179411, -14.507702, -0.035006, 0.357297, 0.933335, 29.329191, 0.576189, -0.755849, 0.310963, 30.707472, 0.984417, -0.116307, -0.131893, -15.677097
+  DIP #39
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=172
+    primCount=242
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b831840
+    tex1
+     =0x1c144b60
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.036335, -0.957837, -0.285005, 20.726103, 0.865339, -0.112497, 0.488399, 64.296928, -0.499869, -0.264371, 0.824766, 31.180073, 0.685218, -0.726359, -0.053660, 42.633606
+  DIP #40
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=175
+    primCount=242
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b831840
+    tex1
+     =0x1c144b60
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=72
+    count=4
+    c72-c75:
+  row0: 0.787401, -0.053661, 0.149880, 10.263902
+  row1: 0.142161, 1.399645, -0.245742, -32.408024
+  row2: -0.171355, 0.187230, 0.967255, 50.250923
+  row3: -0.171355, 0.187230, 0.967255, 54.550926
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  DIP #41
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=505
+    primCount=530
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b831840
+    tex1
+     =0x1c160ee0
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  DIP #42
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=554
+    primCount=566
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1b831840
+    tex1
+     =0x1c160ee0
+    tex2
+     =0x1c145000
+    tex3
+     =0x0fc0dda0
+    tex4
+     =0x1c1445a0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x2de7bb20
+  SetVSConstF start=0
+    count=8
+    (large write, first 4x4):
+      0.787401, -0.053661, 0.149880, 10.263902, 0.142161, 1.399645, -0.245742, -32.408024, -0.171355, 0.187230, 0.967255, 50.250923, -0.171355, 0.187230, 0.967255, 54.550926
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=7
+    count=1
+    data: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  DIP #43
+    decl=0x32acc4a0
+    type=4
+    baseVtx=33989
+    numVerts=280
+    primCount=228
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x39e2c4a0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x39e2c6e0
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x1c15eb00
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #44
+    decl=0x32acc4a0
+    type=4
+    baseVtx=250219
+    numVerts=314
+    primCount=196
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0fcb51a0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x39e2c6e0
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #45
+    decl=0x32acc4a0
+    type=4
+    baseVtx=251233
+    numVerts=368
+    primCount=190
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32a99660
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x39e2c6e0
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x2de76f20
+  SetVSConstF start=0
+    count=5
+    (large write, first 4x4):
+      0.653778, 0.000000, -0.466818, -1314.462891, 0.124734, 1.411925, 0.174690, 1963.829834, 0.574500, -0.150300, 0.804587, -120.957855, 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #46
+    decl=0x32acc4a0
+    type=4
+    baseVtx=24510
+    numVerts=246
+    primCount=252
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32a9dbc0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x32a9d040
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #47
+    decl=0x32acc4a0
+    type=4
+    baseVtx=3403
+    numVerts=3569
+    primCount=1821
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x2de7f0e0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x2de80100
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #48
+    decl=0x32acc4a0
+    type=4
+    baseVtx=22079
+    numVerts=288
+    primCount=152
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32aa7da0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x32aa7580
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #49
+    decl=0x32acc4a0
+    type=4
+    baseVtx=22743
+    numVerts=200
+    primCount=108
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x32a9eac0
+    tex1
+     =0x0fcb51a0
+    tex2
+     =0x32a9e3e0
+    tex3
+     =0x2be40a80
+    tex4
+     =0x1bf959e0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x0f7b3ce0
+  SetVSConstF start=0
+    count=9
+    (large write, first 4x4):
+      0.653778, 0.000000, -0.466818, -1314.462891, 0.124734, 1.411925, 0.174690, 1963.829834, 0.574500, -0.150300, 0.804587, -120.957855, 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=7
+    count=1
+    data: -0.128598, -0.811064, -0.570644, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=8
+    count=1
+    data: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  DIP #50
+    decl=0x32acc4a0
+    type=4
+    baseVtx=150672
+    numVerts=1988
+    primCount=994
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa3f40
+    tex4
+     =0x32aa5c20
+    tex5
+     =0x32aa4e40
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #51
+    decl=0x32acc4a0
+    type=4
+    baseVtx=146967
+    numVerts=53
+    primCount=35
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9f660
+    tex4
+     =0x32a9f780
+    tex5
+     =0x32aa0440
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #52
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110797
+    numVerts=252
+    primCount=174
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de82bc0
+    tex4
+     =0x2de84660
+    tex5
+     =0x2de840a0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #53
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110455
+    numVerts=11
+    primCount=9
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de82160
+    tex4
+     =0x2de80920
+    tex5
+     =0x2de81cc0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #54
+    decl=0x32acc4a0
+    type=4
+    baseVtx=110455
+    numVerts=35
+    primCount=36
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de82160
+    tex4
+     =0x2de80920
+    tex5
+     =0x2de81cc0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #55
+    decl=0x32acc4a0
+    type=4
+    baseVtx=111858
+    numVerts=135
+    primCount=78
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de82e20
+    tex4
+     =0x2de84b00
+    tex5
+     =0x2de840a0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #56
+    decl=0x32acc4a0
+    type=4
+    baseVtx=114136
+    numVerts=2412
+    primCount=1450
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de84540
+    tex4
+     =0x2de85ea0
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #57
+    decl=0x32acc4a0
+    type=4
+    baseVtx=138410
+    numVerts=16
+    primCount=8
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de7ec40
+    tex4
+     =0x2de7e9e0
+    tex5
+     =0x2de85d80
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #58
+    decl=0x32acc4a0
+    type=4
+    baseVtx=136110
+    numVerts=748
+    primCount=374
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de858e0
+    tex4
+     =0x2de85a00
+    tex5
+     =0x2de85c60
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #59
+    decl=0x32acc4a0
+    type=4
+    baseVtx=139094
+    numVerts=43
+    primCount=27
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de7e660
+    tex4
+     =0x2de7f320
+    tex5
+     =0x2de7e8c0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #60
+    decl=0x32acc4a0
+    type=4
+    baseVtx=113815
+    numVerts=37
+    primCount=30
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de83060
+    tex4
+     =0x2de831a0
+    tex5
+     =0x2de82aa0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #61
+    decl=0x32acc4a0
+    type=4
+    baseVtx=122419
+    numVerts=3287
+    primCount=1702
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9c4a0
+    tex4
+     =0x32a9bc80
+    tex5
+     =0x32a9bb60
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #62
+    decl=0x32acc4a0
+    type=4
+    baseVtx=139388
+    numVerts=856
+    primCount=428
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa6ea0
+    tex4
+     =0x32aa77e0
+    tex5
+     =0x32aa6440
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.948074, -0.172763, 0.267038, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.060841, -0.799433, -0.050488, -934.668152
+  row1: 1.066262, -0.021160, -0.949866, 26.316797
+  row2: 0.660943, -0.097295, 0.744102, 1001.783264
+  row3: 0.660943, -0.097295, 0.744102, 1006.083252
+  SetVSConstF start=8
+    count=1
+    data: -766.839844, -1059.679565, -809.495300, 0.000000
+  DIP #63
+    decl=0x32acc4a0
+    type=4
+    baseVtx=178203
+    numVerts=120
+    primCount=92
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2b6c0
+    tex4
+     =0x39e2ccc0
+    tex5
+     =0x39e2c380
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.100214, -0.815059, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -93.235367
+  row2: 0.579395, -0.130159, 0.804587, 37.489754
+  row3: 0.579395, -0.130159, 0.804587, 41.789757
+  SetVSConstF start=8
+    count=1
+    data: 31.065989, 71.951698, -62.670837, 0.000000
+  DIP #64
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2cde0
+    tex4
+     =0x39e2ac60
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.100214, -0.815059, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -29.698763
+  row2: 0.579395, -0.130159, 0.804587, 30.726244
+  row3: 0.579395, -0.130159, 0.804587, 35.026245
+  SetVSConstF start=8
+    count=1
+    data: 32.636547, 26.979040, -62.670837, 0.000000
+  DIP #65
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2cde0
+    tex4
+     =0x39e2ac60
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: 0.320992, 0.755862, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.634358, 0.158163, -0.466818, -44.756859
+  row1: -0.462604, -1.339809, 0.174690, 36.527660
+  row2: -0.521074, 0.284819, 0.804587, 29.465065
+  row3: -0.521074, 0.284819, 0.804587, 33.765068
+  SetVSConstF start=8
+    count=1
+    data: -18.116106, 25.347210, -62.671082, 0.000000
+  DIP #66
+    decl=0x32acc4a0
+    type=4
+    baseVtx=181681
+    numVerts=250
+    primCount=192
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2cde0
+    tex4
+     =0x39e2ac60
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.100214, -0.815059, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -93.235367
+  row2: 0.579395, -0.130159, 0.804587, 37.489754
+  row3: 0.579395, -0.130159, 0.804587, 41.789757
+  SetVSConstF start=8
+    count=1
+    data: 31.065989, 71.951698, -62.670837, 0.000000
+  DIP #67
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x42cf7580
+    tex4
+     =0x42cf7a20
+    tex5
+     =0x42cf77c0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.100214, -0.815059, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653380, 0.022817, -0.466818, -51.195518
+  row1: 0.075382, 1.415418, 0.174690, -29.698763
+  row2: 0.579395, -0.130159, 0.804587, 30.726244
+  row3: 0.579395, -0.130159, 0.804587, 35.026245
+  SetVSConstF start=8
+    count=1
+    data: 32.636547, 26.979040, -62.670837, 0.000000
+  DIP #68
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x42cf7580
+    tex4
+     =0x42cf7a20
+    tex5
+     =0x42cf77c0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: 0.320992, 0.755862, -0.570645, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.634358, 0.158163, -0.466818, -44.756859
+  row1: -0.462604, -1.339809, 0.174690, 36.527660
+  row2: -0.521074, 0.284819, 0.804587, 29.465065
+  row3: -0.521074, 0.284819, 0.804587, 33.765068
+  SetVSConstF start=8
+    count=1
+    data: -18.116106, 25.347210, -62.671082, 0.000000
+  DIP #69
+    decl=0x32acc4a0
+    type=4
+    baseVtx=194417
+    numVerts=24
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x42cf7580
+    tex4
+     =0x42cf7a20
+    tex5
+     =0x42cf77c0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x0fb3c400
+  SetVSConstF start=0
+    count=9
+    (large write, first 4x4):
+      -0.634358, 0.158163, -0.466818, -44.756859, -0.462604, -1.339809, 0.174690, 36.527660, -0.521074, 0.284819, 0.804587, 29.465065, -0.521074, 0.284819, 0.804587, 33.765068
+  SetVSConstF start=7
+    count=1
+    data: -0.161406, 0.292715, 0.942479, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: -0.799474, 0.070640, 0.034585, -894.228455
+  row1: -0.042176, 0.213704, -1.411438, 49.305721
+  row2: -0.093347, -0.984823, -0.146321, 1036.316895
+  row3: -0.093347, -0.984823, -0.146321, 1040.616821
+  SetVSConstF start=8
+    count=1
+    data: -1009.641541, 1117.540771, 234.307693, 0.000000
+  DIP #70
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x008ca8e0
+    tex4
+     =0x008caa00
+    tex5
+     =0x008ca680
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.129805, -0.809020, -0.573268, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653084, 0.001336, -0.467786, -899.750610
+  row1: 0.125619, 1.411254, 0.179409, 50.850044
+  row2: 0.575627, -0.153347, 0.803205, 1083.208496
+  row3: 0.575627, -0.153347, 0.803205, 1087.508545
+  SetVSConstF start=8
+    count=1
+    data: 281.410675, 133.445175, -1530.160645, 0.000000
+  DIP #71
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x008ca8e0
+    tex4
+     =0x008caa00
+    tex5
+     =0x008ca680
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.125436, -0.810981, -0.571468, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.656665, -0.000292, -0.462747, -901.399902
+  row1: 0.124317, 1.411858, 0.175522, 23.614605
+  row2: 0.569419, -0.150606, 0.808134, 1089.824829
+  row3: 0.569419, -0.150606, 0.808134, 1094.124878
+  SetVSConstF start=8
+    count=1
+    data: 292.757843, 148.026871, -1532.584473, 0.000000
+  DIP #72
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x008ca8e0
+    tex4
+     =0x008caa00
+    tex5
+     =0x008ca680
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.130615, -0.810151, -0.571485, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653764, -0.001129, -0.466836, -318.767273
+  row1: 0.128224, 1.411430, 0.176155, -105.002441
+  row2: 0.574148, -0.152556, 0.804414, 497.315430
+  row3: 0.574148, -0.152556, 0.804414, 501.615448
+  SetVSConstF start=8
+    count=1
+    data: 41.526024, 148.629715, -625.030762, 0.000000
+  DIP #73
+    decl=0x32acc4a0
+    type=4
+    baseVtx=78628
+    numVerts=84
+    primCount=72
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x008ca8e0
+    tex4
+     =0x008caa00
+    tex5
+     =0x008ca680
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=7
+    count=1
+    data: -0.128598, -0.811064, -0.570644, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=8
+    count=1
+    data: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  DIP #74
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43952
+    numVerts=20
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa2a60
+    tex4
+     =0x32aa33a0
+    tex5
+     =0x32aa1da0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #75
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43992
+    numVerts=646
+    primCount=376
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa2820
+    tex4
+     =0x32aa1b60
+    tex5
+     =0x32aa3020
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #76
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43941
+    numVerts=11
+    primCount=7
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa2cc0
+    tex4
+     =0x32aa24a0
+    tex5
+     =0x32aa3bc0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #77
+    decl=0x32acc4a0
+    type=4
+    baseVtx=43972
+    numVerts=20
+    primCount=12
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa3ce0
+    tex4
+     =0x32aa34c0
+    tex5
+     =0x32aa2000
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #78
+    decl=0x32acc4a0
+    type=4
+    baseVtx=44654
+    numVerts=28
+    primCount=16
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x0f79a620
+    tex4
+     =0x0fcb51a0
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #79
+    decl=0x32acc4a0
+    type=4
+    baseVtx=44654
+    numVerts=168
+    primCount=90
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x0f79a620
+    tex4
+     =0x0fcb51a0
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #80
+    decl=0x32acc4a0
+    type=4
+    baseVtx=70152
+    numVerts=462
+    primCount=268
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2b5a0
+    tex4
+     =0x39e2c240
+    tex5
+     =0x2de83ae0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #81
+    decl=0x32acc4a0
+    type=4
+    baseVtx=81682
+    numVerts=1056
+    primCount=528
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x478bb5a0
+    tex4
+     =0x0fcb51a0
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #82
+    decl=0x32acc4a0
+    type=4
+    baseVtx=80626
+    numVerts=1056
+    primCount=528
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x478bb100
+    tex4
+     =0x0fcb51a0
+    tex5
+     =0x0f79a860
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x2d32a8c0
+  SetVSConstF start=0
+    count=84
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  SetVSConstF start=82
+    count=1
+    data: 0.226945, -0.811065, -0.539138, 0.000000
+  SetVSConstF start=76
+    count=3
+  SetVSConstF start=79
+    count=3
+  SetVSConstF start=72
+    count=4
+    c72-c75:
+  row0: 0.803333, 0.000000, 0.000000, -3.251045
+  row1: -0.000000, 1.411925, 0.214651, -100.561012
+  row2: -0.000000, -0.150300, 0.988640, -9.061210
+  row3: -0.000000, -0.150300, 0.988640, -4.761206
+  SetVSConstF start=83
+    count=1
+    data: 4.046948, 68.898193, 15.290283, 0.000000
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.856502, 0.054857, 0.513221, 0.373669, 0.105228, 0.954893, -0.277680, -3.734459, -0.505304, 0.291838, 0.812095, -24.649080, 0.989532, 0.140367, -0.033534, -8.003070
+  DIP #83
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=240
+    primCount=394
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c143a00
+    tex4
+     =0x1c144220
+    tex5
+     =0x1c145000
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVS shader=0x1bc1ca20
+  SetVSConstF start=0
+    count=81
+    (large write, first 4x4):
+      0.856502, 0.054857, 0.513221, 0.373669, 0.105228, 0.954893, -0.277680, -3.734459, -0.505304, 0.291838, 0.812095, -24.649080, 0.989532, 0.140367, -0.033534, -8.003070
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.931067, -0.032073, 0.363435, 1.162989, 0.097578, 0.981732, -0.163341, -1.679090, -0.351557, 0.187544, 0.917188, -23.377998, 0.967627, 0.059947, 0.245163, -2.012510
+  DIP #84
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=1000
+    primCount=1312
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c144b60
+    tex4
+     =0x1c144340
+    tex5
+     =0x1c143ea0
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.816566, 0.548663, -0.179411, -14.507702, -0.035006, 0.357297, 0.933335, 29.329191, 0.576189, -0.755849, 0.310963, 30.707472, 0.984417, -0.116307, -0.131893, -15.677097
+  DIP #85
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=172
+    primCount=242
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c144b60
+    tex4
+     =0x1c144340
+    tex5
+     =0x1c143ea0
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.036335, -0.957837, -0.285005, 20.726103, 0.865339, -0.112497, 0.488399, 64.296928, -0.499869, -0.264371, 0.824766, 31.180073, 0.685218, -0.726359, -0.053660, 42.633606
+  DIP #86
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=175
+    primCount=242
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c144b60
+    tex4
+     =0x1c144340
+    tex5
+     =0x1c143ea0
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVSConstF start=79
+    count=1
+    data: 0.205006, -0.957395, -0.203388, 0.000000
+  SetVSConstF start=76
+    count=3
+  SetVSConstF start=72
+    count=4
+    c72-c75:
+  row0: 0.787401, -0.053661, 0.149880, 10.263902
+  row1: 0.142161, 1.399645, -0.245742, -32.408024
+  row2: -0.171355, 0.187230, 0.967255, 50.250923
+  row3: -0.171355, 0.187230, 0.967255, 54.550926
+  SetVSConstF start=80
+    count=1
+    data: -0.916844, 12.879453, -59.053127, 0.000000
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  DIP #87
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=505
+    primCount=530
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c160ee0
+    tex4
+     =0x1c1616e0
+    tex5
+     =0x1c160340
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVSConstF start=0
+    count=72
+    (large write, first 4x4):
+      0.982699, 0.085911, -0.164079, 0.903763, -0.054236, 0.980558, 0.188587, 1.682378, 0.177091, -0.176425, 0.968252, 1.892537, 0.982699, 0.085911, -0.164079, 0.903763
+  DIP #88
+    decl=0x0fc25260
+    type=4
+    baseVtx=0
+    numVerts=554
+    primCount=566
+    stride0=64
+    [SKINNED]
+    boneStart=0
+    numBones=0
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x1c160ee0
+    tex4
+     =0x1c1616e0
+    tex5
+     =0x1c160340
+    tex6
+     =0x0fc0dda0
+    tex7
+     =0x1c1445a0
+  SetVS shader=0x2de7dc00
+  SetVSConstF start=0
+    count=12
+    (large write, first 4x4):
+      0.787401, -0.053661, 0.149880, 10.263902, 0.142161, 1.399645, -0.245742, -32.408024, -0.171355, 0.187230, 0.967255, 50.250923, -0.171355, 0.187230, 0.967255, 54.550926
+  SetVSConstF start=10
+    count=1
+    data: -0.128598, -0.811064, -0.570644, 0.000000
+  SetVSConstF start=4
+    count=3
+  SetVSConstF start=7
+    count=3
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=11
+    count=1
+    data: 1278.561279, -1377.001831, -1025.170898, 0.000000
+  DIP #89
+    decl=0x32acc4a0
+    type=4
+    baseVtx=33989
+    numVerts=280
+    primCount=228
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x39e2c4a0
+    tex4
+     =0x39e2c120
+    tex5
+     =0x39e2c6e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x1c15e600
+  SetVSConstF start=0
+    count=8
+    (large write, first 4x4):
+      0.653778, 0.000000, -0.466818, -1314.462891, 0.124734, 1.411925, 0.174690, 1963.829834, 0.574500, -0.150300, 0.804587, -120.957855, 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #90
+    decl=0x32acc4a0
+    type=4
+    baseVtx=250219
+    numVerts=314
+    primCount=196
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x0fcb51a0
+    tex4
+     =0x0f79a860
+    tex5
+     =0x39e2c6e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #91
+    decl=0x32acc4a0
+    type=4
+    baseVtx=251233
+    numVerts=368
+    primCount=190
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a99660
+    tex4
+     =0x32a990a0
+    tex5
+     =0x39e2c6e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x2de780e0
+  SetVSConstF start=0
+    count=9
+    (large write, first 4x4):
+      0.653778, 0.000000, -0.466818, -1314.462891, 0.124734, 1.411925, 0.174690, 1963.829834, 0.574500, -0.150300, 0.804587, -120.957855, 0.574500, -0.150300, 0.804587, -116.657852
+  DIP #92
+    decl=0x32acc4a0
+    type=4
+    baseVtx=24510
+    numVerts=246
+    primCount=252
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9dbc0
+    tex4
+     =0x008cac40
+    tex5
+     =0x32a9d040
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #93
+    decl=0x32acc4a0
+    type=4
+    baseVtx=3403
+    numVerts=3569
+    primCount=1821
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x2de7f0e0
+    tex4
+     =0x2de7f440
+    tex5
+     =0x2de80100
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #94
+    decl=0x32acc4a0
+    type=4
+    baseVtx=22079
+    numVerts=288
+    primCount=152
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32aa7da0
+    tex4
+     =0x32aa7a20
+    tex5
+     =0x32aa7580
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  DIP #95
+    decl=0x32acc4a0
+    type=4
+    baseVtx=22743
+    numVerts=200
+    primCount=108
+    stride0=56
+    hasNormal=1
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x1bf502a0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x28da7740
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1314.462891
+  row1: 0.124734, 1.411925, 0.174690, 1963.829834
+  row2: 0.574500, -0.150300, 0.804587, -120.957855
+  row3: 0.574500, -0.150300, 0.804587, -116.657852
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, 2284.034668
+  row1: 0.124734, 1.411925, 0.174690, 1099.503540
+  row2: 0.574500, -0.150300, 0.804587, 6071.096680
+  row3: 0.574500, -0.150300, 0.804587, 6075.396484
+  DIP #96
+    decl=0x32acd380
+    type=4
+    baseVtx=257171
+    numVerts=112
+    primCount=56
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a621940
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.653778, 0.000000, -0.466818, -1312.558350
+  row1: 0.124734, 1.411925, 0.174690, 135.887711
+  row2: 0.574500, -0.150300, 0.804587, 348.772278
+  row3: 0.574500, -0.150300, 0.804587, 353.072266
+  DIP #97
+    decl=0x32acd380
+    type=4
+    baseVtx=256691
+    numVerts=20
+    primCount=14
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x2de86100
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.466818, 0.000000, 0.653778, -1333.615967
+  row1: -0.174690, 1.411925, 0.124734, 210.996155
+  row2: -0.804587, -0.150300, 0.574500, 694.707214
+  row3: -0.804587, -0.150300, 0.574500, 699.007202
+  DIP #98
+    decl=0x32acd380
+    type=4
+    baseVtx=256691
+    numVerts=12
+    primCount=6
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x2de86100
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #99
+    decl=0x04d24e60
+    type=4
+    baseVtx=20
+    numVerts=44
+    primCount=22
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0f999060
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #100
+    decl=0x04d24e60
+    type=4
+    baseVtx=64
+    numVerts=44
+    primCount=22
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x0f999060
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #101
+    decl=0x04d24e60
+    type=4
+    baseVtx=108
+    numVerts=4
+    primCount=2
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x04d4ce00
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #102
+    decl=0x04d24e60
+    type=4
+    baseVtx=112
+    numVerts=4
+    primCount=2
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x04d4e2c0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #103
+    decl=0x04d24e60
+    type=4
+    baseVtx=116
+    numVerts=36
+    primCount=18
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #104
+    decl=0x04d24e60
+    type=4
+    baseVtx=152
+    numVerts=36
+    primCount=18
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a614480
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #105
+    decl=0x04d24e60
+    type=4
+    baseVtx=188
+    numVerts=36
+    primCount=18
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a614480
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #106
+    decl=0x04d24e60
+    type=4
+    baseVtx=224
+    numVerts=36
+    primCount=18
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a614480
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #107
+    decl=0x04d24e60
+    type=4
+    baseVtx=260
+    numVerts=36
+    primCount=18
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a613fe0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #108
+    decl=0x04d24e60
+    type=4
+    baseVtx=296
+    numVerts=28
+    primCount=14
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a6146c0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #109
+    decl=0x04d24e60
+    type=4
+    baseVtx=324
+    numVerts=40
+    primCount=20
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a6172c0
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #110
+    decl=0x04d24e60
+    type=4
+    baseVtx=364
+    numVerts=44
+    primCount=22
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a616280
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #111
+    decl=0x04d24e60
+    type=4
+    baseVtx=408
+    numVerts=16
+    primCount=8
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a617500
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #112
+    decl=0x04d24e60
+    type=4
+    baseVtx=424
+    numVerts=4
+    primCount=2
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a617760
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  DIP #113
+    decl=0x04d24e60
+    type=4
+    baseVtx=428
+    numVerts=44
+    primCount=22
+    stride0=24
+    hasNormal=0
+    hasTexcoord=1
+    tcType=1
+    tex0
+     =0x4a615f00
+    tex1
+     =0x1bf502a0
+    tex2
+     =0x0fb51b20
+    tex3
+     =0x32a9eac0
+    tex4
+     =0x32a9daa0
+    tex5
+     =0x32a9e3e0
+    tex6
+     =0x2be40a80
+    tex7
+     =0x1bf959e0
+  SetVS shader=0x36660140
+  SetVSConstF start=0
+    count=4
+    c0-c3:
+  row0: 0.000521, 0.000000, 0.000000, -1.000000
+  row1: 0.000000, -0.000926, 0.000000, 1.000000
+  row2: 0.000000, 0.000000, 1.000000, 0.000000
+  row3: 0.000000, 0.000000, 0.000000, 1.000000
+  SetVS shader=0x00000000
+==== PRESENT frame 31802
+  diagFrame: 2
+  drawCalls: 113
+  scenes: 1
+  VS regs written: c0
+c1
+c2
+c3
+c4
+c5
+c6
+c7
+c8
+c9
+c10
+c11
+c12
+c13
+c14
+c15
+c16
+c17
+c18
+c19
+c20
+c21
+c22
+c23
+c24
+c25
+c26
+c27
+c28
+c29
+c30
+c31
+c32
+c33
+c34
+c35
+c36
+c37
+c38
+c39
+c40
+c41
+c42
+c43
+c44
+c45
+c46
+c47
+c48
+c49
+c50
+c51
+c52
+c53
+c54
+c55
+c56
+c57
+c58
+c59
+c60
+c61
+c62
+c63
+c64
+c65
+c66
+c67
+c68
+c69
+c70
+c71
+c72
+c73
+c74
+c75
+c76
+c77
+c78
+c79
+c80
+c81
+c82
+c83
+
+  Unique textures per stage:
+    stage 0
+      unique=32
+    stage 1
+      unique=20
+    stage 2
+      unique=7
+    stage 3
+      unique=32
+    stage 4
+      unique=32
+    stage 5
+      unique=27
+    stage 6
+      unique=2
+    stage 7
+      unique=2
+
+==== Capture complete ====

@@ -1,0 +1,14 @@
+Bootstrap Report
+================
+
+Binary: FEAR Ultimate Shooter Edition/FEAR.exe
+Compiler: msvc (confidence: 30%)
+
+Signature DB matches: 6
+RTTI classes found: 1
+Imports cataloged: 312
+Error strings seeded: 139
+Propagated labels: 1051
+Functions identified: 1197
+KB entries written: 1197
+

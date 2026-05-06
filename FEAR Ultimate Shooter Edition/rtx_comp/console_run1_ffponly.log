@@ -1,0 +1,28 @@
+[INFO] [Config] Loaded from: C:\Users\skurtyy\Documents\GitHub\FEARRTX\Vibe-Reverse-Engineering\FEAR Ultimate Shooter Edition\remix-comp-proxy.ini
+[INFO] [Config] FFP=1 AlbedoStage=0
+[INFO] [Proxy] Loaded system d3d9: C:\WINDOWS\system32\d3d9.dll
+[INFO] [Game] Getting offsets ...
+[OK] [Game] Found all '0' Patterns.
+[INFO] [Main] Waiting for window with classname containing 'FEAR' ...
+[INFO] [Main] > HWND: 0A3E0ECE, PID: 5024, Class: ConsoleWindowClass, Visible: 1 
+
+[INFO] [Main] > HWND: 02D80BA0, PID: 5024, Class: FEAR, Visible: 1 
+
+[INFO] [d3d9] Direct3DCreate9 called. Creating proxy interface.
+[WARN] [RemixApi] Remix bridge does not export remixapi_InitializeLibrary (not an RTX Remix DLL?)
+[INFO] [Tracer] Module initialized.
+[INFO] [ImGui] Module initialized.
+[INFO] [FFP] State tracker initialized, FFP=ON
+[INFO] [FFP] Registers: View=c0-c3 Proj=c4-c7 World=c16-c19
+[INFO] [Renderer] Module initialized.
+[INFO] [Diagnostics] Module initialized, auto=1 delay=50000ms frames=3
+[INFO] [d3d9] m_pIDirect3D9->CreateDevice
+[INFO] [d3d9] Direct3DCreate9 called. Creating proxy interface.
+[INFO] [d3d9] m_pIDirect3D9->CreateDevice
+[INFO] [FFP] State reset
+[INFO] [ImGui] ImGui_ImplDX9_Init
+[INFO] [FFP] State reset
+[INFO] [Diagnostics] Capture started: 3 frames -> C:\Users\skurtyy\Documents\GitHub\FEARRTX\Vibe-Reverse-Engineering\FEAR Ultimate Shooter Edition\rtx_comp\diag_20260502_200726.log
+[INFO] [Diagnostics] Capture done: 3 frames
+[INFO] [Diagnostics] Capture started: 3 frames -> C:\Users\skurtyy\Documents\GitHub\FEARRTX\Vibe-Reverse-Engineering\FEAR Ultimate Shooter Edition\rtx_comp\diag_20260502_200727.log
+[INFO] [Diagnostics] Capture done: 3 frames

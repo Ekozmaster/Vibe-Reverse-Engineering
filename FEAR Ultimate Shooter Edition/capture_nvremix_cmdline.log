@@ -1,0 +1,9 @@
+﻿=== Capture started 2026-05-03 19:50:16.723 ===
+[19:50:47.678] PID=52116 PPID=13684 Name=FEAR.exe
+    CmdLine: "C:\Users\skurtyy\Documents\GitHub\FEARRTX\Vibe-Reverse-Engineering\FEAR Ultimate Shooter Edition\FEAR.exe"
+    ExePath: C:\Users\skurtyy\Documents\GitHub\FEARRTX\Vibe-Reverse-Engineering\FEAR Ultimate Shooter Edition\FEAR.exe
+[19:50:53.638] PID=17268 PPID=52116 Name=NvRemixBridge.exe
+    CmdLine: "C:\Users\skurtyy\Documents\GitHub\FEARRTX\Vibe-Reverse-Engineering\FEAR Ultimate Shooter Edition\.trex/NvRemixBridge.exe" 4173f7c5-6a25-451b-b1d1-29816b77df96 remix-main+b7de9a96 "C:\Users\skurtyy\Documents\GitHub\FEARRTX\Vibe-Reverse-Engineering\FEAR Ultimate Shooter Edition\FEAR.exe"
+    ExePath: C:\Users\skurtyy\Documents\GitHub\FEARRTX\Vibe-Reverse-Engineering\FEAR Ultimate Shooter Edition\.trex\NvRemixBridge.exe
+    NvRemixBridge.exe wait failed: Cannot find a process with the process identifier 17268.
+=== Capture ended 2026-05-03 19:51:16.804 ===
