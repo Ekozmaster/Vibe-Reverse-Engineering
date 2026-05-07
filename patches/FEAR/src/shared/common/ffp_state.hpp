@@ -48,7 +48,7 @@ namespace shared::common
 		bool is_enabled() const { return enabled_; }
 		void set_enabled(bool e) { enabled_ = e; }
 
-		bool view_proj_valid() const { return view_proj_valid_; }
+		bool view_proj_valid() const { return view_proj_valid_ || (game_view_valid_ && game_proj_valid_); }
 		bool is_ffp_active() const { return ffp_active_; }
 		bool cur_decl_is_skinned() const { return cur_decl_is_skinned_; }
 		bool cur_decl_has_normal() const { return cur_decl_has_normal_; }
@@ -60,6 +60,28 @@ namespace shared::common
 		IDirect3DVertexShader9* last_vs() const { return last_vs_; }
 		IDirect3DPixelShader9* last_ps() const { return last_ps_; }
 		IDirect3DVertexDeclaration9* last_decl() const { return last_decl_; }
+
+		// --- Game-supplied matrix injection (per-game hooks) ---
+		//
+		// Some games (e.g. F.E.A.R.) upload pre-multiplied WorldViewProj to a single VS
+		// constant range, so separate W/V/P cannot be recovered at the SetVertexShaderConstantF
+		// layer. The per-game hooks under src/comp/game/ can intercept the engine's matrix
+		// build and feed the pre-concat matrices in directly via these setters.
+		//
+		// Matrices passed here MUST be in row-major D3D9 SetTransform format (same layout
+		// IDirect3DDevice9::SetTransform expects). They are forwarded to D3D9 verbatim by
+		// apply_transforms() — no transpose. Once any pair (View+Proj) is supplied,
+		// view_proj_valid() returns true and apply_transforms() prefers the game-supplied
+		// matrices over the VS-const-derived ones.
+
+		void on_game_view(const float* mat4x4_row_major);
+		void on_game_proj(const float* mat4x4_row_major);
+		void on_game_world(const float* mat4x4_row_major);
+		void clear_game_matrices();  // called from on_reset() / on_present() if you want per-frame freshness
+
+		bool game_view_valid() const  { return game_view_valid_; }
+		bool game_proj_valid() const  { return game_proj_valid_; }
+		bool game_world_valid() const { return game_world_valid_; }
 
 		// --- Diagnostic data access ---
 
@@ -160,6 +182,18 @@ namespace shared::common
 		// Bone detection
 		int bone_start_reg_ = 0;
 		int num_bones_ = 0;
+
+		// Game-supplied matrices (set via on_game_view/proj/world by per-game hooks).
+		// Stored row-major (D3D9 SetTransform format) — applied verbatim, no transpose.
+		float game_view_[16] = {};
+		float game_proj_[16] = {};
+		float game_world_[16] = {};
+		bool game_view_valid_ = false;
+		bool game_proj_valid_ = false;
+		bool game_world_valid_ = false;
+		bool game_view_dirty_ = false;
+		bool game_proj_dirty_ = false;
+		bool game_world_dirty_ = false;
 
 		// Texture tracking
 		IDirect3DBaseTexture9* cur_texture_[8] = {};

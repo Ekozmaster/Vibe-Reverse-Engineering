@@ -3592,3 +3592,22 @@
 // [propagated: _thunk_sub_4E85B0, 0.80]
 @ 0x53EB00 _thunk_sub_4E85B0;
 
+
+// === Matrix hook discovery 2026-05-06 ===
+// LithTech renderer global state
+$ 0x572B68 void* g_pLTRenderer  // LithTech renderer object instance (NOT IDirect3DDevice9 directly); created by *0x570e14[+0xc](*0x56cb94)
+$ 0x570E14 void* g_pLTRendererFactory  // = 0x56b740 after init (set at 0x540C65)
+$ 0x56B740 void* g_LTRendererClassRegistry  // class registry / COM-map style table, NOT a flat C++ vtable (interleaved type tags at +0x098, +0x0a0, etc.)
+$ 0x56CB94 void* g_LTRendererClassName  // string identifier passed to factory
+
+// LT renderer accessors / wrappers
+@ 0x0046BD90 void* __cdecl LT_GetRenderer(char releaseFlag);  // returns *0x572B68 (LT renderer object); init-on-first-use
+@ 0x004234A0 void* __cdecl LT_GetRendererFactory(void);  // returns *0x570E14 (= 0x56B740)
+
+// LT-renderer dispatch wrapper (single direct call site at LT-vtable offset 0x184, NOT D3D9 SVSCF):
+//   0x46A016: call dword ptr [eax + 0x184]  -- LT method index 97 on the LT renderer object
+@ 0x00469D50 int __fastcall LTRender_DrawVB(int* pState);  // contains 14+ LT-renderer dispatches; uploads VS constants, sets shaders, draws
+
+// Sole D3D9 SetVertexShaderConstantF site is wrapped inside LT renderer impl; NOT statically located yet.
+// Run pyghidra analyze to recover LT vtable layout, then identify the impl method that emits real D3D9 SVSCF.
+

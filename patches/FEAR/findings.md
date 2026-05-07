@@ -521,3 +521,329 @@ Since argv parsing is fine, the abort happens elsewhere. Candidates (in main's o
 1. **Set BP at the start of main itself (`0x1400270c0`)** — if it never hits, the abort is in a static initializer (CRT `__scrt_common_main` or a `.CRT$XCU` ctor).
 2. **If main is reached, BP at `0x140020260` (first call) and step over each pre-CommandLineToArgvW call** to find which one fails. The early branch `if (cVar5 == '\0')` (failed `func_0x14001f380`) emits `"Failed to initialize rtx filesystem."` and then dies — but via a `swi(3)` inside std::string cleanup. That string ("Failed to initialize rtx filesystem.") would appear in stderr if logger isn't up.
 3. **The argv-related abort theory is dead — drop it.** Focus instrumentation on early init: rtx filesystem init, NVAPI probe in `.CRT$XCU`, or a missing `.trex\bridge.conf` causing `func_0x140043000` to fault.
+
+---
+
+## Bridge crash — true root cause and fix (2026-05-06)
+
+### Live Frida instrumentation flipped every prior assumption
+
+Built [`scripts/spawn_gate_bridge.py`](scripts/spawn_gate_bridge.py): Frida child-gates `FEAR.exe` (so `NvRemixBridge.exe` lands suspended at spawn), attaches an interceptor script, sets BPs at the WinMain hot-list (`0x1400270C0`, `0x140020260`, `0x14001F380`, `0x14001F010`, `0x140035880`, `0x14001F6E0`, `0x14001EB60`, `0x140043000`), hooks every CRT/Win32 exit path (`ExitProcess`, `RtlExitUserProcess`, `RaiseFailFastException`, `RtlRaiseException`, `_invalid_parameter*`, `abort`, `terminate`, `exit`, `_exit`, `NtTerminateProcess`), and traces `LoadLibrary*` + `CreateFileW` (filtered for `bridge*`/`.log`/`.trex`/`nvremix`).
+
+The captured trace immediately blew up two long-held assumptions:
+
+1. **The bridge is *not* dying via `_invalid_parameter`.** Every WinMain-prologue call returns success (`rtx_fs_init` → 1, `logger_init` → 1, `post_logger` → 0 which is normal, `post_logger_init` → valid pointer). WinMain runs to completion and returns `1` cleanly, then the standard CRT path calls `ExitProcess(1)`. The visible `c0000005/0x65/e2a5/bucket-108353454505` is exactly what [findings.md:321-378](#crash-dump-symbolization-fearexe35904dmp--2026-05-03) said: a secondary CRT shutdown race in the 32-bit client's `Logger::widen` running through a destroyed `std::ctype<char>` facet during `RemixDetach`. The 64-bit server doesn't actually `swi(3)`.
+2. **The `bridge64.log` is *not* missing because the server dies before logger init.** It's missing because the server's logger writes to whatever `DXVK_LOG_PATH` says — in this user's environment, that env var was a leftover from a prior Heavy Rain Remix session pointing at `A:\SteamLibrary\steamapps\common\HEAVY RAIN\rtx-remix\logs\`. Once we attach Frida and watch `CreateFileW`, the `bridge64.log` is right there, plain as day, in someone else's game folder. (Once the bridge is allowed to actually finish its handshake and write more than a few hundred bytes, it does also flush logs to its expected location.)
+
+### What `bridge64.log` actually says
+
+From the first instrumented run (`bridge_trace_20260506_191213.jsonl` + `bridge64.log` from the same window):
+
+```text
+[19:12:18.350] info:    Effective configuration:
+[19:12:18.350] info:      logLevel = Trace
+[19:12:18.350] info:      exposeRemixApi = True
+[19:12:18.351] info:    Server started up, waiting for connection from client...
+[19:12:18.354] err:     Timeout. Connection not established to client application/game.
+[19:12:18.354] err:     Are you sure a client application/game is running and invoked this application?
+```
+
+A 1-millisecond gap between "Server started up" and "Timeout." With default `startupTimeout` documented as 100 ms in `bridge.conf` comments, this is far below even the documented default — pointing at a parse failure or a path that ignores the option.
+
+### The bridge.conf option labyrinth
+
+After bumping `commandTimeout=30000`, `startupTimeout=30000`, `commandRetries=300` the SYN handshake started succeeding (the bridge waited the full ~240 ms for the client's SYN). But the next phase failed identically:
+
+```text
+Sync request received, sending ACK response...
+Done! Now waiting for client to consume the response...
+err: Timeout. Application failed to give go-ahead (CONTINUE) to operate.
+```
+
+Same 1-ms timeout pattern, but for the *post-ACK* CONTINUE wait. The client log confirmed it actually sends `Continue` ~9 ms later — too late. We exhausted the documented options:
+
+| Option | Effect on the CONTINUE-wait timeout |
+|---|---|
+| `commandTimeout = 30000` | none |
+| `startupTimeout = 30000` | none |
+| `commandRetries = 300` | none |
+| `ackTimeout = 1000` | none |
+| `disableTimeouts = True` | none |
+| `infiniteRetries = True` | **fixes it** ✅ |
+
+Despite the bridge.conf's own comment claiming `infiniteRetries` "may not have any noticeable effect overall" because it's "changed dynamically at runtime," in this build (`remix-main+b7de9a96`) it is the only flag that actually disables the immediate retry-bail in the CONTINUE-wait code path. With `infiniteRetries = True` set, the server logs `Done! Now waiting for client to consume the response...` and *waits* — long enough for the client's `Continue` command to arrive, the handshake completes, and FEAR runs through Remix.
+
+### Final bridge.conf overrides ([`assets/.trex/bridge.conf`](assets/.trex/bridge.conf))
+
+```ini
+commandTimeout = 30000
+startupTimeout = 30000
+commandRetries = 300
+ackTimeout = 1000
+disableTimeouts = True
+infiniteRetries = True
+logLevel = Trace
+exposeRemixApi = True
+```
+
+The first five are belt-and-braces (none are individually load-bearing once `infiniteRetries` is set, but they make the server's behavior more predictable under future bridge upgrades). The two pre-existing settings are preserved.
+
+### Verification
+
+- Verbatim launch via `Start-Process FEAR.exe` with `__COMPAT_LAYER=RUNASINVOKER`: process stays alive past 30 seconds, no "RTX Remix Runtime Error" dialog.
+- `<gameDir>/rtx-remix/logs/bridge64.log` shows `Sync request received → ACK → Done!` followed by the bridge servicing actual commands. The "Timeout. Application failed to give go-ahead..." message only appears when we externally kill the parent FEAR.exe (the bridge's exit-callback then races the same diagnostic message).
+- `<gameDir>/rtx-remix/logs/bridge32.log` shows the matching `Ack received! Handshake completed!` and a stream of `Command sent: RemixApi_CreateMaterial` / `Command sent: IDirect3D9Ex_GetDeviceCaps` lines — i.e. real Remix runtime traffic.
+
+### Hygiene note: `DXVK_LOG_PATH`
+
+The user's `DXVK_LOG_PATH` env var (set at User scope to `A:\SteamLibrary\steamapps\common\HEAVY RAIN\rtx-remix\logs`) caused the FEAR bridge to write its logs into Heavy Rain's directory. Did **not** cause the crash (the b7de9a96 build cheerfully writes across drives), but is confusing during debugging. Either clear it before launching (recommended; do this in your launch wrapper) or let it be — fix is independent.
+## Matrix hook discovery (2026-05-06)
+
+### Summary
+
+The premise the orchestrator handed in -- that the c0-c3 WVP upload should be
+catchable by enumerating direct `IDirect3DDevice9::SetVertexShaderConstantF`
+call sites -- does not hold for FEAR.exe. Two structural facts that change
+the plan:
+
+1.  **`find_vs_constants.py` (the shared dx-script) was scanning the wrong
+    vtable offset.** It looks for `call [reg+0x178]`, but in the
+    `IDirect3DDevice9` vtable (deps/dxsdk/Include/d3d9.h, line 426 onward)
+    `0x178` is **`CreateVertexShader`** (vtable index 94, counting QI/AddRef/
+    Release as 3..5). The real `SetVertexShaderConstantF` slot is **0x184**
+    (index 97). Every "candidate" the script reported is actually a
+    `CreateVertexShader` site or a false positive on a non-D3D `[reg+0x178]`
+    field load (e.g. `0x0050954F` -- `mov edx, [edx+0x178]` reading a float
+    field of a per-object AABB struct). This script is shared tooling and
+    should be patched.
+
+2.  **FEAR.exe makes essentially zero direct D3D9 vtable calls for the
+    shader-constant path.** A byte-level scan for `FF /2 disp32`
+    (`call dword ptr [reg+disp32]`) at every well-known D3D9 vtable slot
+    found:
+
+    | Vtable offset | Method | Direct call sites in FEAR.exe |
+    |---:|---|---:|
+    | 0x178 | CreateVertexShader | 3 |
+    | 0x17c | SetVertexShader | 0 |
+    | **0x184** | **SetVertexShaderConstantF** | **1** (at `0x0046A016`) |
+    | 0x188 | GetVertexShaderConstantF | 2 |
+    | 0xbc | SetTransform | 13 (FFP path) |
+    | 0xc0 | GetTransform | 6 |
+    | 0x154 | DrawIndexedPrimitive | 0 (all indirect) |
+    | 0x150 | DrawPrimitive | 1 |
+    | 0x1c0 | SetPixelShaderConstantF | 1 |
+    | 0x170 | SetFVF | 28 |
+
+    A single SVSCF call site for the entire shader pipeline is suspicious. It
+    decompiles (function `0x00469D50`, see below) to a routine that operates
+    on a custom struct vtable, **not the D3D9 device**. The call
+    `(**(uStack_10 + 0x184))(param_1[0x2d], uVar8, uVar7, iVar6 + 0x10, iVar3, 0)`
+    has 6 explicit args -- D3D9 SVSCF takes 3 + this. The vtable pointer
+    `uStack_10` comes from `*0x572b68` (the LithTech renderer object),
+    constructed via `(**(*0x570e14 + 0xc))(0x56cb94)` -- a class-factory
+    pattern. The "vtable" at `0x56b740` (referenced from the static
+    initializer at `0x540C65` writing `*0x570e14 = 0x56b740`) is **not a flat
+    C++ vtable** -- it is a registry/COM-map structure with interleaved type
+    tags (e.g. `+0x098: 0x56b7dc, +0x09c: 0x55041c, +0x0a0: 0x56b7dc, +0x0ac:
+    0x55045c` -- a pattern that breaks naive pointer-table heuristics).
+
+    **Implication: D3D9 calls in FEAR happen through one or more layers of
+    LithTech indirection. The SVSCF traffic that the proxy actually
+    intercepts at runtime (every SVSCF, GVSCF, etc. -- documented in the
+    run-1 535KB diagnostics log) is generated *inside* LithTech ILTRenderer
+    impl methods, which we cannot resolve statically without first
+    reconstructing the LT class system.**
+
+### Direct call sites enumerated
+
+Direct `call dword ptr [reg+OFFSET]` for D3D9-shaped slots, found by
+byte-level scan of `.text` (capstone linear sweep misses many of these
+because `.text` is interspersed with exception handler tables; see
+`scan_vtable.py`-style FF/2/SIB scanner used here):
+
+```
+0x0a0 SetRenderTarget:           4 sites  -- 0x46BEF9 0x46BFB9 0x4F3B7E 0x533373
+0x0b0 BeginScene:                2 sites  -- 0x46B79E 0x4FF996
+0x0b8 Clear:                     5 sites
+0x0bc SetTransform:             13 sites  -- legacy FFP path
+0x0c0 GetTransform:              6 sites
+0x178 CreateVertexShader:        3 sites  -- 0x46C33D 0x46E59E 0x46E5BA  (NOT SVSCF)
+0x184 SetVertexShaderConstantF:  1 site   -- 0x0046A016 in fcn 0x00469D50 (LT wrapper, not real D3D9)
+0x188 GetVertexShaderConstantF:  2 sites  -- 0x469E16 0x469FB3 in fcn 0x00469D50
+0x18c SetVertexShaderConstantI:  3 sites  -- 0x468EC5 0x46A13B 0x46A17F
+0x1bc SetPixelShader:            2 sites
+0x1c0 SetPixelShaderConstantF:   1 site   -- 0x46A91E
+```
+
+The single `[reg+0x184]` site at `0x0046A016` is **not a real D3D9 SVSCF**.
+Surrounding code:
+
+```
+0x46a005: mov edx, dword ptr [esi + 0xb4]
+0x46a00b: mov dword ptr [esp + 0x28], ecx
+0x46a00f: mov ecx, eax
+0x46a015: push edx
+0x46a016: call dword ptr [eax + 0x184]   ; 6 stack pushes precede this
+```
+
+It is an `ILTRenderer` method dispatch in fcn `0x00469D50`: that function
+makes 14+ vtable calls, all on the same `uStack_10/piVar4` pointer, set by
+`fcn.0046bd90(0)` returning the LithTech renderer interface, **not** the
+IDirect3DDevice9.
+
+### Where the actual D3D9 SVSCF lives (best static guess)
+
+Static analysis cannot trivially resolve this further without an
+already-analyzed Ghidra project. The Ghidra project at `patches/FEAR/ghidra/`
+that the orchestrator's brief assumed exists, **does not exist** -- a fresh
+status check returned `Not analyzed: FEAR.exe`. With only r2ghidra's `pdg`
+backend, the LT vtable cannot be auto-inferred.
+
+The next investigative step (best done with full Ghidra analysis) is to:
+
+1.  Pyghidra-analyze the binary (`python retools/pyghidra_backend.py analyze
+    "FEAR Ultimate Shooter Edition/FEAR.exe" --project patches/FEAR`,
+    5-15 min), then re-run this analysis. Ghidra's class-structure recovery
+    will reveal whether `0x56b740` is the table for an MFC `CRuntimeClass` /
+    LithTech `LTObjectCreator` registry, or a single class vtable with
+    interleaved RTTI hooks.
+2.  Resolve the LithTech renderer factory at `fcn.004234a0`, which returns
+    `*0x570e14` (= `0x56b740` after init). The actual SVSCF-emitting
+    implementation is the function pointed to from the LT-renderer-object's
+    "shader constant upload" slot.
+3.  Cross-reference: the proxy DOES see SVSCF live (run 1, c0-c3 = WVP). Use
+    `livetools bp` on `d3d9.dll!IDirect3DDevice9::SetVertexShaderConstantF`
+    once attached, walk the return chain back -- the immediate caller (one
+    frame up from d3d9.dll) **is** the engine's SVSCF wrapper, and the frame
+    above that is the matrix-multiply caller.
+
+### LithTech matrix layout: row-major (confirmed)
+
+Function `fcn.0040b170` (a vertex transform-and-classify routine) shows the
+LithTech matrix layout explicitly:
+
+```
+out.x = v.x * m[0]  + v.z * m[2]  + v.y * m[1]  + m[3]
+out.y = v.x * m[4]  + v.z * m[6]  + v.y * m[5]  + m[7]
+out.z = v.x * m[8]  + v.z * m[10] + v.y * m[9]  + m[11]
+```
+
+That is `[m00 m01 m02 m03][m10 m11 m12 m13][m20 m21 m22 m23]` in memory --
+**row-major, translation in the 4th column, identical to D3DXMATRIX**.
+
+**No transpose required at the proxy seam.** Whatever `D3DMATRIX` we
+synthesize from W/V/P captured upstream can be fed to
+`IDirect3DDevice9::SetTransform(D3DTS_*, ...)` directly.
+
+### Recommended hook strategy (revised)
+
+Two ranked options. Both require reaching the engine's SVSCF wrapper, which
+static analysis alone cannot pinpoint without further Ghidra analysis.
+
+#### Option A (preferred, but needs Ghidra) -- hook the LT SVSCF wrapper
+
+After pyghidra analysis identifies the LT renderer object's
+"upload-shader-constant" implementation function (the one that actually
+emits `call [edx+0x184]` on the real D3D9 device), hook it. Likely
+signature:
+
+```cpp
+// __thiscall on the LT renderer object
+HRESULT LTRenderer_SetVertexShaderConstantF(
+    LTRenderer* self,        // ecx (this)
+    UINT        StartReg,    // arg1
+    const float* pData,      // arg2
+    UINT        Count        // arg3
+);
+```
+
+In the hook:
+- If `StartReg == 0 && Count == 4`: this is the WVP upload. **Capture
+  pData[0..15] as the concatenated WVP for the current draw**, which is
+  what we already see at the proxy seam.
+- Walk back **one stack frame** to find the matrix-multiply call that built
+  it. The return address of the multiply will be the immediate caller of
+  the upload helper.
+
+Better: hook **one level higher**, at the function that calls the wrapper
+with `StartReg=0, Count=4`. That function takes `LTMatrix4x4* pWVP` (or
+similar) as input. The caller of *that* function is the one that does
+`MatMul(wvp, world, viewproj)` and we want to read its `world` and
+`viewproj` operands directly. Live-trace via `livetools trace` is the
+fastest way to find this caller.
+
+#### Option B (immediately actionable) -- live-trace the SVSCF dispatch
+
+Skip static disambiguation. With the proxy already in place:
+
+1.  Set a `livetools bp` on the proxy's `IDirect3DDevice9::SetVertexShader
+    ConstantF` shim, condition: `StartRegister == 0 && Vector4fCount == 4`.
+2.  On hit, walk the call stack 3-5 frames up. Each frame inside
+    `FEAR.exe!.text` is a candidate. Filter for the one that holds
+    `LTMatrix4x4* world` and `LTMatrix4x4* viewproj` as locals or args
+    (look for arg-2 / arg-3 pointing into `.data` or stack region with 16
+    floats of identity / last-frame-projection patterns).
+3.  Once located, set a memwatch on the WVP buffer to find the multiply
+    that wrote it; the multiply primitive becomes obvious from a backtrace
+    at that write.
+
+This will land us at the multiply primitive in 2-3 attaches without needing
+the Ghidra class-recovery pass.
+
+### Pseudocode for the live capture (Option B)
+
+```cpp
+// Once we identify the LT-side SVSCF wrapper at, say, 0xRRRRRRRR:
+DetourAttach(0xRRRRRRRR, [](LTRenderer* self, UINT start, const float* p, UINT cnt) {
+    if (start == 0 && cnt == 4) {
+        // Capture the WVP that is about to go to c0..c3
+        memcpy(g_lastWVP, p, 64);
+        // Capture the immediate caller -- that is the MatMul site
+        // (or the wrapper that called MatMul).
+        void* caller = _ReturnAddress();
+        capture_callstack(caller);
+    }
+    return real_LT_SVSCF(self, start, p, cnt);
+});
+```
+
+But the goal is not capturing WVP -- we already see WVP at c0-c3. The goal
+is capturing W/V/P *before* the MatMul. So once Option B identifies the
+MatMul caller, we hook the MatMul itself; pseudocode for that depends on
+what we find in step 2 of Option B.
+
+### Pattern stub for `init_game_addresses()`
+
+We **cannot** offer a final pattern yet -- the SVSCF-emitting function in LT
+needs Ghidra analysis or live-trace to identify. The single placeholder we
+*can* surface today is the LT renderer factory entry: `*0x570e14 = 0x56b740`
+(written at `0x00540C65`) and the renderer accessor `fcn.0046bd90` at
+`0x0046BD90`. Once the LT SVSCF impl is found, a 32-byte signature can be
+mined from its prologue.
+
+### Out of scope for this pass
+
+- D3DXMatrixMultiply is not imported by FEAR.exe (confirmed: only 6 D3DX
+  imports, all listed in earlier sections of this document). Whatever 4x4
+  multiply is happening for WVP construction is internal LithTech code.
+  Several FPU-heavy candidate functions exist (`0x405DA0` -- quaternion
+  multiply, `0x40B170` -- vertex-array transform-and-classify), but none of
+  the obvious ones is a clean `void mul(LTMat4*, LTMat4*, LTMat4*)`. Finding
+  it statically without Ghidra is not feasible in a reasonable time budget;
+  finding it via stack-walk on a live SVSCF hit is straightforward.
+
+### Action items for the orchestrator
+
+1.  **Patch shared script** `rtx_remix_tools/dx/scripts/find_vs_constants.py`
+    to use `0x184` as the SVSCF offset (currently hardcoded to `0x178`,
+    which is `CreateVertexShader`). Audit `dx9_common.py` for similar
+    off-by-one(s) on `Set/GetVertexShader`, the constant-int/bool variants,
+    etc.
+2.  **Run pyghidra analyze** on FEAR.exe: `python
+    retools/pyghidra_backend.py analyze "FEAR Ultimate Shooter Edition/
+    FEAR.exe" --project patches/FEAR`. Without it, the LT-renderer interface
+    table at `0x56b740` cannot be decoded into named methods and the SVSCF
+    impl cannot be located statically.
+3.  **Live trace** with the proxy already in place (Option B above) -- this
+    is the fastest path to the MatMul site.

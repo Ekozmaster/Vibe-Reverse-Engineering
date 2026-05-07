@@ -1,10 +1,10 @@
 # F.E.A.R. → RTX Remix Port — Status
 
-**As of:** 2026-05-06
+**As of:** 2026-05-06 evening (SetTransform-based capture wired; bridge regressed)
 **Target:** F.E.A.R. v1.08 Ultimate Shooter Edition (LithTech Jupiter EX, MSVC 7.1, x86)
 **Goal:** Render FEAR through RTX Remix path-tracing via the [`remix-comp-proxy`](README.md) DX9 fixed-function pipeline framework.
 
-This is the canonical entry point. Detailed analysis lives in [findings.md](findings.md) (D3D9 architecture, kb.h, run history, crash dump symbolizations) and [HANDOFF.md](HANDOFF.md) (full filesystem map, run-by-run debugging log, hypothesis matrix).
+This is the canonical entry point. Detailed analysis lives in [findings.md](findings.md) (D3D9 architecture, kb.h, run history, crash dump symbolizations, matrix-hook live-trace evidence) and [HANDOFF.md](HANDOFF.md) (full filesystem map, run-by-run debugging log, hypothesis matrix, current-session TL;DR).
 
 ---
 
@@ -15,11 +15,16 @@ This is the canonical entry point. Detailed analysis lives in [findings.md](find
 | Static analysis (engine ID, D3D9 architecture, VS layout, skinning) | ✅ Complete — [findings.md](findings.md), [kb.h](kb.h) (1197 entries) |
 | `remix-comp-proxy` build for FEAR | ✅ Working — intercepts every D3D9 call (Run 1: 535 KB diag, 376 draws/frame) |
 | Build/deploy automation (`build.bat` + `deploy.ps1`) | ✅ Working — every build auto-deploys to game dir |
-| RTX Remix bridge (32-bit client → 64-bit `NvRemixBridge.exe` server) | ❌ **Blocked** — server exits silently before logger init |
-| `D3DXMatrixMultiply` hook (decomposes shader-path WVP) | ⏳ Pending — gated on bridge unblock |
-| FFP routing (`[FFP]=1`, world geometry through Remix) | ⏳ Pending — gated on matrix hook |
+| `ffp_state` game-supplied matrix seam (`on_game_view/proj/world`) | ✅ Wired — public setters, no transpose, takes priority over VS-const path |
+| Proxy `SetTransform` interceptor → `ffp_state` seam | ✅ Wired — captures FEAR's per-draw W/V/P from `FEAR.exe!0x004FF99C` |
+| Vtable-address logging at `CreateDevice` (live-BP target lookup) | ✅ Wired — emits `SVSCF=… SetTransform=… DIP=…` to `console.log` |
+| End-to-end FFP-via-SetTransform render verification | ⏳ Next — needs an in-level launch; launcher screens don't fire the per-draw transforms enough to validate |
+| RTX Remix bridge (32-bit client → 64-bit `NvRemixBridge.exe` server) | ⚠️ **Regressed** — vanilla launches hang at SYN-ACK with `infiniteRetries=True`; only Frida-instrumented launch worked yesterday |
+| `D3DXMatrixMultiply` hook | 🚫 Abandoned — FEAR doesn't import D3DXMatrixMultiply; the SetTransform capture replaces it |
 
-**Bottom line:** The proxy works and we have rich Run 1 telemetry. The blocker is upstream of our code — Nvidia's `NvRemixBridge.exe` 64-bit server aborts via `_invalid_parameter_noinfo_noreturn` (int3) before the bridge log subsystem comes up, so there is no `bridge64.log` to inspect. The visible 32-bit client crash (`0xc0000005 / 0x65 / e2a5 / bucket 108353454505`) is a secondary CRT shutdown race in the bridge's logger when its watchdog (`OnServerExited`) calls `errLogMessageBoxAndExit`.
+**Bottom line (2026-05-06 evening update):** The matrix-hook problem is solved on paper via a SetTransform-based capture (FEAR sets `WORLD/VIEW/PROJECTION` per draw with clean separate matrices via `IDirect3DDevice9::SetTransform` from `FEAR.exe!0x004FF99C`). The proxy now intercepts those and feeds them into a new `ffp_state` seam ([`src/comp/modules/d3d9ex.cpp:323-352`](src/comp/modules/d3d9ex.cpp#L323), [`src/shared/common/ffp_state.cpp:on_game_view/proj/world`](src/shared/common/ffp_state.cpp)). LithTech matrices are row-major (same layout as `D3DXMATRIX`) so they're forwarded verbatim with no transpose. The build is clean and deployed. **Verification of this end-to-end at runtime is the next-session checkbox** — the live test in this session reached the launcher main menu but didn't progress into a level, so the `[FFP] Game-supplied … matrix received from per-game hook` log lines never fired (probably because the launcher screen doesn't drive the per-draw transforms hard enough to engage the seam).
+
+**Bridge regression (2026-05-06 evening):** The earlier "bridge unblocked" milestone (under Frida instrumentation, with `infiniteRetries = True`) does NOT reproduce on vanilla launches today. Two attempts this session both hung at the bridge IPC handshake — `bridge32.log` reaches `Sending SYN command, waiting for ACK from server...` and stops; `bridge64.log` reaches `Server started up, waiting for connection from client...` and stops. With `infiniteRetries = True` set, both sides wait forever instead of failing fast. Same `bridge.conf`, same b7de9a96 binaries that worked yesterday. Variables to investigate next session: leftover semaphore state from prior runs, `DXVK_LOG_PATH = A:\SteamLibrary\steamapps\common\HEAVY RAIN\rtx-remix\logs` (still set at User+Machine scope — bridge logs go *there*, not to the FEAR dir), antivirus/Defender intercepting `CreateProcessW` from FEAR. **For proxy iteration in the meantime, ship `[Remix] Enabled=0`** — proxy falls back to system d3d9.dll, which is what produced the original Run 1 PASS and is fine for shaking out the SetTransform→ffp_state pipeline.
 
 ---
 
@@ -113,15 +118,24 @@ FEAR.exe
 
 ---
 
-## Active blocker — `NvRemixBridge.exe` aborts before logger init
+## Resolved blocker — bridge `infiniteRetries` flag (2026-05-06)
 
-The 64-bit server is what's actually dying. The full chain:
+What actually happened, top to bottom:
 
-1. 32-bit client `d3d9_remix.dll` initializes cleanly inside FEAR.exe (proxy log confirms `[STATUS] [RemixApi] Initialized RemixApi`).
-2. Client spawns `NvRemixBridge.exe` with two CLI args: a 36-char GUID from `CoCreateGuid` and the literal version string `remix-main+b7de9a96`.
-3. Server hits `_invalid_parameter_noinfo_noreturn → swi(3)` (int3 abort) somewhere in early init **before** the logger flushes — hence no `bridge64.log` is ever created.
-4. Client's watchdog `OnServerExited` (`bridge/src/client/d3d9_lss.cpp:153`) fires, calls `errLogMessageBoxAndExit`, which calls `exit(-1)`.
-5. CRT teardown invokes the bridge's `DllMain(DLL_PROCESS_DETACH) → RemixDetach`, which tries to log a shutdown message via `bridge_util::Logger::info` → constructs a `std::stringstream` → calls `widen(' ')` on a locale ctype facet that has already been destroyed by atexit handlers → `call edx` with `edx=0x65` → access violation at NULL+0x65. **That visible crash signature is the secondary CRT race, not the root cause.**
+1. 32-bit client `d3d9_remix.dll` initializes inside FEAR.exe (proxy log confirms `[STATUS] [RemixApi] Initialized RemixApi`).
+2. Client creates the four GUID-namespaced shared-memory channels (Module/Device × Client2Server/Server2Client) and the (un-namespaced!) semaphores `Module*Server2ClientSemaphore`, `Module*Client2ServerSemaphore`, and `Present`.
+3. Client spawns `NvRemixBridge.exe` with **three** CLI args (the captured cmdline contains `argv[2]` = host EXE path, ignored by the server) and waits for ACK.
+4. Server runs the full WinMain prologue: `rtx_fs_init` (success), `logger_init` (success), `bridge.conf` parse (success), shared-memory open + semaphore open, `D3D9 init → LoadLibraryA(d3d9.dll)` (success), `RemixApi initialized`.
+5. Server logs **`Sync request received, sending ACK response... Done! Now waiting for client to consume the response...`**.
+6. Server then logs **`Timeout. Application failed to give go-ahead (CONTINUE) to operate.`** within ~1 ms — even though our 32-bit client delivers the CONTINUE command ~9 ms later. The b7de9a96 server's "wait for CONTINUE" path does not honor `commandTimeout`, `startupTimeout`, `ackTimeout`, or `disableTimeouts`.
+7. Server `WinMain` returns 1, CRT teardown calls `ExitProcess(1)`.
+8. Client's `OnServerExited` watchdog (`d3d9_lss.cpp:153`) fires, `errLogMessageBoxAndExit` shows the "RTX Remix Runtime Error" dialog, calls `exit(-1)`. CRT shutdown re-enters `DllMain(DETACH) → RemixDetach → Logger::info → widen(' ')` on a destroyed locale ctype facet → access violation at NULL+0x65. That's the **secondary** CRT race producing the visible WER signature, not the root cause.
+
+**Fix:** add `infiniteRetries = True` to [`assets/.trex/bridge.conf`](assets/.trex/bridge.conf). That's the one bridge.conf option that successfully suppresses the immediate retry-bail in the "wait for CONTINUE" path. We also bump `commandTimeout`, `startupTimeout`, `ackTimeout`, and set `disableTimeouts = True`; those don't fix it on their own but are sensible alongside `infiniteRetries`.
+
+### Original (failed) hypothesis chain
+
+(All eliminated; kept here for context.)
 
 ### Eliminated
 
@@ -149,20 +163,28 @@ The 64-bit server is what's actually dying. The full chain:
 
 ## Next steps
 
-**Bridge unblock track (preferred):**
-1. Run `capture_nvremix_cmdline.ps1` paired with `launch_remix_test.ps1` to capture the exact cmdline (Run 16).
-2. Compare against the known-good manual `NvRemixBridge.exe <36-char-GUID> remix-main+b7de9a96`.
-3. If args are wrong → decompile the 32-bit client's `Process::Start` in `d3d9_remix.dll` to find the build site, patch or shim `CreateProcessW`.
-4. If args are right → Frida-trace the server past argv parse to find the abort location (likely a static initializer hitting NVAPI/Vulkan).
+The whole "decompose concatenated WVP" plan has been replaced. New plan, in order:
 
-**FFP-only iteration track (parallel, no bridge dependency):**
-1. Set `[Remix]=0` in `remix-comp-proxy.ini`.
-2. Hook `D3DXMatrixMultiply` in [`src/comp/game/game.cpp`](src/comp/game/game.cpp) (currently empty) — capture pre-concat W/V/P for the 24 shader-path call sites.
-3. Refine VS register offsets in `src/shared/common/ffp_state.hpp` from the c4–c23 evidence in the Run 1 dump.
-4. Set `[FFP]=1`, validate world geometry / characters / water render through the FFP conversion path against the Run 1 baseline.
-5. Re-engage `[Remix]=1` once the bridge is unblocked and verify the FFP-converted draws reach Remix correctly.
+**1. Verify the SetTransform-based capture lights up world geometry end-to-end (no bridge needed).**
 
-The FFP track is fully productive on its own: Run 1's 535 KB diagnostic dump has everything needed to design and validate the matrix hook without Remix in the chain.
+- Confirm `[Remix] Enabled=0` and `[FFP] Enabled=1` in the deployed `remix-comp-proxy.ini` (the in-game `<gameDir>/remix-comp-proxy.ini`, not the asset — `deploy.ps1` will overwrite it back to the asset's settings on next deploy).
+- Launch FEAR via [`FEAR Ultimate Shooter Edition/launch_remix_test.ps1`](../../FEAR%20Ultimate%20Shooter%20Edition/launch_remix_test.ps1) (sets `__COMPAT_LAYER=RUNASINVOKER` and fixes CWD).
+- **Get into an actual gameplay level**, not just the launcher main menu. The launcher splash doesn't drive enough per-draw transforms to fully exercise the seam. Once in-level, look for these `console.log` lines (they fire once, on the first capture of each):
+  - `[INFO] [FFP] Game-supplied View matrix received from per-game hook`
+  - `[INFO] [FFP] Game-supplied Proj matrix received from per-game hook`
+  - `[INFO] [FFP] Game-supplied World matrix received from per-game hook`
+- Visual: world geometry should still render (FFP path uses captured matrices to drive `SetTransform` → system d3d9.dll → GPU FFP). Some of FEAR's per-effect rendering may look different (specular/normal maps disabled in FFP mode) but world surfaces should be in the right *positions*. If you see geometry at the origin or piled up, the World matrix capture is wrong.
+
+**2. Once the FFP path is verified, re-engage `[Remix]=1` and chase the bridge regression.**
+
+- First, kill any leftover `NvRemixBridge.exe` orphans (`Get-Process NvRemix* | Stop-Process -Force`).
+- Try clearing `DXVK_LOG_PATH` for the launch to rule out cross-game log path issues: `[Environment]::SetEnvironmentVariable('DXVK_LOG_PATH', $null, 'User')` (also `Machine` scope).
+- If still hung, run [`scripts/spawn_gate_bridge.py`](scripts/spawn_gate_bridge.py) again — it was the reliably-working configuration yesterday and may give a quick view of where the new hang is.
+- Goal once unhung: confirm Remix path-traces the captured FFP geometry. Capture a screenshot.
+
+**3. ImGui overlay protection (low priority):** the proxy intercepts `SetTransform` even when ImGui is rendering its own ortho matrices. Currently the seam captures those (`shared::globals::imgui_is_rendering` is not checked in `D3D9Device::SetTransform`). Net effect: when F4 is pressed, the seam may capture ImGui's ortho V/P. Should be guarded — but only matters if the user actually opens the ImGui overlay during play.
+
+**4. Pyghidra analyze on FEAR.exe** (`python retools/pyghidra_backend.py analyze "FEAR Ultimate Shooter Edition/FEAR.exe" --project patches/FEAR`, 5–15 min). Not needed for the matrix path anymore, but useful for any further LithTech-internal investigations (e.g., understanding what `FEAR.exe!0x004FF99C` actually is — is it the per-draw setup, the renderer dispatcher, etc.?). The earlier static-analyzer run flagged "Ghidra project not analyzed" as a gap.
 
 ---
 

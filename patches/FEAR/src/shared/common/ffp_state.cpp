@@ -76,6 +76,46 @@ namespace shared::common
 		}
 	}
 
+	void ffp_state::on_game_view(const float* m)
+	{
+		if (!m) return;
+		std::memcpy(game_view_, m, sizeof(game_view_));
+		if (!game_view_valid_)
+			log("FFP", "Game-supplied View matrix received from per-game hook");
+		game_view_valid_ = true;
+		game_view_dirty_ = true;
+	}
+
+	void ffp_state::on_game_proj(const float* m)
+	{
+		if (!m) return;
+		std::memcpy(game_proj_, m, sizeof(game_proj_));
+		if (!game_proj_valid_)
+			log("FFP", "Game-supplied Proj matrix received from per-game hook");
+		game_proj_valid_ = true;
+		game_proj_dirty_ = true;
+	}
+
+	void ffp_state::on_game_world(const float* m)
+	{
+		if (!m) return;
+		std::memcpy(game_world_, m, sizeof(game_world_));
+		if (!game_world_valid_)
+			log("FFP", "Game-supplied World matrix received from per-game hook");
+		game_world_valid_ = true;
+		game_world_dirty_ = true;
+	}
+
+	void ffp_state::clear_game_matrices()
+	{
+		game_view_valid_ = false;
+		game_proj_valid_ = false;
+		game_world_valid_ = false;
+		game_view_dirty_ = false;
+		game_proj_dirty_ = false;
+		game_world_dirty_ = false;
+	}
+
 	void ffp_state::on_set_ps_const_f(UINT start_reg, const float* data, UINT count)
 	{
 		if (!data || start_reg + count > 32) return;
@@ -249,6 +289,8 @@ namespace shared::common
 		bone_start_reg_ = 0;
 		num_bones_ = 0;
 
+		clear_game_matrices();
+
 		cur_decl_is_skinned_ = false;
 		cur_decl_has_texcoord_ = false;
 		cur_decl_has_normal_ = false;
@@ -325,6 +367,45 @@ namespace shared::common
 
 	void ffp_state::apply_transforms(IDirect3DDevice9* dev)
 	{
+		// Game-supplied matrices take priority over VS-const-derived matrices.
+		// Per-game hooks under src/comp/game/ feed pre-concat W/V/P here when the
+		// engine uploads only a concatenated WVP to VS constants.
+		if (game_view_valid_ && game_proj_valid_)
+		{
+			if (game_view_dirty_)
+			{
+				dev->SetTransform(D3DTS_VIEW, reinterpret_cast<const D3DMATRIX*>(game_view_));
+				game_view_dirty_ = false;
+			}
+			if (game_proj_dirty_)
+			{
+				dev->SetTransform(D3DTS_PROJECTION, reinterpret_cast<const D3DMATRIX*>(game_proj_));
+				game_proj_dirty_ = false;
+			}
+			if (game_world_valid_)
+			{
+				if (game_world_dirty_)
+				{
+					dev->SetTransform(D3DTS_WORLD, reinterpret_cast<const D3DMATRIX*>(game_world_));
+					game_world_dirty_ = false;
+				}
+			}
+			else
+			{
+				// No game-supplied World — assume identity (engine pre-multiplied World into View/Proj).
+				static constexpr float identity[16] = {
+					1.f, 0.f, 0.f, 0.f,
+					0.f, 1.f, 0.f, 0.f,
+					0.f, 0.f, 1.f, 0.f,
+					0.f, 0.f, 0.f, 1.f
+				};
+				dev->SetTransform(D3DTS_WORLD, reinterpret_cast<const D3DMATRIX*>(identity));
+			}
+			return;
+		}
+
+		// Fallback: derive transforms from VS constants the game uploaded directly.
+		// Layout is game-specific (set in ffp_state.hpp register defaults).
 		float transposed[16];
 
 		if (view_proj_dirty_)

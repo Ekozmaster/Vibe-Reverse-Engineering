@@ -323,6 +323,25 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetTransform(D3DTRANSFORMSTATETYPE State, CONST D3DMATRIX* pMatrix)
 	{
 		TRACE_IF_ACTIVE(trace_SetTransform, State, pMatrix);
+
+		// Route the engine's per-draw transforms into the ffp_state seam so the FFP
+		// path can use them directly (instead of trying to decompose a concatenated
+		// WVP from VS constants). Skip self-calls during FFP engagement so we don't
+		// re-capture our own apply_transforms output (feedback loop).
+		auto& ffp = shared::common::ffp_state::get();
+		if (pMatrix && !ffp.is_ffp_active())
+		{
+			const float* m = reinterpret_cast<const float*>(pMatrix);
+			const int s = static_cast<int>(State);
+			if (s == D3DTS_VIEW)
+				ffp.on_game_view(m);
+			else if (s == D3DTS_PROJECTION)
+				ffp.on_game_proj(m);
+			else if (s == static_cast<int>(D3DTS_WORLDMATRIX(0)))  // 256
+				ffp.on_game_world(m);
+			// texture matrices, additional world matrices: not used by FFP path
+		}
+
 		return m_pIDirect3DDevice9->SetTransform(State, pMatrix);
 	}
 
@@ -907,6 +926,12 @@ namespace comp
 		if (SUCCEEDED(hres) && *ppReturnedDeviceInterface) {
 			*ppReturnedDeviceInterface = new d3d9ex::D3D9Device(*ppReturnedDeviceInterface);
 			shared::globals::d3d_device = *ppReturnedDeviceInterface;
+			// One-shot log of vtable slot addresses for live debugging (livetools bp targets).
+			// vtable[94] = SetVertexShaderConstantF, vtable[44] = SetTransform, vtable[82] = DrawIndexedPrimitive.
+			void** vt = *reinterpret_cast<void***>(*ppReturnedDeviceInterface);
+			shared::common::log("d3d9", std::format("Device wrapper @ {} vtable @ {} SVSCF={} SetTransform={} DIP={}",
+				static_cast<void*>(*ppReturnedDeviceInterface), static_cast<void*>(vt), vt[94], vt[44], vt[82]),
+				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 		}
 
 		return hres;
@@ -1014,6 +1039,10 @@ namespace comp
 		if (SUCCEEDED(hres) && *ppReturnedDeviceInterface) {
 			*ppReturnedDeviceInterface = new d3d9ex::D3D9Device(*ppReturnedDeviceInterface);
 			shared::globals::d3d_device = *ppReturnedDeviceInterface;
+			void** vt = *reinterpret_cast<void***>(*ppReturnedDeviceInterface);
+			shared::common::log("d3d9", std::format("Device wrapper @ {} vtable @ {} SVSCF={} SetTransform={} DIP={}",
+				static_cast<void*>(*ppReturnedDeviceInterface), static_cast<void*>(vt), vt[94], vt[44], vt[82]),
+				shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 		}
 
 		return hres;

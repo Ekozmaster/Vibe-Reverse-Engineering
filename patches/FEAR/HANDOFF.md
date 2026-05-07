@@ -1,11 +1,37 @@
 # FEAR → RTX Remix Port — Handoff
 
-**As of:** 2026-05-03 early morning (post Launch 1, Launch 2, PDB symbolization breakthrough).
+**As of:** 2026-05-06 evening (SetTransform-based matrix capture wired; bridge has regressed to a hang).
 **Workspace rule:** every build is auto-deployed into `FEAR Ultimate Shooter Edition/` via `deploy.ps1`. The user does not copy files manually.
 
 ---
 
-## TL;DR (2026-05-03 update)
+## TL;DR (2026-05-06 evening update)
+
+The hard-won bridge unblock from earlier today (`infiniteRetries = True` in [`assets/.trex/bridge.conf`](assets/.trex/bridge.conf)) **is no longer reliably unblocking**. Vanilla launches (no Frida) hang during the bridge IPC handshake — the 32-bit client gets through shared-memory creation, but `NvRemixBridge.exe` either never spawns or silently fails to ACK; with `infiniteRetries = True` the client waits forever instead of failing fast. The Frida-instrumented launch from earlier today (via [`scripts/spawn_gate_bridge.py`](scripts/spawn_gate_bridge.py)) was the only reliably-working configuration. **Treat the bridge as flaky again** — for proxy iteration, ship `[Remix] Enabled=0` (proxy falls back to system d3d9.dll, which is what produced the original Run 1 PASS).
+
+The big payoff this session: a **SetTransform-based matrix capture** has replaced the abandoned `D3DXMatrixMultiply` hook idea. FEAR's renderer code at `FEAR.exe!0x004FF99C` calls `IDirect3DDevice9::SetTransform(D3DTS_WORLDMATRIX(0), …)`, `SetTransform(D3DTS_VIEW, …)`, `SetTransform(D3DTS_PROJECTION, …)` *per draw*, with clean separate matrices, for **both** FFP and shader-path geometry. The proxy's existing `D3D9Device::SetTransform` interceptor now routes those into a new `ffp_state` seam ([`src/comp/modules/d3d9ex.cpp:323-352`](src/comp/modules/d3d9ex.cpp#L323), feeds [`src/shared/common/ffp_state.cpp:on_game_view/proj/world`](src/shared/common/ffp_state.cpp)), so `apply_transforms()` can use the captured row-major matrices verbatim with no transpose (LithTech matrices are already in D3DXMATRIX layout — confirmed via `fcn.0040b170` decompile in [findings.md "Matrix hook discovery"](findings.md)). The whole "concatenated WVP at c0–c3" problem is now sidestepped — we never need to decompose anything. **Verification of this end-to-end (does `[FFP]=1` light up world geometry through the FFP path with sensible transforms?) is the next session's first checkbox** — earlier static analysis premise was wrong (see "Mistakes to skip retesting" below) and the live test in this session was inconclusive because FEAR sat at the launcher splash longer than the trace window allowed.
+
+Other concrete deliverables this session:
+
+- **Game-supplied matrix seam** ([`src/shared/common/ffp_state.hpp:64-84,162-176`](src/shared/common/ffp_state.hpp), [`.cpp`](src/shared/common/ffp_state.cpp)) — public `on_game_view/proj/world` setters, `view_proj_valid()` returns `true` once both V+P are set, `apply_transforms()` prefers game-supplied matrices over the VS-const-derived path, identity world fallback if no `on_game_world` (engine pre-multiplied W into V/P), `clear_game_matrices()` on `on_reset()`. Generic — not FEAR-specific. Builds clean.
+- **Vtable-address one-shot log** in `D3D9Device::CreateDevice` ([`src/comp/modules/d3d9ex.cpp:907-916`](src/comp/modules/d3d9ex.cpp#L907) and `:1018-1026`) — proxy logs `SVSCF=0x… SetTransform=0x… DIP=0x…` to `console.log` at device creation, so the next live-trace pass starts with the breakpoint addresses already in hand. No need to chase symbols through PDB or pattern scans.
+- **Live-trace evidence** of where matrices flow:
+  - SVSCF caller is **always inside `d3dx9_27.dll`** (~`0x02D7xxxx` in this session's load) — FEAR makes zero direct D3D9 SVSCF calls in user code; everything goes through `ID3DXEffect`. The earlier static-analyzer finding that "FEAR has 24 SVSCF call sites" was misleading: those are all `ID3DXEffect`-related calls inside `fcn.00469D50` that go through the *LithTech renderer* vtable, not the D3D9 device.
+  - SVSCF uploads `count=76` (the entire effect constant table) per draw, not the per-draw `count=4` we'd been hunting for.
+  - SetTransform happens *before* SVSCF on every draw, with caller `FEAR.exe!0x004FF99C`. Three calls per draw: WORLDMATRIX(0)=256, VIEW=2, PROJECTION=3. This is the data we need.
+  - LithTech matrices are row-major in memory. No transpose at the proxy seam.
+- **Mistakes to skip retesting**:
+  - `find_vs_constants.py`'s vtable offset `0x178 = SetVertexShaderConstantF` is **correct**, not wrong. The static-analyzer subagent miscalculated the D3D9 vtable layout (it claimed `0x184` was SVSCF, which is actually `GetVertexShaderConstantI` per [`patches/FEAR/deps/dxsdk/Include/d3d9.h:525`](deps/dxsdk/Include/d3d9.h#L525) and [`rtx_remix_tools/dx/scripts/dx9_common.py:298`](../../rtx_remix_tools/dx/scripts/dx9_common.py#L298)). **Do not patch the script.**
+  - The agent's recommended Option A — "find LithTech's matrix multiply primitive via Ghidra class recovery" — is no longer needed. SetTransform capture replaces it. Pyghidra analysis of FEAR.exe still useful for other questions but not load-bearing for the matrix path.
+  - The "1 SVSCF site at `0x46A016`" claim from the agent was the result of scanning the wrong vtable offset (`0x184` = `GetVertexShaderConstantI`). Real direct SVSCF count from user code is effectively zero.
+
+Bridge regression details: with the SetTransform capture deployed but `[Remix]=1`, FEAR.exe + `d3d9_remix.dll` (b7de9a96) creates the four GUID-namespaced shared-memory channels and writes a SYN to `bridge32.log`, but `NvRemixBridge.exe` never reaches `Sync request received` in `bridge64.log`. Process state right before the kill: `NvRemixBridge.exe` running, Responding=True, but no progress past `Server started up, waiting for connection from client...`. With `infiniteRetries = True` set the client waits indefinitely — Windows shows the "F.E.A.R. is not responding" dialog because FEAR's main thread is parked inside `Direct3DCreate9` for the duration. **Same `bridge.conf` and same binaries that worked yesterday under Frida**, so the variable is something environmental — leftover semaphores from prior runs, AV/Defender intercepting `CreateProcessW`, or `DXVK_LOG_PATH` (still set at User+Machine scope to `A:\SteamLibrary\steamapps\common\HEAVY RAIN\rtx-remix\logs`) tripping a path-length / case-sensitivity issue in the bridge spawn. Worth investigating but the SetTransform track is unblocked without it.
+
+The fastest path forward next session is **(a)** verify the SetTransform→ffp_state pipeline lights up world geometry end-to-end by getting into an actual FEAR level (the launcher menu may not exercise the per-draw transforms), then **(b)** re-engage `[Remix]=1` and either reuse Frida instrumentation or do clean-bridge-state launches to test if Remix path-traces the captured matrices correctly.
+
+---
+
+## Archived (2026-05-03 update — superseded but kept for context)
 
 - **Proxy works.** [`d3d9.dll`](build/bin/release/d3d9.dll) (32-bit, our remix-comp-proxy build) is deployed at game root. Run 1 confirmed it intercepts every D3D9 call and produced a 535 KB, 3-frame, 376-draws/frame diagnostic log.
 - **Static analysis is complete.** [findings.md](findings.md) and [kb.h](kb.h) (1197 entries) capture FEAR's full D3D9 architecture.
@@ -144,11 +170,15 @@ The `c0000005 / 0x65 / unknown / e2a5 / bucket 108353454505` crash signature is 
 
 ### Open hypotheses (live)
 
-| # | Hypothesis | How to falsify |
+All three are now eliminated by the live Frida bridge trace from 2026-05-06 — see [findings.md "Bridge crash — true root cause and fix (2026-05-06)"](findings.md#bridge-crash--true-root-cause-and-fix-2026-05-06):
+
+| # | Hypothesis | Verdict |
 | --- | --- | --- |
-| **A** | 32-bit bridge client (`d3d9_remix.dll`) passes wrong/corrupt args to `NvRemixBridge.exe` when running inside FEAR.exe (e.g. malformed GUID from CoCreateGuid, extra trailing arg, wrong working directory). | Capture the actual cmdline via [`capture_nvremix_cmdline.ps1`](../../FEAR%20Ultimate%20Shooter%20Edition/capture_nvremix_cmdline.ps1) (Win32_Process polling at 30 ms). |
-| B | `NvRemixBridge.exe` succeeds the version/GUID check but dies in a static initializer (e.g. NVAPI/Vulkan probe specific to RTX 5090 driver branch). | If A's capture shows args are perfect, attach Frida to `NvRemixBridge.exe` at spawn and trace early symbols past argv parse. |
-| C | SecuROM's `Gam363C.tmp` blocks `CreateProcessW` from inside FEAR.exe specifically (not from PowerShell, which is why manual launch works). | If A shows `CreateProcessW` succeeds-then-exits, sandbox-spawn `NvRemixBridge.exe` from a non-FEAR parent that mirrors FEAR's invocation. |
+| **A** | Wrong/corrupt argv from the 32-bit client | **Eliminated.** Run 16 captured the exact cmdline; live Frida trace confirmed argv parse passes (`wcslen(argv[0])==0x24`, `wcscmp(argv[1],"remix-main+b7de9a96")==0`) and WinMain runs to completion. |
+| **B** | Static-initializer abort (NVAPI/Vulkan probe) | **Eliminated.** WinMain reaches its `ret` instruction with `eax=1`. Standard CRT path then calls `ExitProcess(1)`. No `_invalid_parameter` ever fires. |
+| **C** | SecuROM blocking the bridge spawn | **Eliminated.** `NvRemixBridge.exe` spawns successfully, runs through `D3D9 init`, `RemixApi initialized`, the SYN/ACK handshake, and only exits cleanly via `ExitProcess(1)` after the bridge itself returns from WinMain. |
+
+**Actual root cause:** the b7de9a96 server's "wait for CONTINUE" code path in WinMain does not honor `commandTimeout`/`startupTimeout`/`ackTimeout`/`disableTimeouts`; it gives up in <1 ms even when the client delivers `Continue` ~9 ms later. Setting `infiniteRetries = True` in `assets/.trex/bridge.conf` is the only documented option that makes the server actually wait. Fix is committed to `assets/.trex/bridge.conf` and pushed by `deploy.ps1`.
 
 ---
 
