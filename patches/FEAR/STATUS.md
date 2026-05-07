@@ -18,7 +18,8 @@ This is the canonical entry point. Detailed analysis lives in [findings.md](find
 | `ffp_state` game-supplied matrix seam (`on_game_view/proj/world`) | ✅ Wired — public setters, no transpose, takes priority over VS-const path |
 | Proxy `SetTransform` interceptor → `ffp_state` seam | ✅ Wired — captures FEAR's per-draw W/V/P from `FEAR.exe!0x004FF99C` |
 | Vtable-address logging at `CreateDevice` (live-BP target lookup) | ✅ Wired — emits `SVSCF=… SetTransform=… DIP=…` to `console.log` |
-| End-to-end FFP-via-SetTransform render verification | ⏳ Next — needs an in-level launch; launcher screens don't fire the per-draw transforms enough to validate |
+| End-to-end FFP-via-SetTransform capture verification | ✅ **Confirmed at runtime** — `[FFP] Game-supplied {World,View,Proj} matrix received from per-game hook` all three appeared in `console.log` after FEAR progressed past the launcher (`[Remix]=0 [FFP]=1` test, 2026-05-06 evening) |
+| Visual confirmation of rendering through FFP path | ⏳ Pending — capture confirmed but next session should also verify world geometry renders in correct positions, no piling-at-origin |
 | RTX Remix bridge (32-bit client → 64-bit `NvRemixBridge.exe` server) | ⚠️ **Regressed** — vanilla launches hang at SYN-ACK with `infiniteRetries=True`; only Frida-instrumented launch worked yesterday |
 | `D3DXMatrixMultiply` hook | 🚫 Abandoned — FEAR doesn't import D3DXMatrixMultiply; the SetTransform capture replaces it |
 
