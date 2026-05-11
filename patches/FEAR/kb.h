@@ -3611,3 +3611,34 @@ $ 0x56CB94 void* g_LTRendererClassName  // string identifier passed to factory
 // Sole D3D9 SetVertexShaderConstantF site is wrapped inside LT renderer impl; NOT statically located yet.
 // Run pyghidra analyze to recover LT vtable layout, then identify the impl method that emits real D3D9 SVSCF.
 
+// === Gap analysis 2026-05-11 ===
+// Key correction: FEAR.exe DOES make direct D3D9 calls for STATE (via *0x576FF0), but routes all DRAWS through g_pLTRenderer.
+$ 0x576FF0 IDirect3DDevice9* g_pD3D9Device  // 203 reads, 0 writes from .exe; renderer DLL writes via aliased ptr; vtable slot 0xE4 (SetRenderState) hit 147x; slot 0x10C/0x114 (SetTextureStageState/SetSamplerState) hit in per-frame reset
+$ 0x577190 void* g_pRenderResourceManager  // separate from D3D device; slot 0x28 = resource lookup; used by 0x4F8xxx object update paths
+
+// Per-frame filter/sampler globals (read by Render_ResetDeviceState at 0x4F8DB0)
+$ 0x56D5D4 int g_DefaultMaxAnisotropy
+$ 0x56D604 int g_TextureFilterMode  // 0 = trilinear default; >= 2 = anisotropic
+$ 0x56D6AC int g_PointFilterFlag
+$ 0x56D5EC int g_MipmapFlag
+$ 0x577070 int g_MaxSupportedAnisotropy
+$ 0x577022 int g_ColorWriteEnableMask
+
+// Render-state dispatchers
+@ 0x004F5F60 void __thiscall Render_SetDepthMode(int* mode, IDirect3DDevice9* dev);  // 4-case switch on mode[0x6c]: 0=HUD (Z off/Wr off), 1=rare (Z off/Wr on), 2=TRANSLUCENT (Z on/Wr off), 3=OPAQUE (Z on/Wr on). Sets D3DRS_ZENABLE + D3DRS_ZWRITEENABLE.
+@ 0x004F8DB0 void __fastcall Render_ResetDeviceState(IDirect3DDevice9* dev);  // per-frame state reset: ZWRITE=1, ZFUNC=LESS, CULL=NONE, ALPHATESTENABLE=0; 16-stage SetSamplerState loop reading filter globals
+@ 0x004F5EA1 void __fastcall Render_ApplyFogState(IDirect3DDevice9* dev);  // sets FOGENABLE+ZWRITE+ZENABLE+FOGTABLEMODE from mode struct fields +0x74..+0x84
+
+// LT renderer constant-block dispatch (NOT D3D9 SVSCF)
+@ 0x0046C320 uint __cdecl LTRender_SetConstantBlock(void* data, uint count);  // calls g_pLTRenderer->vtable[0x178/4](data, 0, count); 2 callers at 0x468837, 0x46A229
+
+// Negative findings:
+// - No "tDiffuseMap"/"tNormalMap"/"tSpecularMap"/"BLENDWEIGHT"/"bone"/"Skin" strings exist in FEAR.exe.
+//   These live in the renderer DLL and inside .fxo bytecode.
+// - No D3D9 SetVertexShaderConstantF(start=0, count=72) site exists in FEAR.exe.
+//   Bone palette upload happens inside the renderer DLL after LT vtable dispatch.
+// - find_device_calls.py "DIP" hits at [reg+0x148] in 0x4F8xxx are all false positives
+//   (game-object field reads, not D3D9 device vtable calls).
+// - Strings "DrawTranslucent" (0x55E728), "Translucent" (0x55F52C),
+//   "DrawPrimModulateTranslucent.fx" (0x55E384) have 0 static xrefs (runtime hash lookup).
+

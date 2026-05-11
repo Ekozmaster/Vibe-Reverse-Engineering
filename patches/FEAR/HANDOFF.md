@@ -1,11 +1,173 @@
 # FEAR → RTX Remix Port — Handoff
 
-**As of:** 2026-05-11 ~03:04 — **FEAR geometry renders through Remix in correct world positions.** Two `rtx.conf` options (`leftHandedCoordinateSystem` + `capture.correctBakedTransforms`) resolved the "wrong positions/scale/orientation" symptom from the 02:33 run. New blocker: **all surfaces render as flat washed-out white/grey with most textures invisible.** Player weapon and a body model are visible but heavily desaturated; warehouse crates show only ghosting hints of their albedo. See the 03:04 TL;DR immediately below.
+**As of:** 2026-05-11 evening — runtime LUT-exclusion albedo selector landed and confirmed firing in-game (11–13 LUTs detected per frame, scaling threshold via `AlbedoLutRatio=0.086`). Translucent-pass passthrough also landed but **A/B-disabled** — enabling it caused a per-frame camera flicker timed to sky motion (suspect: persistent `D3DRS_ALPHABLENDENABLE` state leakage misclassifying opaque draws as translucent, splitting Remix's matrix view per frame). Static analysis filled four FEAR.exe gaps — most useful new fact is `Render_SetDepthMode` at `0x4F5F60`, a 4-case ZENABLE+ZWRITEENABLE pair dispatcher (case 2 = translucent, case 3 = opaque) that gives a clean global pass-transition signal once hooked. See the *evening* TL;DR below. **Earlier today (14:15)**: primary sky texture confirmed and bound (`0xC39F926BC0BE15EE`).
 **Workspace rule:** every build is auto-deployed into `FEAR Ultimate Shooter Edition/` via `deploy.ps1`. `deploy.ps1` now accepts `-GameDir <path>` for testing against alternate installs (e.g. CLEAN). The user does not copy files manually.
 
 ---
 
-## TL;DR (2026-05-11 ~03:04 update — matrix-flow problem solved, textures/lighting now the blocker)
+## TL;DR (2026-05-11 evening — runtime LUT-exclusion albedo + translucent A/B test)
+
+### What shipped
+
+Three INI-toggleable behaviors added to the proxy (`[FFP]` section of [`remix-comp-proxy.ini`](assets/remix-comp-proxy.ini)):
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `AlbedoLutExclusion` | `1` | Each frame, count per-stage texture appearances across all 8 stages. Textures with count ≥ `ceil(AlbedoLutRatio × draws_in_frame)` in the previous frame are flagged as shared LUTs (shadow, deferred lighting, env maps) and excluded from albedo selection. The proxy then binds stage 0 to the **lowest stage 0–4 whose current texture is NOT in the LUT pool**. Falls back to static `AlbedoStage` when all stages 0–4 hold LUTs or on the first frame. |
+| `AlbedoLutRatio` | `0.086` | Per-frame fraction-of-draws threshold. `0.086 = 500/5800` from the FEAR analysis where 13 LUTs were detected in a 5800-DIP gameplay frame. Scales automatically with scene complexity (menu vs. level). |
+| `TranslucentPassthrough` | **`0`** (was `1`, A/B-disabled this session) | If enabled, draws with `D3DRS_ALPHABLENDENABLE=TRUE AND D3DRS_ZWRITEENABLE=FALSE` skip FFP engage and run through the original VS/PS path. Intended to fix water-iridescence (Blocker #3). |
+
+Implementation seams (per-game copy, NOT template):
+
+- [`src/shared/common/config.hpp`](src/shared/common/config.hpp) — `ffp_settings` struct grew three fields
+- [`src/shared/common/ffp_state.cpp`](src/shared/common/ffp_state.cpp) — `tex_appearance_` map, `lut_pool_` set, `lut_frame_draws_` counter, `record_draw_for_lut_pool()`, `is_translucent_pass()`. Pool rebuild + diagnostic log line in `on_present()`; both flushed on `on_reset()`.
+- [`src/comp/modules/renderer.cpp`](src/comp/modules/renderer.cpp) — `record_draw_for_lut_pool()` called per draw; `is_translucent_pass()` gated as a peer branch after the `cur_decl_has_normal()` check in both `on_draw_indexed_prim` and `on_draw_primitive`.
+
+### What's confirmed
+
+- **LUT pool fires.** Running console.log shows lines like `[FFP] LUT pool: 11 entries, threshold=14, draws_last_frame=166` and `[FFP] LUT pool: 13 entries, threshold=35, draws_last_frame=407` — pool size 11–13, threshold scales 14–38 with draw count. Matches the 13-LUT prediction from the offline analysis.
+- **Original LUT pool threshold (absolute count `500`) was wrong for in-game testing** — the captured scenes were 200 DIPs/frame, so the threshold never tripped and the pool stayed empty (identical behavior to old code). Fixed by switching to ratio-based threshold this session.
+- **`Render_SetDepthMode` at `0x4F5F60` is the clean global pass signal.** Per gap analysis appended to [`findings_render_dispatch_20260511.md`](findings_render_dispatch_20260511.md#L141-L167) — 4-case switch on `*(arg+0x6c)` setting (ZENABLE, ZWRITEENABLE) pairs: case 0 = HUD, case 1 = rare, case 2 = translucent, case 3 = opaque. Hooking this gives a clean "we're now in the translucent pass" tag that doesn't rely on persistent D3D9 state.
+- **FEAR is hybrid, not fully indirected.** FEAR.exe makes ~147 direct `SetRenderState` calls to `*0x576FF0` (the live `IDirect3DDevice9*`) but routes draws through `g_LTRenderer` vtable slot `0x184`. Material parameter → sampler binding lives in `.fxo` bytecode only — there is no FEAR.exe static path to the diffuse sampler, so the runtime LUT-exclusion heuristic remains the only viable solution short of CTAB interception or offline `fx_decomp`.
+
+### What's broken / open
+
+1. **Camera flicker timed to sky motion** when `TranslucentPassthrough=1`. Disabled by default this session pending the A/B test in-progress. Hypothesis: `is_translucent_pass()` reads persistent D3D9 state — `ALPHABLENDENABLE=TRUE` set by a real translucent draw can leak into the next opaque draw if the engine doesn't reset it, splitting Remix's per-frame matrix view between FFP and shader paths. Fix path: rework detection to (a) add `D3DRS_ZENABLE=TRUE` to the check to exclude HUD draws, OR (b) hook `Render_SetDepthMode` at `0x4F5F60` for a clean global tag.
+2. **Visual verification of the LUT-exclusion gain is still pending.** User reported "still doesn't look correct" after v2 build — flicker (above) is the leading symptom, but it's possible the heuristic is also misfiring in actual gameplay. The 92.3% offline accuracy used a 5800-DIP gameplay frame; the in-session captures so far were menu/transition scenes (200–438 DIPs/frame).
+3. **Blocker #4 (white NPC bodies)** untouched — skinning remains the next major effort. Bone palette is uploaded from inside the renderer DLL (not FEAR.exe), so the only static signal is the vertex decl carrying `BLENDWEIGHT0+BLENDINDICES0` (already detected).
+
+### Next-session plan
+
+1. Confirm `TranslucentPassthrough=0` removes the camera flicker (in-progress test).
+2. If yes — rework `is_translucent_pass()` to use a non-leaking signal, then re-enable.
+3. Visually evaluate the gun (Blocker #1), stray sky panels (Blocker #2), and overall world rendering with LUT-exclusion in a real gameplay scene (not menu). Use the in-game Remix UI (Alt+X) to inspect hashes on previously-broken surfaces.
+4. If LUT-exclusion produces wrong albedo selection in some specific shader/decl class, consider per-shader override tables keyed on VS pointer.
+5. Skinning (Blocker #4) — separate effort, gated on the above.
+
+---
+
+## TL;DR (2026-05-11 ~14:15 update — primary sky texture identified and bound; 3-4 stray panels remain)
+
+**Sky texture identification pipeline established.** `patches/FEAR/livetools_logs/find_sky.py` and `find_sky2.py` parse RTX Remix USDC captures via `usd-core` (installed via `pip install usd-core` this session), extract every mesh's vertex AABB + vertex count + material binding (the binding lives on the *parent Xform*, not the Mesh prim — see [find_sky.py:67](livetools_logs/find_sky.py#L67)), and rank candidates by cumulative extent. The dominant signal is unambiguous: across the 3 new outdoor captures (14-05-31, 14-05-43, 14-09-04), texture `0xC39F926BC0BE15EE` appears on **25 distinct meshes with max extent 390000 units and cumulative extent 11.4M units** — every other texture is on at most 3 meshes with max extent ≤330K. Adding this single hash to `rtx.skyBoxTextures` made the cloudscape appear at the top of the outdoor view.
+
+**Capture hotkey rebound to `=`.** The user requested rebinding the Remix capture hotkey from default `CTRL+SHIFT+Q` to `=`. The correct option (per dxvk-remix `util_keybind.h`) is `rtx.captureHotKey = OEM_PLUS` — added to [`rtx.conf`](../../FEAR%20Ultimate%20Shooter%20Edition/rtx.conf) at the CLEAN install. Three captures were successfully triggered with `=` in this session, confirming the rebind works under the b7de9a96 server build.
+
+**Final `rtx.conf` skyBoxTextures binding** (as edited collaboratively this session):
+
+```
+rtx.skyBoxTextures = 0x5698A937F0FC5AA2, 0x5921933F6BBB32DB, 0x593CB5B9E9DB7F00, 0x7120A631D68D88EE, 0xC39F926BC0BE15EE, 0xD54E44E85BAE0B63
+```
+
+The 6-entry list includes:
+
+- `0xC39F926BC0BE15EE` — **confirmed primary sky** (25 meshes, 390K extent). This one is doing the visible work.
+- `0xD54E44E85BAE0B63`, `0x5698A937F0FC5AA2`, `0x5921933F6BBB32DB`, `0x593CB5B9E9DB7F00` — large-extent (300-330K) candidates, each on 1-3 meshes. Added defensively to see if they were the stray gray panels. **They aren't** — no visible difference vs. just the C39F binding alone.
+- `0x7120A631D68D88EE` — pre-existing in rtx.conf from another game (kept by user choice). In the new FEAR captures this hash appears on a single 4-vert / 600-unit mesh — definitely not sky. Doesn't hurt anything but contributes nothing.
+
+**Remaining sky issue — 3-4 stray gray rectangular panels in screenshot 1's bird's-eye exterior view.** Hypothesis: those panels are FFP-rendered terrain/horizon backdrop using the **default `AperturePBR_Model.mdl` material** with no albedo binding (so Remix renders them as plain gray). Or they're hitting the proxy's shader-passthrough path so Remix never sees their material binding. Diagnosis next session: in-game Remix UI (Alt+X) click directly on a gray panel → read its texture hash from the selected-mesh inspector → add to `rtx.skyBoxTextures` if it's a real sky face, or to `rtx.ignoreTextures` if it's a render-quirk fallback.
+
+**User-driven manual rtx.conf additions this session** (not from my script — the user identified these via the in-game Remix UI):
+
+```
+rtx.worldSpaceUiBackgroundTextures = -0x8A041B24245A49C7
+rtx.ignoreTextures = 0x17C88908898EC4B1, 0x1F984242B0F2DDF9, 0x25B553BB70D79EDE, 0x335C167D9C89D673,
+                     0x60EB826E108F40D5, 0x9DAB87B7055E9B7B, 0xD8619671CBEDA20B, 0xDDD7D325CE9F08BA,
+                     0xF7EB00287800979F, -0x446EA1CC4C8D7204, -0x94BDDB7881C6F5C6
+rtx.uiTextures = 0x3C7450F5E764A06F, 0xA0FA2DD756D1B3A3, 0xA1D1483DD9B67BB7, 0xB214C050D40F5A53,
+                 0xE0E7E6C0CF67EA35, 0xEF36A93DE9D547FF, -0x33B202D302B65CAA
+```
+
+Of these, only `0xB214C050D40F5A53` (UI) and `0x94BDDB7881C6F5C6`, `0x446EA1CC4C8D7204`, `0x17C88908898EC4B1` (ignored) exist in the captured `textures/` dir. The rest were picked from the live Remix UI mid-session. They're now durable in rtx.conf regardless of capture state.
+
+**Filesystem changes this session:**
+
+- `patches/FEAR/livetools_logs/find_sky.py` — single-capture sky-candidate analyzer (vertex AABB extents, material-binding extraction). Uses `pxr.Usd` from `usd-core==26.5`.
+- `patches/FEAR/livetools_logs/find_sky2.py` — multi-capture aggregator. Groups texture-hash usage by cumulative extent across all 3 new captures. Output below.
+- `patches/FEAR/livetools_logs/sky_candidates.csv` — CSV dump of every mesh's bbox + material from the latest capture.
+- 3 new Remix captures at `a:\…\EditionCLEAN\rtx-remix\captures\` (the `02-*` captures are warehouse interior with no sky in frame; the `14-*` ones have real outdoor sky data):
+  - `capture_2026-05-11_14-05-31.usd` — 214 meshes, 77KB
+  - `capture_2026-05-11_14-05-43.usd` — 258 meshes, 89KB
+  - `capture_2026-05-11_14-09-04.usd` — 310 meshes, 104KB
+- [`rtx.conf`](../../FEAR%20Ultimate%20Shooter%20Edition/rtx.conf) at CLEAN install — added `rtx.captureHotKey = OEM_PLUS`, expanded `rtx.skyBoxTextures` from 1 to 6 entries, user added `rtx.ignoreTextures`, `rtx.uiTextures`, `rtx.worldSpaceUiBackgroundTextures`. Backup at `rtx_pre_captureHotKey_*.conf.bak`.
+
+**`find_sky2.py` output for archival reference** (top 10 textures by cumulative mesh extent across all 3 outdoor captures):
+
+```
+TexHash               #Meshes   MaxExt      SumExt        Verts     Y>500   Y<-1000   Captures
+C39F926BC0BE15EE      25        390000      11377202      95939     0       49        3   ← PRIMARY SKY (confirmed working)
+D54E44E85BAE0B63      1         330000        990000        96      0       3         3   ← added, no visible change
+5698A937F0FC5AA2      1         324924        974773      6540      0       0         3   ← added, no visible change
+5921933F6BBB32DB      1         315094        945280     12480      0       3         3   ← added, no visible change
+593CB5B9E9DB7F00      3         327424        658449      2114      0       0         2   ← added, no visible change
+17C88908898EC4B1     31           5700        143374     14123      1       44        2   ← user added to ignoreTextures
+8761EB375A82AAF7      6           7900         93850       310      0       16        3
+60D3E3E0F0FB7602     22           4950         91866     14335      0       45        3   ← generic shared (lightmap?)
+682CBD5B3AC94A4D      4           8000         58100       277      0       11        3
+747A7FC12EB55164      4           6722         58067      5628      0       12        3
+```
+
+**Visible state at 14:15 (from user screenshots)**:
+
+- **Sky top of frame**: dark dramatic cloudscape now rendering correctly (the C39F texture). Previously: pure black void. ✅
+- **Sky middle of frame**: 3-4 stray gray rectangular panels still floating in the void. Not fixed by adding the 4 next-largest candidates. ❌ (next-session task)
+- **Water**: unchanged iridescent rainbow specular — blocker #3.
+- **Warehouse exterior**: walls, floor, crate stacks all textured correctly (the AlbedoStage=1 fix continues to hold).
+- **Indoor warehouse**: gun still flat-gray polys (blocker #1), white NPC body still white (blocker #4), floor now appears darker/blacker than the 13:15 screenshots — likely path-traced shadows from the dark overcast sky now actually contributing to lighting.
+
+**Next session — concrete tasks in order:**
+
+1. **Hunt the remaining 3-4 stray gray sky panels via in-game Remix UI.** Alt+X → click on a stray gray panel → read its texture hash from the selected-mesh inspector → add to `rtx.skyBoxTextures` if it's another sky face. If clicking returns "no texture / fallback material", that's diagnostic — the mesh isn't sampling any texture, which means either (a) the proxy's `setup_albedo_texture` is binding null to it, or (b) it's a shader-path passthrough draw whose material Remix can't identify. (a) is fixable in `ffp_state.cpp`; (b) requires routing those draws into the FFP path.
+2. **Tackle blocker #1 (gun).** Plan: livetools `collect` filtered by low NumVertices DIPs (gun < 500 verts), correlate each gun DIP with its preceding 8 `SetTexture` calls, see which stage holds the gun's diffuse. Hypothesis from 13:15 captured data: gun probably uses stage 0 (not 1). Fix would be a per-draw albedo heuristic in [`ffp_state::setup_albedo_texture`](src/shared/common/ffp_state.cpp#L346) — pick the first stage whose texture is non-null AND not in a "shared/fallback" set. **No rebuild yet — needs the runtime data first.**
+3. **Tackle blocker #3 (water iridescent rainbow).** Plan: in [`renderer::on_draw_indexed_prim`](src/comp/modules/renderer.cpp#L110), query `D3DRS_ALPHABLENDENABLE` via `GetRenderState` at draw time. If blended, either route as shader-passthrough (sacrifices path-traced reflections but preserves original blend) or apply a translucent-tagged stage setup that Remix categorizes via `rtx.translucentTextures`. Rebuild + deploy + visual verify.
+4. **Optional bonus: examine the 14-05-31 capture's `0x7120A631D68D88EE` 600-unit mesh.** That hash was in rtx.conf as "sky" from before this session — it's now confirmed *not* sky in FEAR, only a tiny 4-vert mesh. Could safely remove from `rtx.skyBoxTextures`, freeing it for the actual stray-panel hash once identified.
+
+**One-line summary for the next session bootstrap**: sky is half-fixed (top cloudscape works, mid-frame stray panels remain); skyBoxTextures has the right primary hash; gun/water/white-NPC are unchanged blockers from 13:15.
+
+---
+
+## TL;DR (2026-05-11 ~13:15 update — AlbedoStage=1 fixes white-wash, gun/sky/water now the remaining blockers)
+
+**The texture pipeline works.** Changing `[FFP] AlbedoStage=0 → 1` in [assets/remix-comp-proxy.ini:48](assets/remix-comp-proxy.ini#L48) instantly restored textured surfaces on the warehouse walls, floor, garage doors, and crates. Two screenshots taken at 13:14 on the CLEAN install (PID 145124, ~5 min uptime, no crash) show:
+
+- **Interior shot**: gun in foreground, blue corrugated-metal garage door on the left, warehouse interior wall (blue metal) at the back, dark concrete floor with clearly-readable yellow "DO NOT BLOCK" stencil, an upright white crate on the right with visible cardboard texture. A bright-white humanoid blob (NPC or launcher figure) floats mid-frame against the back wall.
+- **Exterior bird's-eye shot** (likely an out-of-bounds clip): rooftops, stacks of cargo containers with subtle texture detail, iridescent rainbow water/ocean filling the right half (path-tracer specular on a translucent surface), and stray gray-and-white sky quads floating in a black void where the skybox should be.
+
+**What's now solved (vs the 03:04 state):**
+
+- World geometry positions: ✅ correct (rtx.conf `leftHandedCoordinateSystem + correctBakedTransforms`)
+- Material capture: ✅ 67 per-mesh `mat_*.usd` + 62 `*.dds` per scene
+- Diffuse texture sampling: ✅ visible on every textured surface (walls, floor, crates, sky panels)
+- Bridge stability: ✅ 5+ minutes steady-state, no `d3d9_remix.dll+0xf0cc` crash this run
+
+**Remaining blockers** (each is its own bug, ranked by how visible they make the scene "wrong"):
+
+1. **Player weapon renders as flat-gray polygons** with zero texture sampling. The gun decl probably carries POSITION+NORMAL+TEXCOORD but uses a different stage layout than world geometry — likely binds the diffuse on stage 0 (not 1), or uses a special weapon-specific shader path that the proxy's draw router classifies into the wrong bucket. Worth dumping the gun's decl + texture bindings via a targeted breakpoint on its specific draw call.
+2. **Skybox is a black void with stray gray quads.** The classic Remix "sky replacement claimed the wrong texture or the FFP sky pass is being routed to world geometry" pattern. The pre-existing `rtx.skyBoxTextures = 0x7120A631D68D88EE` line in rtx.conf does NOT match any captured FEAR texture hash (verified: not in `rtx-remix/captures/textures/`), so it's a no-op leftover from another game and not the cause. The real fix is either to identify FEAR's actual sky texture hashes and set them in `rtx.skyBoxTextures`, or route FEAR's sky-pass draws into Remix's sky-detection path.
+3. **Water surfaces show iridescent rainbow specular.** Path-tracer is treating the translucent water as a smooth chrome surface with no roughness or absorption. Either Remix needs FEAR's water material to be tagged "translucent" via the AperturePBR_Translucent.mdl path, or the FFP color/alpha op combination we apply (`SELECTARG1`) doesn't preserve enough info for Remix to identify translucents.
+4. **Some objects remain white** (NPC bodies, certain crate variants) — a subset of the world geometry. Could be different stage layout per draw, or could be vertex-color-based lighting that our `SELECTARG1` strips out and we don't apply a fallback diffuse for.
+
+**Runtime instrumentation captured this session** (saved to [`patches/FEAR/livetools_logs/`](livetools_logs/) — 170 MB across 6 files):
+
+- `collect_albedo1_20260511_1308.jsonl` / `_v2_…1310.jsonl` — 20s each of SetTransform + DrawIndexedPrimitive + SetTexture hits (~110K records). Stages 0–4 all carry per-draw textures: **stage0=124 unique tex, stage1=119, stage2=118, stage3=66, stage4=33, stage5=6, stage6=3.** All DIPs are `D3DPT_TRIANGLELIST`. SetTransform breakdown: 2233 `WORLDMATRIX(0)` (all identity per prior dump), 1933 `D3DTS_VIEW`, 1933 `D3DTS_PROJECTION`. Steady-state rate: 1464 DIP/s, 3796 SetTexture/s, 305 SetTransform/s under Remix path-tracing.
+- `collect_svscf_20260511_1311.jsonl` — 15s SetVertexShaderConstantF capture. **Dominant pattern: `start_reg=0 count=4`** (the per-object WVP matrix at c0-c3) 7586 times, plus `start_reg=0 count=72` 2849 times (likely shader-path bone palettes — confirms FEAR's character rigging is shader-driven not FFP-skinned, matching static analysis).
+- `analysis_albedo1_v2_20260511_1310.txt` / `analysis_svscf_20260511_1311.txt` — pre-computed Python summaries of the above.
+- `console_albedo1_livetools_run_20260511_130720.log` / `diagnostics_albedo1_livetools_run_20260511_130720.log` — preserved console + diagnostics snapshot from the prior crashed AlbedoStage=1 run (180KB diagnostics; the actual frame capture data).
+
+**Filesystem changes this session:**
+
+- [`assets/remix-comp-proxy.ini`](assets/remix-comp-proxy.ini#L48): `AlbedoStage=0 → 1` with rationale comment. INI-only change; **no rebuild needed**, redeploy via `deploy.ps1 -GameDir <install>`.
+- New persistent dir `patches/FEAR/livetools_logs/` for keeping JSONL traces + analysis text across sessions.
+
+**Next session — concrete tasks in order:**
+
+1. **Hunt the gun's draw call to find its decl + stage layout.** Set a `bp` on `DrawIndexedPrimitive` filtered by a small `NumVertices` range (the gun is low-poly — see screenshot 1, faceted gray polys → likely <500 verts) and grab the active vertex decl + each `SetTexture` immediately preceding it. If stage 0 holds the gun's diffuse and stage 1 doesn't, we need per-pass `AlbedoStage` routing rather than a global setting — option: add a "primary diffuse heuristic" in `setup_albedo_texture` that picks the first non-fallback non-shared texture across stages.
+2. **Find FEAR's actual sky texture hashes.** Take a fresh Remix capture (F11 / Insert) on the warehouse, find the meshes whose vertices land in screen-top areas (sky panels), dump their material refs from the USDC, and map back to texture hashes. Then set `rtx.skyBoxTextures = <comma-separated>` in [`rtx.conf`](../../FEAR%20Ultimate%20Shooter%20Edition/rtx.conf).
+3. **Tag water draws as translucent.** FEAR's water uses `D3DRS_ALPHABLENDENABLE=1` per surface. If the proxy's draw router can detect alpha-blended FFP draws, it could either skip them entirely (let the shader path produce the original blend), or feed them through a different stage setup that signals translucent to Remix. Tradeoff: skipping them means no path-traced reflections; tagging them means picking the right Remix material category.
+4. **(Optional) Find `ffp_state` static address** so we can `mem read` the live `cur_texture_[0..7]` array and `memwatch` it for state-change debugging. Failed once via byte-pattern scan (register layout `0,4,4,8,16,20` not found in proxy `.data`) — needs either PDB symbol resolution through a custom Frida script or a different distinctive byte pattern. Not blocking, but would speed up further iteration.
+
+---
+
+## Older TL;DR (2026-05-11 ~03:04 update — matrix-flow problem solved, textures/lighting then the blocker)
 
 **The matrix mystery is closed.** A per-draw game-matrix dump added to [diagnostics.cpp:240-249](src/comp/modules/diagnostics.cpp) (delay lowered from 180s → 60s in [remix-comp-proxy.ini:75](assets/remix-comp-proxy.ini)) revealed that across all 60 captured draws:
 

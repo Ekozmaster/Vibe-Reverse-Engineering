@@ -1,6 +1,9 @@
 #pragma once
 #include "config.hpp"
 
+#include <unordered_map>
+#include <unordered_set>
+
 namespace shared::common
 {
 	/*
@@ -42,6 +45,16 @@ namespace shared::common
 
 		// Restore original texture bindings on all 8 stages. Call after draw.
 		void restore_textures(IDirect3DDevice9* dev);
+
+		// Per-draw bookkeeping for the LUT-exclusion albedo heuristic: increments
+		// each currently bound texture's appearance count for the current frame.
+		// Call once per draw (regardless of FFP / passthrough routing) so shader-
+		// path draws also contribute to LUT detection.
+		void record_draw_for_lut_pool();
+
+		// True when D3DRS_ALPHABLENDENABLE=TRUE and D3DRS_ZWRITEENABLE=FALSE.
+		// LithTech's reliable translucent-queue signal. Cheap GetRenderState pair.
+		bool is_translucent_pass(IDirect3DDevice9* dev) const;
 
 		// --- Read-only accessors for renderer ---
 
@@ -201,6 +214,16 @@ namespace shared::common
 
 		// Texture tracking
 		IDirect3DBaseTexture9* cur_texture_[8] = {};
+
+		// LUT-exclusion albedo heuristic state.
+		// tex_appearance_ accumulates per-draw appearance counts during the current
+		// frame; on Present, textures with count >= ceil(ratio * lut_frame_draws_)
+		// are copied into lut_pool_ and the count map is cleared. setup_albedo_texture
+		// consults lut_pool_ (built from the previous frame) to pick a non-LUT
+		// stage. Pointers are weak refs and are flushed on Reset.
+		std::unordered_map<IDirect3DBaseTexture9*, int> tex_appearance_;
+		std::unordered_set<IDirect3DBaseTexture9*> lut_pool_;
+		int lut_frame_draws_ = 0;     // per-frame draw count fed to record_draw_for_lut_pool
 
 		// Stream source tracking
 		IDirect3DVertexBuffer9* stream_vb_[4] = {};

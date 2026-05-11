@@ -60,6 +60,7 @@ namespace comp
 		auto& ctx = setup_context(dev);
 		auto& ffp = shared::common::ffp_state::get();
 		ffp.increment_draw_count();
+		ffp.record_draw_for_lut_pool();
 
 		auto hr = S_OK;
 
@@ -70,7 +71,8 @@ namespace comp
 		 * include world geometry that should be converted to FFP.
 		 */
 		if (ffp.is_enabled() && ffp.view_proj_valid() &&
-			ffp.last_decl() && !ffp.cur_decl_has_pos_t() && !ffp.cur_decl_is_skinned())
+			ffp.last_decl() && !ffp.cur_decl_has_pos_t() && !ffp.cur_decl_is_skinned() &&
+			!ffp.is_translucent_pass(dev))
 		{
 			// World-space non-indexed draw: engage FFP. Disable fog because
 			// FEAR's per-vertex fog factor comes from the now-nulled VS oFog;
@@ -117,6 +119,7 @@ namespace comp
 		const auto im = imgui::get();
 		auto& ffp = shared::common::ffp_state::get();
 		ffp.increment_draw_count();
+		ffp.record_draw_for_lut_pool();
 
 		im->m_stats._drawcall_indexed_prim_incl_ignored.track_single();
 
@@ -166,6 +169,16 @@ namespace comp
 		{
 			// GAME-SPECIFIC: No NORMAL in vertex declaration -> likely HUD/UI.
 			// Remove or modify this check if your game's world geometry lacks NORMAL elements.
+			ffp.disengage(dev);
+			hr = dev->DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+			im->m_stats._drawcall_indexed_prim.track_single();
+			im->m_stats._drawcall_indexed_prim_using_vs.track_single();
+		}
+		else if (ffp.is_translucent_pass(dev))
+		{
+			// Translucent queue (alpha-blend ON, Z-write OFF -- LithTech's split signal).
+			// Engaging FFP would clobber the game's blend setup and produce iridescent
+			// chrome (water) or opaque particles. Run the original shader path instead.
 			ffp.disengage(dev);
 			hr = dev->DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
 			im->m_stats._drawcall_indexed_prim.track_single();

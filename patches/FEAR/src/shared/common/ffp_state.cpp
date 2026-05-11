@@ -261,6 +261,32 @@ namespace shared::common
 		// No-op when already disengaged (the normal case).
 		disengage(shared::globals::d3d_device);
 		std::memset(vs_const_write_log_, 0, sizeof(vs_const_write_log_));
+
+		// Rebuild the LUT exclusion pool from this frame's appearance counts.
+		// Setup_albedo_texture consults lut_pool_ on subsequent draws (next frame).
+		if (cfg_ && cfg_->albedo_lut_exclusion)
+		{
+			lut_pool_.clear();
+			// Threshold is a fraction of the per-frame draw count, so the pool
+			// scales with scene complexity. Minimum 2 so a one-draw scene can't
+			// flag a texture seen once as a LUT.
+			int threshold = static_cast<int>(cfg_->albedo_lut_ratio * static_cast<float>(lut_frame_draws_) + 0.5f);
+			if (threshold < 2) threshold = 2;
+			for (const auto& [tex, count] : tex_appearance_)
+				if (count >= threshold)
+					lut_pool_.insert(tex);
+
+			// Log pool state once per 60 frames so we can verify the heuristic
+			// is firing without spamming console.log on every Present.
+			if ((frame_count_ % 60) == 0)
+			{
+				log("FFP", std::format("LUT pool: {} entries, threshold={}, draws_last_frame={}",
+					lut_pool_.size(), threshold, lut_frame_draws_));
+			}
+
+			tex_appearance_.clear();
+			lut_frame_draws_ = 0;
+		}
 	}
 
 	void ffp_state::on_begin_scene()
@@ -308,6 +334,11 @@ namespace shared::common
 
 		std::memset(vs_const_write_log_, 0, sizeof(vs_const_write_log_));
 
+		// Texture pointers go stale across Reset; drop the LUT pool and counts.
+		tex_appearance_.clear();
+		lut_pool_.clear();
+		lut_frame_draws_ = 0;
+
 		log("FFP", "State reset");
 	}
 
@@ -347,12 +378,53 @@ namespace shared::common
 	{
 		if (!cfg_ || !dev) return;
 
-		int as = cfg_->albedo_stage;
-		auto* albedo = (as >= 0 && as < 8) ? cur_texture_[as] : cur_texture_[0];
+		IDirect3DBaseTexture9* albedo = nullptr;
+
+		// Prefer the runtime LUT-exclusion heuristic when a pool exists.
+		// The pool is built from the *previous* frame, so on frame 0 it's empty
+		// and we fall through to the static AlbedoStage.
+		if (cfg_->albedo_lut_exclusion && !lut_pool_.empty())
+		{
+			for (int s = 0; s < 5; ++s)
+			{
+				auto* t = cur_texture_[s];
+				if (t && lut_pool_.find(t) == lut_pool_.end())
+				{
+					albedo = t;
+					break;
+				}
+			}
+		}
+
+		if (!albedo)
+		{
+			int as = cfg_->albedo_stage;
+			albedo = (as >= 0 && as < 8) ? cur_texture_[as] : cur_texture_[0];
+		}
 
 		dev->SetTexture(0, albedo);
 		for (DWORD ts = 1; ts < 8; ts++)
 			dev->SetTexture(ts, nullptr);
+	}
+
+	void ffp_state::record_draw_for_lut_pool()
+	{
+		if (!cfg_ || !cfg_->albedo_lut_exclusion) return;
+		++lut_frame_draws_;
+		for (int s = 0; s < 8; ++s)
+		{
+			if (auto* t = cur_texture_[s])
+				++tex_appearance_[t];
+		}
+	}
+
+	bool ffp_state::is_translucent_pass(IDirect3DDevice9* dev) const
+	{
+		if (!cfg_ || !cfg_->translucent_passthrough || !dev) return false;
+		DWORD alpha_blend = 0, z_write = 0;
+		dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &alpha_blend);
+		dev->GetRenderState(D3DRS_ZWRITEENABLE, &z_write);
+		return alpha_blend != 0 && z_write == 0;
 	}
 
 	void ffp_state::restore_textures(IDirect3DDevice9* dev)

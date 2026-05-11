@@ -19,6 +19,25 @@ namespace shared::common
 		{
 			bool enabled = true;
 			int albedo_stage = 0;
+
+			// Runtime albedo selection: per-frame LUT-exclusion heuristic.
+			// Counts each texture's per-draw appearances across all 8 stages;
+			// textures with count >= ceil(albedo_lut_ratio * draws_in_frame) are
+			// treated as shared LUTs (shadow / lighting / env maps) and excluded
+			// from albedo stage 0 rebinding. Falls back to static albedo_stage
+			// when the pool is empty or no stage 0..4 holds a non-LUT texture.
+			//
+			// Ratio is the threshold expressed as a fraction of per-frame draws,
+			// so it scales with scene complexity. Default 0.086 = 500/5800 from
+			// the FEAR analysis where 13 LUTs were detected in a 5800-DIP frame.
+			bool albedo_lut_exclusion = true;
+			float albedo_lut_ratio = 0.086f;
+
+			// Translucent-pass passthrough: when D3DRS_ALPHABLENDENABLE=TRUE
+			// AND D3DRS_ZWRITEENABLE=FALSE, skip FFP engage and let the original
+			// shader path run. Preserves alpha blending for water / particles /
+			// glass that LithTech splits into a separate translucent queue.
+			bool translucent_passthrough = true;
 		} ffp;
 
 		struct skinning_settings

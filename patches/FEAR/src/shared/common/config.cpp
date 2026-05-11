@@ -69,6 +69,11 @@ namespace shared::common
 		ffp.albedo_stage = get_int("FFP", "AlbedoStage", 0);
 		if (ffp.albedo_stage < 0 || ffp.albedo_stage > 7)
 			ffp.albedo_stage = 0;
+		ffp.albedo_lut_exclusion = get_bool("FFP", "AlbedoLutExclusion", true);
+		ffp.albedo_lut_ratio = get_float("FFP", "AlbedoLutRatio", 0.086f);
+		if (ffp.albedo_lut_ratio < 0.0f) ffp.albedo_lut_ratio = 0.0f;
+		if (ffp.albedo_lut_ratio > 1.0f) ffp.albedo_lut_ratio = 1.0f;
+		ffp.translucent_passthrough = get_bool("FFP", "TranslucentPassthrough", true);
 
 		// [Skinning]
 		skinning.enabled = get_bool("Skinning", "Enabled", false);
@@ -90,7 +95,10 @@ namespace shared::common
 		tracer.output_dir = get_string("Tracer", "OutputDir", "captures");
 
 		log("Config", std::format("Loaded from: {}", ini_path_));
-		log("Config", std::format("FFP={} AlbedoStage={}", ffp.enabled ? 1 : 0, ffp.albedo_stage));
+		log("Config", std::format("FFP={} AlbedoStage={} LutExclusion={} LutRatio={:.3f} TranslucentPassthrough={}",
+			ffp.enabled ? 1 : 0, ffp.albedo_stage,
+			ffp.albedo_lut_exclusion ? 1 : 0, ffp.albedo_lut_ratio,
+			ffp.translucent_passthrough ? 1 : 0));
 		if (skinning.enabled)
 			log("Config", "Skinning ENABLED", LOG_TYPE::LOG_TYPE_WARN);
 	}
