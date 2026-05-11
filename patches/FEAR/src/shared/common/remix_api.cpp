@@ -17,6 +17,14 @@ namespace shared::common
 		auto& api = get();
 		if (api.is_initialized())
 		{
+			// Defer debug-line material creation until BeginScene fires. Doing
+			// this in remix_api::initialize() (which runs inside Direct3DCreate9
+			// before any IDirect3DDevice9 exists) posted RemixApi_CreateMaterial
+			// commands on the bridge's Device queue when no device was created
+			// yet, stalling the server enough that FEAR's next Module-queue
+			// call (GetDeviceCaps) timed out and the game hung.
+			api.init_debug_lines();
+
 			if (api.m_debug_line_amount)
 			{
 				for (auto l = 1u; l < api.m_debug_line_amount + 1; l++)
@@ -679,7 +687,8 @@ namespace shared::common
 		if (pfn_callbacks)
 			pfn_callbacks(begin_scene_callback_internal, end_scene_callback_internal, present_callback_internal);
 
-		instance.init_debug_lines();
+		// init_debug_lines() is deferred to begin_scene_callback_internal() so
+		// material creation happens after CreateDevice — see comment there.
 		instance.m_debug_circles.reserve(512);
 		instance.m_debug_circle_materials.reserve(512);
 		instance.m_initialized = true;

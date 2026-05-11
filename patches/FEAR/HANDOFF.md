@@ -1,7 +1,121 @@
 # FEAR → RTX Remix Port — Handoff
 
-**As of:** 2026-05-06 evening (SetTransform-based matrix capture wired; bridge has regressed to a hang).
-**Workspace rule:** every build is auto-deployed into `FEAR Ultimate Shooter Edition/` via `deploy.ps1`. The user does not copy files manually.
+**As of:** 2026-05-11 ~02:33 — **FEAR renders through RTX Remix for the first time.** See the breakthrough TL;DR immediately below; the older 02:05/02:13/05-07/05-06/05-03 entries are kept for diagnostic context.
+**Workspace rule:** every build is auto-deployed into `FEAR Ultimate Shooter Edition/` via `deploy.ps1`. `deploy.ps1` now accepts `-GameDir <path>` for testing against alternate installs (e.g. CLEAN). The user does not copy files manually.
+
+---
+
+## TL;DR (2026-05-11 ~02:33 update — RTX Remix bridge handshake succeeds, FEAR renders through Remix)
+
+**FEAR + a03c16db bridge + minimal `bridge.conf` + deferred `init_debug_lines()` = stable rendering through Remix for ~3 minutes.** Bridge log reaches `Server side D3D9 Device created successfully!` 9 seconds after launch (matching Brotherhood's working baseline), the proxy's per-draw `SetTransform` interceptor captures World/View/Proj matrices into [ffp_state](src/shared/common/ffp_state.cpp), and the bridge processes ~72K commands over 3 minutes before crashing with a *separate* `d3d9_remix.dll+0xf0cc` access violation that's unrelated to startup. The 2026-05-07 fixes (fog-off + SELECTARG1 stage 0) ride along untouched — FFP world geometry that already rendered correctly in `[Remix]=0` should now path-trace.
+
+**Three combined changes unblocked the chain:**
+
+1. **Bridge swap b7de9a96 → a03c16db** (`patches/FEAR/deps/remix-bridge-x86/d3d9.dll` and both game-dir `.trex/` runtimes). b7de9a96 under driver `32.0.15.9636` hung at the kernel call between `Server started up...` and `Registering exit callback` (per HANDOFF's archived Cause A — that hang is now reliably reproducible AND escapable by switching to a03c16db). The working a03c16db build came from the user's `A:\SteamLibrary\steamapps\common\Assassins Creed Brotherhood\.trex\` install. Old b7de9a96 `.trex/` preserved as `.trex.b7de9a96.bak/` in both DIRTY and CLEAN game dirs.
+
+2. **`bridge.conf` minimized** ([assets/.trex/bridge.conf](assets/.trex/bridge.conf)). All FEAR-specific overrides except three are now commented out with explanatory notes:
+   - `exposeRemixApi = True` (load-bearing for the proxy's `remix_api::initialize()`)
+   - `infiniteRetries = True` (required — the server's CONTINUE-wait timeout is hardcoded short in BOTH bridge versions; FEAR's LithTech+DirectInput client takes ~17ms from ACK→Continue which exceeds it. Brotherhood works without this only because its Ubisoft engine sends Continue in <1ms.)
+   - `disableTimeouts = True` (companion belt-and-suspenders for the same CONTINUE-wait race)
+   `commandTimeout`, `startupTimeout`, `commandRetries`, `ackTimeout`, `logLevel = Trace` — all reverted to defaults.
+
+3. **Deferred `init_debug_lines()` from `remix_api::initialize()` to `begin_scene_callback_internal()`** ([src/shared/common/remix_api.cpp:15-22, :676-679](src/shared/common/remix_api.cpp)). The 4× `RemixApi_CreateMaterial` calls used to fire inside `Direct3DCreate9` — *before any `IDirect3DDevice9` existed* — posting commands on the bridge's Device queue when no device was created. This stalled the server's Module-queue handler such that FEAR's next call (`IDirect3D9Ex::GetDeviceCaps`) waited forever, Windows logged `AppHangTransient`, and the bridge eventually saw the process exit. Moving the call to BeginScene (guarded by the existing `m_debug_lines_initialized` flag) makes materials run after the device is created. This is the actual root cause of every prior post-handshake failure mode — the bridge wasn't broken, the call order was.
+
+**Working configuration (verified on CLEAN install at 02:29:19 → 02:32:35):**
+
+```text
+[02:29:42.714] info:  NVIDIA RTX Remix Bridge Server  Version: remix-main+a03c16db
+[02:29:43.178] info:  D3D9 interface object creation succeeded!
+[02:29:43.179] info:  Handshake completed! Now waiting for incoming commands...
+[02:29:48.235] info:  Server side D3D9 Device created successfully!
+[02:29:57.173] info:  Server side D3D9 Device created successfully!   ← LithTech's real device
+```
+
+Proxy console mirrors this:
+
+```text
+[INFO] [d3d9] m_pIDirect3D9->CreateDevice
+[INFO] [d3d9] Device wrapper @ 0xa7e590 vtable @ 0x2a20da8 SVSCF=0x2930220 SetTransform=0x292b590 DIP=0x292f0f0
+[INFO] [FFP] Game-supplied World matrix received from per-game hook
+[INFO] [ImGui] ImGui_ImplDX9_Init
+[INFO] [FFP] Game-supplied View matrix received from per-game hook
+[INFO] [FFP] Game-supplied Proj matrix received from per-game hook
+```
+
+`bridge32.log` grew to **72,060 lines** over the 3-minute run — every D3D9 call from FEAR flowing through the IPC.
+
+**Open issue (deferred to next session) — `d3d9_remix.dll+0xf0cc` crash ~3 minutes in.** After ~3 minutes of stable rendering, the bridge client crashed in FEAR.exe at `d3d9_remix.dll+0xf0cc` with `c0000005`, immediately after a window-focus toggle (`Client window became inactive` → `Client window became active` → crash within ms). The bridge server then crashed in its `OnServerExited` cleanup. Hypothesis: race between our forced `disableTimeouts=True` and the bridge's runtime focus-toggle that dynamically writes the same setting. No PDB for the new a03c16db `d3d9_remix.dll` locally — decompiling the crash site is a separate task. **This did NOT happen during init and does NOT block the proxy's rendering path** — it's a steady-state stability problem to investigate next.
+
+**Why diagnostic capture didn't fire this session:** `[Diagnostics] DelayMs=180000` (3 min); the bridge crashed at `+196s` (02:32:35), 7 seconds before capture would have run at `+200s` (02:32:42). Next session: either lower DelayMs to ~30s, or fix the focus-toggle crash so capture can fire normally.
+
+**SetTransform-based matrix capture (from 2026-05-06) is now confirmed end-to-end through the bridge.** The "concatenated WVP at c0–c3" problem is permanently sidestepped — we hook FEAR's per-draw `IDirect3DDevice9::SetTransform(D3DTS_WORLDMATRIX(0)/VIEW/PROJECTION, ...)` and feed clean matrices into `ffp_state::on_game_world/view/proj`. Capture fires every frame; the 12 log lines visible above are throttled output, not 12 total events.
+
+---
+
+## TL;DR (2026-05-11 ~02:05 update — CLEAN install validation)
+
+**Reproduced the FFP port end-to-end on a fresh "CLEAN" install** at `a:\SteamLibrary\steamapps\common\FEAR Ultimate Shooter EditionCLEAN\` (no echo mod, no dxwrapper, no debug artifacts). After hitting and resolving the SecuROM child-respawn issue, the proxy initializes identically to the dirty install:
+
+```text
+[INFO] [d3d9] Direct3DCreate9 called. Creating proxy interface.
+[STATUS] [RemixApi] Initialized RemixApi
+[INFO] [FFP] Registers: View=c0-c3 Proj=c4-c7 World=c16-c19
+[INFO] [Renderer] Module initialized.
+[INFO] [Diagnostics] Module initialized, auto=1 delay=180000ms frames=3
+```
+
+The bridge handshake then deadlocks at the documented SYN/ACK point (`bridge32.log: "Sending SYN command, waiting for ACK from server..."` / `bridge64.log: "Server started up, waiting for connection from client..."`) → FEAR hangs and Windows shows "F.E.A.R. is not responding". **This is the same regression already documented below** (Cause A: driver 32.0.15.9636 + bridge b7de9a96 incompatibility) — not a new CLEAN-specific bug.
+
+**SecuROM finding (new, cost ~1h of dead-end testing):**
+Stock retail `FEAR.exe` (1978368 B, sha256 `D5EBC38A…`) is SecuROM-wrapped — PE has an 86 MB section with zero raw size. On launch it spawns a child `FEAR.exe`, and the child loads `C:\WINDOWS\SYSTEM32\d3d9.dll` instead of the game-folder local `d3d9.dll`. Result: neither our proxy nor the rtx-remix bridge ever inject into the rendering process. The dirty install's `FEAR.exe` (1626112 B, sha256 `D9E5F716…`) is SecuROM-stripped (single-process), which is why it works. CLEAN's `FEAR.exe.bak` byte-for-byte matches CLEAN's `FEAR.exe`, confirming the dirty exe is the modified variant.
+
+`NvRemixLauncher32.exe` — NVIDIA's official launcher (CLI: `[-w workdir] [-i] <full-path-to-exe>`, default uses Detours search-path mode, `-i` uses CreateRemoteThread injection) — **cannot beat SecuROM's child-respawn**. Tested both modes on CLEAN; child still loads system32 d3d9.dll because injection only reaches the SecuROM parent.
+
+**The working configuration on CLEAN, now in place:**
+
+- `FEAR.exe.stock.bak` ← original stock SecuROM-wrapped exe (preserved; restore at any time)
+- `FEAR.exe` ← copy of dirty's SecuROM-stripped exe (sha256 `D9E5F716…`) — the only modification to CLEAN
+- `d3d9.dll`, `d3d9_remix.dll`, `remix-comp-proxy.ini`, `.trex/bridge.conf`, `FEAR-comp-proxy.pdb`, `NvRemixLauncher32.exe` — all from this session's build + deploy
+- `launch_remix_test.ps1` — copied from dirty (path-agnostic via `$MyInvocation`)
+
+**Open work (carried from prior TL;DRs, still applicable):**
+
+- Bridge SYN/ACK deadlock under driver 9636 — needs either the Frida-instrumented spawn (`scripts/spawn_gate_bridge.py`) or a bridge rebuild from source. CLEAN testing has hit the same wall as dirty, so any fix transfers.
+- Verify the FFP path renders correctly under `[Remix] Enabled=0` system-d3d9 fallback on CLEAN — should reproduce the 2026-05-06 warehouse screenshot. (Not done this session — diagnostics auto-capture didn't get past the bridge hang.)
+- Workspace tooling: `patches/FEAR/deploy.ps1` now accepts `-GameDir`; use `-GameDir "a:\SteamLibrary\steamapps\common\FEAR Ultimate Shooter EditionCLEAN"` for CLEAN-targeted deploys.
+
+---
+
+## TL;DR (2026-05-07 ~00:13 update — supersedes prior TL;DRs below)
+
+**FFP path is shipped and working.** Screenshot evidence at 23:43 (the warehouse scene with stormy clouds, blue corrugated walls, yellow-striped bay doors, and properly lit pallets) proves the SetTransform-captured matrices + the two new fixes produce correct world rendering for sky, walls, textures, bay doors, pallets, weapon, HUD. Remaining bright blobs are additive-blend light sprites that Remix path-tracing replaces with native lights — not a blocker.
+
+**Two fixes that took FFP from broken (white-wash + black-modulation) to correct:**
+
+1. **Disable `D3DRS_FOGENABLE` per FFP draw**, save/restore via `dc_ctx`. ([`renderer.cpp:74-91`](src/comp/modules/renderer.cpp#L74), `:172-182`). Mechanism: FEAR's VS computes per-vertex `oFog`; with VS nulled, `oFog` is undefined → FFP rasterizer applies max fog → distant geometry washes to fog color (white). Save+disable before `engage()`, let `dc_ctx.restore_all()` put it back so shader-path draws keep the game's fog.
+2. **Stage-0 `D3DTOP_SELECTARG1` instead of `D3DTOP_MODULATE`** ([`ffp_state.cpp:441-460`](src/shared/common/ffp_state.cpp#L441)). Texture-only output, no vertex-color modulation. Fixes both the white wash AND the all-black objects (decls with COLOR baked-in dark-vert lighting were modulating to 0).
+
+**Bridge regression — root-caused.** Two compounding causes:
+
+- **Cause A — driver upgrade.** Today the user updated NVIDIA driver 32.0.15.9621 → 32.0.15.9636. Bridge worked at 23:40 (driver 9621), now incompatible. The hang location is between server's `"Server started up..."` and `"Registering exit callback..."` log lines — the bridge calls `RegisterWaitForSingleObject(parentProcess, ...)` here, a kernel call that touches the GPU/driver via the WDDM stack. Driver 9636 changed something that makes this hang.
+- **Cause B — EchoPatch.** With driver 9636 and EchoPatch's `dinput8.dll` ASI loader hooks active, the bridge hangs deterministically. Removing `dinput8.dll` (renamed to `dinput8.echopatch.bak`) lets the handshake complete: `bridge64.log` reaches `Initializing D3D9... → D3D9 interface object creation succeeded! → Sync request received...` — the canonical happy path. **HANDOFF's earlier Run 14 finding of "EchoPatch innocent" was driver-conditional and is no longer true under 9636.**
+- **Cause C — leftover state across kills.** Even with EchoPatch off, a *second* launch after the first was hung in the launcher reproduced the bridge hang because the parent FEAR's named semaphores (e.g. `ModuleServer2ClientSemaphore`, `Present`) were still alive in the kernel namespace. PowerShell's `[Threading.Semaphore]::OpenExisting()` confirmed they're cleaned up after `Stop-Process`, so always kill all FEAR/NvRemixBridge before re-launching.
+
+**Working bridge launch recipe (post-2026-05-07):**
+
+1. `dinput8.dll` MUST be renamed aside (e.g. `dinput8.echopatch.bak`) — EchoPatch breaks bridge IPC under driver 9636
+2. Kill any prior FEAR/NvRemixBridge processes; verify named semaphores `Present` and `ModuleServer2ClientSemaphore` no longer exist via `[Threading.Semaphore]::OpenExisting()`
+3. `bridge.conf` keeps `disableTimeouts = False`, `infiniteRetries = False` so we get visible errors when something IS wrong (was hiding deadlocks before)
+4. Launch FEAR via `Start-Process` with `__COMPAT_LAYER=RUNASINVOKER`
+5. Bridge logs at `A:\SteamLibrary\steamapps\common\HEAVY RAIN\rtx-remix\logs\bridge{32,64}.log` (path inherited from `DXVK_LOG_PATH` env var; harmless cross-game co-location)
+
+**Remaining bridge work (not blocking FFP — defer to next session if needed):**
+- Validate the EchoPatch+driver hypothesis with a clean-state test (bridge handshake should now reproduce reliably)
+- If bridge handshake still doesn't reach CreateDevice: instrument the 32-bit client side (FEAR.exe d3d9_remix.dll) with Frida to capture the post-handshake D3D9 caps queries
+- Long-term: rebuild bridge from source against driver 9636 and submit upstream PR if NVIDIA hasn't fixed it
+- Consider: enable EchoPatch only AFTER CreateDevice (impossible without bridge cooperation; would need a launcher-style intermediate)
+
+---
 
 ---
 

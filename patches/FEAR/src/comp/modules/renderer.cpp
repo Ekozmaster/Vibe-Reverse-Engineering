@@ -72,7 +72,13 @@ namespace comp
 		if (ffp.is_enabled() && ffp.view_proj_valid() &&
 			ffp.last_decl() && !ffp.cur_decl_has_pos_t() && !ffp.cur_decl_is_skinned())
 		{
-			// World-space non-indexed draw: engage FFP
+			// World-space non-indexed draw: engage FFP. Disable fog because
+			// FEAR's per-vertex fog factor comes from the now-nulled VS oFog;
+			// without it the FFP rasterizer applies max fog (white wash).
+			// Saved through dc_ctx so the game's fog state isn't leaked.
+			ctx.save_rs(dev, D3DRS_FOGENABLE);
+			dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+
 			ffp.engage(dev);
 			ffp.setup_albedo_texture(dev);
 
@@ -167,7 +173,11 @@ namespace comp
 		}
 		else
 		{
-			// Rigid 3D mesh with NORMAL: engage FFP conversion
+			// Rigid 3D mesh with NORMAL: engage FFP conversion.
+			// Disable fog (see on_draw_primitive comment).
+			ctx.save_rs(dev, D3DRS_FOGENABLE);
+			dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+
 			ffp.engage(dev);
 			ffp.setup_albedo_texture(dev);
 

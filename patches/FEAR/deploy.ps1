@@ -2,13 +2,22 @@
 # Run after every build.bat invocation so the next launch picks up the latest output.
 #
 # Usage: powershell -File deploy.ps1
+#        powershell -File deploy.ps1 -GameDir "<path>"   # override target install
 #        OR from cmd: powershell -ExecutionPolicy Bypass -File deploy.ps1
+
+param(
+    [string]$GameDir
+)
 
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $root 'build\bin\release'
-$gameDir = Resolve-Path (Join-Path $root '..\..\FEAR Ultimate Shooter Edition')
+
+if (-not $GameDir) {
+    $GameDir = Resolve-Path (Join-Path $root '..\..\FEAR Ultimate Shooter Edition')
+}
+$gameDir = $GameDir
 
 if (-not (Test-Path $buildDir)) {
     Write-Error "Build dir not found: $buildDir. Run build.bat release --name FEAR first."

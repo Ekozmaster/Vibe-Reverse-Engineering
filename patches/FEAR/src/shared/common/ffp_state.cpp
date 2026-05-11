@@ -440,13 +440,17 @@ namespace shared::common
 
 	void ffp_state::setup_texture_stages(IDirect3DDevice9* dev)
 	{
-		// Stage 0: modulate texture color with vertex/material diffuse
-		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+		// Stage 0: select the albedo texture directly. We deliberately do NOT
+		// modulate by vertex diffuse / material color — when the game's VS is
+		// nulled the FFP color pipeline treats absent COLOR elements as
+		// (1,1,1,1) (fine) but decls that DO carry a COLOR element with
+		// pre-baked lighting (often (0,0,0) for shadowed verts) would get
+		// modulated to solid black. SELECTARG1 avoids both failure modes and
+		// gives Remix a clean unmodulated albedo to identify materials with.
+		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
 		dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-		dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_CURRENT);
-		dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
 		dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-		dev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
 		dev->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
 		dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 
