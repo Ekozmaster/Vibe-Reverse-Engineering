@@ -1,7 +1,93 @@
 # FEAR → RTX Remix Port — Handoff
 
-**As of:** 2026-05-11 ~02:33 — **FEAR renders through RTX Remix for the first time.** See the breakthrough TL;DR immediately below; the older 02:05/02:13/05-07/05-06/05-03 entries are kept for diagnostic context.
+**As of:** 2026-05-11 ~03:04 — **FEAR geometry renders through Remix in correct world positions.** Two `rtx.conf` options (`leftHandedCoordinateSystem` + `capture.correctBakedTransforms`) resolved the "wrong positions/scale/orientation" symptom from the 02:33 run. New blocker: **all surfaces render as flat washed-out white/grey with most textures invisible.** Player weapon and a body model are visible but heavily desaturated; warehouse crates show only ghosting hints of their albedo. See the 03:04 TL;DR immediately below.
 **Workspace rule:** every build is auto-deployed into `FEAR Ultimate Shooter Edition/` via `deploy.ps1`. `deploy.ps1` now accepts `-GameDir <path>` for testing against alternate installs (e.g. CLEAN). The user does not copy files manually.
+
+---
+
+## TL;DR (2026-05-11 ~03:04 update — matrix-flow problem solved, textures/lighting now the blocker)
+
+**The matrix mystery is closed.** A per-draw game-matrix dump added to [diagnostics.cpp:240-249](src/comp/modules/diagnostics.cpp) (delay lowered from 180s → 60s in [remix-comp-proxy.ini:75](assets/remix-comp-proxy.ini)) revealed that across all 60 captured draws:
+
+- `SetTransform(D3DTS_WORLDMATRIX(0))` = **identity**, every draw
+- `SetTransform(D3DTS_VIEW)` = real camera view; 6 unique values across 3 frames (main camera + a shadow/reflection sub-camera per frame)
+- `SetTransform(D3DTS_PROJECTION)` = real perspective matrix, with `znear` varying per pass (skybox passes get `znear=-0.01`, world geometry `znear=-4.3`)
+- Vertex positions in the buffers are already in **world space** (e.g. DIP #9 `pos=(26116.21, -1289.39, -13774.00)` — that's level world coords, not object-space)
+
+So FEAR's actual world transform is **baked into the vertex stream**, and the engine passes identity to D3D9's FFP world matrix. This is the exact pattern that the Remix runtime documents as a "baked transforms" case ([RtxOptions.md](https://github.com/NVIDIAGameWorks/dxvk-remix/blob/main/RtxOptions.md)): *"individually captured meshes appear to be way off in the middle of nowhere OR instanced meshes appear to all have identity xform matrices, enabling will attempt to correct this."* That description matches our capture exactly — the 02:32 USD has 130 mesh files all carrying world-space vertex positions with no per-mesh transforms.
+
+**Two `rtx.conf` settings added to fix it** ([rtx.conf](../../FEAR%20Ultimate%20Shooter%20Edition/rtx.conf) on dirty install and `a:\…\FEAR Ultimate Shooter EditionCLEAN\rtx.conf` on CLEAN):
+
+```
+rtx.leftHandedCoordinateSystem = True      # LithTech Jupiter EX is left-handed; Remix defaults to right-handed
+rtx.capture.correctBakedTransforms = True  # derive per-mesh transforms from world-space vertex AABBs
+```
+
+After the 03:03 relaunch on CLEAN, the warehouse scene rendered with **geometry in plausibly correct positions and orientations** (visible: a corridor, stacked crates with vestigial "PACIFIC RIM" lettering, a dead body on the floor, the player's weapon at the bottom of the frame, an arch+door at the end of the corridor with a glowing red iris/reticle target overlay). No mirroring, no origin pile-up. The matrix-flow problem from 02:33 is functionally solved.
+
+**Remaining blocker — surfaces render as washed-out white:** the floor, walls, crates, weapon, and body all appear in low-saturation light grey/white. A faint texture signal is visible on the gun (metal sheen), the body (skin tone hints), and the crate labels (just barely readable). Hypotheses to test next session:
+
+1. **FFP texture stages aren't reaching Remix's material pipeline.** Our [`ffp_state::setup_texture_stages` in `ffp_state.cpp:441-465`](src/shared/common/ffp_state.cpp#L441) sets stage 0 to `SELECTARG1 + D3DTA_TEXTURE` and disables stages 1-7. That works under system d3d9 FFP, but Remix may be sampling a different stage or expect a specific texcoord index that we're not delivering. The 02:32 capture's `materials/` folder has 130+ `.mdl` files — Remix DID extract material hashes — but the runtime may be rendering with the fallback `AperturePBR_Model.mdl` (the 5 generic AperturePBR_*.mdl files in `materials/`) for all draws instead of the per-mesh ones.
+2. **Path-traced lighting is fully blowing out the scene.** No FEAR lights are being recognized; ambient may be at 1.0; the path tracer's exposure may be way too bright. Need to open the Remix UI (Alt+X — the "Welcome to RTX Remix. Use ALT,X" banner is visible in the screenshot) and check `rtx.tonemap.exposure`, `rtx.fallbackLightMode`, and the per-mesh material assignment.
+3. **`rtx.skyBoxTextures = 0x7120A631D68D88EE`** (an existing line in rtx.conf, predating this session) may be claiming a non-sky texture as skybox, which Remix replaces with environment lighting that washes everything to white. Worth testing with this line commented out.
+4. **Albedo stage might be wrong.** [`AlbedoStage=0`](assets/remix-comp-proxy.ini#L48) currently. The 02:32 diag log shows FEAR binds 8 textures per draw (`tex0..tex7`); under Remix the per-stage binding may have shifted vs system d3d9. Worth iterating `AlbedoStage=1..7` to find which stage holds the diffuse.
+
+**No `d3d9_remix.dll+0xf0cc` crash this session** — FEAR exited cleanly at 03:01:35 after a manual close, and at 03:03 ran without issue until manual close again. The crash from the 02:33 session has not reproduced in two consecutive launches with the new rtx.conf, but the runtime was also shorter (~55s and ~60s respectively); the prior crash was at +196s. Stability is now an *open* question, not a confirmed blocker.
+
+**Captured Remix data from the 02:32 baseline (pre-rtx.conf-fix) lives at:**
+
+```text
+a:\SteamLibrary\steamapps\common\FEAR Ultimate Shooter EditionCLEAN\rtx-remix\captures\
+  capture_2026-05-11_02-32-01.usd     ← 55 KB scene root (binary USDC)
+  meshes/                              ← 130 mesh_XXXXXXXXXXXXXXXX.usd files
+  materials/                           ← 130 mat_XXX.usd + 5 AperturePBR_*.mdl
+  textures/                            ← 10 MB of .dds extracts
+  skeletons/                           ← empty (no skinning, expected)
+  thumbs/
+```
+
+A follow-up capture with the rtx.conf fix in place is the obvious next data point but was not taken this session.
+
+**Diagnostic log with the matrix dump (the key evidence for the diagnosis):**
+
+```text
+a:\…\EditionCLEAN\rtx_comp\diagnostics_baseline_20260511_030040.log  (392 KB, 60 DIPs across 3 frames)
+```
+
+Sample for DIP #2 (a world-geometry draw):
+
+```text
+DIP #2  decl=… numVerts=8 stride=60 [POSITION/COLOR/TEXCOORD/NORMAL/TANGENT/BINORMAL]
+  vtx0 pos: -2899.821045, -904.288696, -3115.251221   ← world-space
+  game_WORLD:                                          ← identity
+    row0: 1, 0, 0, 0
+    row1: 0, 1, 0, 0
+    row2: 0, 0, 1, 0
+    row3: 0, 0, 0, 1
+  game_VIEW:                                           ← real camera matrix
+    row0: 0.479, -0.456, -0.750, 0
+    row1: 0.007,  0.857, -0.516, 0
+    row2: 0.878,  0.242,  0.414, 0
+    row3: 4031.624, 524.686, -1078.150, 1
+  game_PROJ:                                           ← real perspective
+    row0: 0.803, 0, 0, 0
+    row1: 0, 1.433, 0, 0
+    row2: 0, -0.004, 1, 1
+    row3: 0, 0, -0.010, 0
+```
+
+**Filesystem changes this session:**
+
+- Added per-draw `game_WORLD/VIEW/PROJ` dump to [`diagnostics.cpp:240-249`](src/comp/modules/diagnostics.cpp#L240) (logged for first 20 draws per captured frame). Required new accessors in [`ffp_state.hpp:87-89`](src/shared/common/ffp_state.hpp#L87) (`game_view()`, `game_proj()`, `game_world()`).
+- Dropped `[Diagnostics] DelayMs` from 180000 → 60000 in [`assets/remix-comp-proxy.ini`](assets/remix-comp-proxy.ini#L75). Restore to 180000 once stability is reconfirmed.
+- Added [`FEAR Ultimate Shooter Edition/rtx.conf`](../../FEAR%20Ultimate%20Shooter%20Edition/rtx.conf) (the dirty install had none until now) with the same handedness + bakedTransforms fix as CLEAN.
+- Updated existing CLEAN `a:\…\rtx.conf` with the same two lines plus explanatory comments. Backup at `rtx_pre_handedness_20260511_030013.conf.bak`.
+
+**Next session — three concrete tasks in order:**
+
+1. Take a fresh Remix capture (F11 → Capture in the Remix UI, or Insert via NvRemixLauncher32) with the rtx.conf fix active and diff the `meshes/<hash>.usd` content against the 02:32 baseline. Specifically check whether `xformOp:transform` is now non-identity for the mesh instances.
+2. Open Remix UI (Alt+X) in-game and inspect `rtx.tonemap.exposure`, `rtx.fallbackLightMode`, per-mesh material assignment. If everything is rendering with `AperturePBR_Model.mdl` (the generic fallback), the FFP-stage-0 SELECTARG1 path may not be tagged correctly for Remix's material capture.
+3. Iterate `[FFP] AlbedoStage` 0 → 1 → 2 (rebuild + redeploy each time, fast cycle) and observe whether textures snap into focus on any stage. The 02:32 diag log shows 8 textures bound per draw — one of them is the diffuse, but FEAR's pixel shader composes them, and our SELECTARG1 only takes one.
 
 ---
 

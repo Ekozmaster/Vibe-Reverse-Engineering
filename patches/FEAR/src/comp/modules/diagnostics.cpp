@@ -236,6 +236,17 @@ namespace comp
 			if (shared::common::ffp_state::mat4_is_interesting(&vs[20*4]))    log_matrix("    c20-c23", &vs[20*4]);
 		}
 
+		// Log game-supplied SetTransform matrices (the actual W/V/P fed to Remix).
+		// Wider draw_count range than VS const dump since these are the matrices
+		// that drive the final Remix transform — we want to see how they evolve
+		// across many draws (per-object World vs static View/Proj).
+		if (cat_vs_constants && draw_count <= 20)
+		{
+			if (ffp.game_world_valid()) log_matrix("    game_WORLD", ffp.game_world());
+			if (ffp.game_view_valid())  log_matrix("    game_VIEW",  ffp.game_view());
+			if (ffp.game_proj_valid())  log_matrix("    game_PROJ",  ffp.game_proj());
+		}
+
 		// Track unique textures per stage
 		if (cat_textures)
 			track_unique_textures();

@@ -83,6 +83,10 @@ namespace shared::common
 		bool game_proj_valid() const  { return game_proj_valid_; }
 		bool game_world_valid() const { return game_world_valid_; }
 
+		const float* game_view() const  { return game_view_; }
+		const float* game_proj() const  { return game_proj_; }
+		const float* game_world() const { return game_world_; }
+
 		// --- Diagnostic data access ---
 
 		const float* vs_const_data() const { return vs_const_; }
