@@ -1,6 +1,6 @@
 ---
 name: dx9-ffp-port
-description: DX9 FFP Proxy -- Game Porting. TRIGGER when: user mentions porting a game for RTX Remix, working on renderer.cpp / ffp_state / remix-comp-proxy.ini / draw routing / VS constants / vertex declarations / matrix mapping / skinning, building or deploying a remix-comp-proxy patch, or diagnosing rendering issues in a patched game (white geometry, missing objects, wrong transforms, ImGui F4, diagnostics.log). Covers full workflow: static analysis, VS constant discovery, draw routing, INI config, build/deploy, pitfall diagnosis.
+description: Use when porting a game for RTX Remix or to the fixed-function pipeline, working on renderer.cpp / ffp_state / remix-comp-proxy.ini / draw routing / VS constants / vertex declarations / matrix mapping / skinning, building or deploying a remix-comp-proxy patch, or diagnosing rendering issues in a patched game (white geometry, missing objects, wrong transforms, ImGui F4, diagnostics.log).
 ---
 
 # DX9 FFP Proxy -- Game Porting

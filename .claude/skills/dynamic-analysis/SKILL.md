@@ -1,11 +1,11 @@
 ---
 name: dynamic-analysis
-description: Frida-based live process analysis toolkit for reverse engineering. Use when attaching to a running process, setting breakpoints, tracing functions, collecting execution data, inspecting registers/memory/stack at runtime, stepping through code, patching live memory, analyzing JSONL trace dumps, or performing any dynamic analysis task. Provides blocking breakpoints, non-blocking function tracing, Stalker-based instruction recording, interval-aware data collection, offline aggregation, and module enumeration.
+description: Use when attaching to or spawning a process for live analysis, setting breakpoints, tracing functions, collecting execution data, inspecting registers/memory/stack at runtime, stepping through code, patching live memory, catching who writes to an address, counting D3D9 draw calls, sending keystrokes or clicks to a game window, analyzing JSONL trace dumps, or performing any dynamic analysis task.
 ---
 
 # Dynamic Analysis with livetools
 
-For DX9 FFP proxy porting and RTX Remix compatibility, see also: @dx9-ffp-port
+For DX9 FFP proxy porting and RTX Remix compatibility, invoke the `dx9-ffp-port` skill.
 
 A live analysis toolkit for running processes. Attach, trace functions, collect data, inspect state, step through code, patch memory, analyze offline -- composable tools that chain naturally for any RE scenario.
 
@@ -54,10 +54,35 @@ python -m livetools resume                    # unfreeze target
 ### Patch + Scan (anytime)
 ```
 python -m livetools mem write <addr> <hex>    # write bytes to live memory
+python -m livetools mem alloc <size>          # allocate rwx memory in target (for code caves)
 python -m livetools scan <pattern> --range START:SIZE
 ```
 
-### Non-blocking Tracing (NEW)
+### Memory Write Watchpoint
+```
+python -m livetools memwatch start <addr> [--size N] [--max-hits N]   # catch who writes (IP + backtrace per hit)
+python -m livetools memwatch read             # show captured hits
+python -m livetools memwatch stop
+```
+
+### D3D9 Draw Counter
+```
+python -m livetools dipcnt on <dev_ptr>       # hook DrawIndexedPrimitive via global IDirect3DDevice9* address
+python -m livetools dipcnt read               # current count + delta since last read
+python -m livetools dipcnt callers [N]        # sample N DIP calls, histogram return addresses (default 200)
+python -m livetools dipcnt off
+```
+
+### Game Window Input (no Frida, no focus steal)
+```
+python -m livetools gamectl --exe <game.exe> info
+python -m livetools gamectl --exe <game.exe> key RETURN
+python -m livetools gamectl --exe <game.exe> keys "DOWN DOWN RETURN WAIT:1000 RETURN"
+python -m livetools gamectl --exe <game.exe> click <x> <y>
+python -m livetools gamectl --exe <game.exe> macro <name> --macro-file patches/<game>/macros.json
+```
+
+### Non-blocking Tracing
 ```
 python -m livetools trace <addr> [--count N] [--read SPEC] [--read-leave SPEC] [--filter EXPR] [--timeout T] [--output FILE]
 python -m livetools steptrace <addr> [--max-insn N] [--call-depth D] [--detail LEVEL] [--timeout T] [--output FILE]
@@ -183,10 +208,58 @@ Output: JSONL in `patches/<exe_name>/traces/` by default (gitignored).
 ```bash
 python -m livetools modules
 python -m livetools modules --filter kernel
-python -m livetools modules --filter kernel
 ```
 
 Returns name, base address, size, and full path for every loaded module. Essential for finding DLL bases for vtable hooks.
+
+### memwatch -- Hardware memory write watchpoint
+
+Uses Frida's MemoryAccessMonitor to catch writes to an address range, capturing the writing instruction pointer and a backtrace per hit. The runtime complement to static `datarefs.py` — catches writes through pointers computed at runtime.
+
+```bash
+python -m livetools memwatch start 0x7A0000 --size 48 --max-hits 20
+python -m livetools memwatch read
+python -m livetools memwatch stop
+```
+
+One active watchpoint at a time. Auto-stops after `--max-hits` (default 20).
+
+### dipcnt -- D3D9 DrawIndexedPrimitive counter
+
+Hooks DIP through the device vtable, given the address of the game's global `IDirect3DDevice9*` pointer. Use to measure draw call volume or find render-loop callers without a full trace.
+
+```bash
+python -m livetools dipcnt on 0x7C5548     # address of the global device pointer
+python -m livetools dipcnt read            # count + delta since last read
+python -m livetools dipcnt callers 200     # sample 200 calls, histogram return addresses
+python -m livetools dipcnt off
+```
+
+`callers` is the fast way to locate the main render loop: the dominant return address is the draw dispatcher.
+
+### gamectl -- Send input to the game window
+
+Posts WM_KEYDOWN/WM_KEYUP/clicks directly to the target window handle — no Frida, no focus stealing, works with the game in the background. Use to navigate menus or trigger in-game actions during long traces.
+
+```bash
+python -m livetools gamectl --exe game.exe info                      # show hwnd, title, pid
+python -m livetools gamectl --exe game.exe key RETURN [--hold-ms 50]
+python -m livetools gamectl --exe game.exe keys "DOWN DOWN RETURN WAIT:1000 RETURN" [--delay-ms 200]
+python -m livetools gamectl --exe game.exe click 400 300             # client-area coordinates
+python -m livetools gamectl --exe game.exe macro navigate_menu --macro-file patches/<game>/macros.json
+```
+
+Key names: `RETURN`, `ESCAPE`, `SPACE`, arrows, `TAB`, `F1`-`F12`, `A`-`Z`, `0`-`9`, `NUMPAD0`-`9`, `SHIFT`, `CTRL`, `ALT`. Sequence tokens: `WAIT:N` (pause N ms), `HOLD:KEY:N` (hold key N ms). Window lookup: `--exe` (preferred) or `--window <title substring>`.
+
+### vishook -- Selective visibility override via code cave
+
+Patches a jmp trampoline to route through a code cave that forces a "visible" result (st0 = 102400.0, optional byte out = 1) for callers at/above a threshold address, while callers below it run the original function. Designed for `__thiscall` visibility checks returning float on st(0) with `ret 0x10`.
+
+```bash
+python -m livetools vishook on <jmp_site> <orig_target> [--threshold 500000]
+python -m livetools vishook stats     # override vs passthrough call counts
+python -m livetools vishook off       # restore original jmp
+```
 
 ### analyze -- Offline JSONL aggregation (no Frida needed)
 

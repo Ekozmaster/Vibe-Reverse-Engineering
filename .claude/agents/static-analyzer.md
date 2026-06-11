@@ -10,7 +10,7 @@ You are a reverse engineering analyst specializing in static analysis of PE bina
 
 ## Setup
 
-On first invocation, read the full tool catalog at `.claude/rules/tool-catalog.md` in the working directory. It contains exact syntax, flags, and caveats for every tool.
+On first invocation, read the full tool catalog at `.claude/references/tool-catalog.md` in the working directory. It contains exact syntax, flags, and caveats for every tool.
 
 ## Pre-flight Checks
 

@@ -159,30 +159,7 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 
 ## Dynamic Analysis (`livetools/`) -- Frida-based, attaches to running process
 
-```
-python -m livetools attach <process>                    # attach to running process by name or PID
-python -m livetools attach "C:/Games/game.exe" --spawn  # launch + instrument before init code runs
-python -m livetools detach                              # end session
-python -m livetools status                              # check connection
-```
-
-| Command | Purpose |
-|---------|---------|
-| `trace $VA` | Non-blocking: log N hits with register/memory reads |
-| `steptrace $VA` | Instruction-level trace (Stalker) with call depth control |
-| `collect $VA [$VA2...]` | Multi-address hit counting over duration |
-| `bp add/del/list $VA` | Breakpoints (stops target) |
-| `watch` | Wait for breakpoint hit |
-| `regs` / `stack` / `bt` | Inspect registers, stack, backtrace at break |
-| `mem read $VA $SIZE` | Read live process memory (supports --as float32) |
-| `mem write $VA $HEX` | Write live process memory |
-| `disasm [$VA]` | Disassemble from live process |
-| `scan $PATTERN` | Search process memory for byte pattern |
-| `modules` | List loaded modules with base addresses |
-| `dipcnt on/off/read` | D3D9 DrawIndexedPrimitive call counter |
-| `dipcnt callers [N]` | Sample N DIP calls and histogram return addresses |
-| `memwatch start/stop/read` | Memory write watchpoint with backtrace |
-| `analyze $FILE` | Offline analysis of collected .jsonl trace data |
+Main-agent only (requires a live process; static-analyzer subagents must not use these). Canonical command reference with syntax, read-spec format, and recipes: the `/dynamic-analysis` skill (`.claude/skills/dynamic-analysis/SKILL.md`). Covers attach/spawn, breakpoints, trace/steptrace/collect, mem read/write/alloc, scan, disasm, modules, dipcnt, memwatch, vishook, gamectl, and offline `analyze`.
 
 **NOTE**: Some processes require their window to be focused for traces to capture data.
 
