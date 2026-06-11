@@ -39,7 +39,7 @@ Each game's remix-comp-proxy folder is a C++20 compatibility mod based on remix-
 | `src/comp/modules/d3d9ex.hpp` | D3D9 hook declarations |
 | `src/comp/modules/skinning.cpp` | Skinning module (vertex expansion, bone upload, FFP blending) |
 | `src/comp/modules/skinning.hpp` | Skinning class interface |
-| `src/comp/modules/diagnostics.cpp` | Diagnostic logging to `ffp_proxy.log` |
+| `src/comp/modules/diagnostics.cpp` | Diagnostic logging to `rtx_comp/diagnostics.log` |
 | `src/comp/modules/diagnostics.hpp` | Diagnostics class interface |
 | `src/comp/modules/imgui.cpp` | ImGui debug overlay (F4 toggle) |
 | `src/shared/common/ffp_state.cpp` | FFP state tracker -- engage/disengage, matrix transforms, texture stages |
@@ -156,7 +156,7 @@ Deploy to game directory: `d3d9.dll` + `remix-comp-proxy.ini`. If using Remix, a
 
 ### Step 5: Diagnose with Log and ImGui
 
-The proxy writes `ffp_proxy.log` in the game directory. After a configurable delay (default 50 seconds via `[Diagnostics] DelayMs`), it logs frames of detailed draw call data:
+The proxy writes `rtx_comp/diagnostics.log` in the game directory. After a configurable delay (default 50 seconds via `[Diagnostics] DelayMs`), it logs frames of detailed draw call data:
 
 - **VS regs written**: shows which constant registers the game actually fills
 - **Vertex declarations**: what vertex elements each draw uses (POSITION, NORMAL, TEXCOORD, BLENDWEIGHT, etc.)

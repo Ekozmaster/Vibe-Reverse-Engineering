@@ -18,13 +18,7 @@ Shared tooling can be modified to improve the tools themselves — just not for 
 
 ## Delegation Rule
 
-**Never run static analysis tools directly.** Delegate to a `static-analyzer` subagent. Only exceptions — run these inline:
-- `sigdb.py identify` / `fingerprint` (single-function ID, <5s)
-- `context.py assemble` / `postprocess` (context gathering, <5s; use `--no-dataflow` on large functions)
-- `dataflow.py --constants` / `--slice` (single-function analysis, <5s)
-- `readmem.py` (single typed read from PE, <5s)
-- `asi_patcher.py build` (build step, not analysis)
-- `pyghidra_backend.py status` (project existence check, <1s)
+**Never run static analysis tools directly.** Delegate to a `static-analyzer` subagent. The only inline exceptions are the fast (<5s) commands in the "Run Directly" section of `.claude/rules/tool-dispatch.md` (auto-loaded below).
 
 If you're about to run a second retools command in the same turn, you should have delegated.
 
@@ -90,11 +84,7 @@ Each file reads as if it was always designed this way. Comments guide the next d
 
 ## DX9 FFP Porting
 
-When working on any of the following — invoke the **`dx9-ffp-port` skill** immediately before starting:
-- Editing `renderer.cpp`, `ffp_state.cpp`, `remix-comp-proxy.ini`, or draw routing logic
-- Porting a game for RTX Remix / fixed-function pipeline
-- Diagnosing VS constant registers, vertex declarations, matrix mapping, skinning
-- Building, deploying, or iterating on a remix-comp-proxy patch (`build.bat`, `diagnostics.log`, ImGui F4)
+Invoke the **`dx9-ffp-port` skill** before editing `renderer.cpp`, `ffp_state.cpp`, `remix-comp-proxy.ini`, or draw routing; porting a game for RTX Remix; diagnosing VS constants, vertex declarations, matrix mapping, or skinning; or building/deploying a remix-comp-proxy patch.
 
 ---
 

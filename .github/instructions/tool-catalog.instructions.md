@@ -4,7 +4,7 @@ applyTo: "retools/**,livetools/**,graphics/**,tools/**,patches/**"
 
 # Tool Catalog
 
-**BEFORE FIRST USE**: Run `python verify_install.py` from the repo root. Do NOT proceed with any tool until every check passes. Common failures: missing `git lfs pull` (LFS pointer stubs instead of binaries), missing `pip install -r requirements.txt`.
+**BEFORE FIRST USE**: Run `python verify_install.py` from the repo root. Do NOT proceed with any tool until every required check passes. If pyghidra/Ghidra shows as WARN, run `python verify_install.py --setup` to auto-download JDK 21 + Ghidra + pyghidra. Common failures: missing `git lfs pull` (LFS pointer stubs instead of binaries), missing `pip install -r requirements.txt`.
 
 All tools work on PE binaries (`.exe` and `.dll`). `$B` = path to binary, `$VA` = hex address, `$D` = path to minidump `.dmp` file. Check tools help command for more info on usage.
 Always consult this catalog before making any move to take the best decision on what to use with best bang for your buck.
@@ -14,26 +14,32 @@ IMPORTANT: Collecting MORE INFORMATION per command run is encouraged over minor 
 
 ## Decision Guide
 
-### Run Directly (fast, <5s)
+### Run Directly (main agent)
 
-These are fast and can be run inline without delegation:
+These are fast (<5s) and allowed inline:
 
 - "What compiler built this?" → `python -m retools.sigdb fingerprint $B`
 - "Is this a known library function?" → `python -m retools.sigdb identify $B $VA`
 - "Get full context before reasoning about a function" → `python -m retools.context assemble $B $VA --project $P`
 - "Clean up decompiler output with known names" → pipe through `python -m retools.context postprocess`
 - "Read a typed value from the PE file" → `python -m retools.readmem $B $VA $TYPE`
+- "What constant flows into this register?" → `python -m retools.dataflow $B $VA --constants`
+- "Trace where this value comes from" → `python -m retools.dataflow $B $VA --slice TARGET_VA:REG`
 - "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json`
+- "Does a Ghidra project exist for this binary?" → `python retools/pyghidra_backend.py status $B --project $P`
 
-### Delegate to the static-analyzer agent
+### Delegate to `static-analyzer` subagent
 
-Everything else. Specify WHAT you need, not HOW to run it — the agent has the full tool catalog.
+Everything else. Tell the subagent WHAT you need, not HOW to run it — it has the full tool catalog.
 
 **D3D9-specific questions?** Check the DX analysis scripts section below first — they're faster and more targeted than general retools for D3D API usage, device calls, shader constants, and vertex formats.
 
-- "What does this function do?" → decompile + callgraph + xrefs
+- "What does this function do?" → decompile + callgraph + xrefs + dataflow --constants
 - "Who calls this function?" → xrefs or callgraph --up
-- "What does this function call?" → callgraph --down
+- "What does this function call?" → callgraph --down (add --indirect for vtable calls)
+- "Who calls this virtual method?" → xrefs --indirect + filter by vtable slot offset
+- "What constant reaches this call?" → dataflow --constants or --slice VA:REG
+- "Resolve a switch/jump table" → cfg (auto-resolves MSVC switch patterns)
 - "Find a string and who uses it" → string search with xrefs
 - "Where is this global read/written?" → datarefs
 - "Where is struct field +0x54 used?" → structrefs
@@ -43,18 +49,19 @@ Everything else. Specify WHAT you need, not HOW to run it — the agent has the 
 - "Find instructions using a specific constant" → instruction search
 - "What crashed and what was the error message?" → dump diagnosis + throwmap
 - "Map all throw sites to error strings" → throwmap list
-- "First time analyzing a binary?" → bootstrap (2-5 min)
+- "First time analyzing a binary?" → bootstrap (2-5 min) + pyghidra analyze (5-15 min) in parallel
 - "Bulk signature scan" → sigdb scan (1-3 min)
 - Any combination of the above
 
-### Live tools (requires attached process)
+### Live tools (main agent, requires attached process)
 
 - "Is this function reached at runtime?" → `livetools trace` or `collect`
 - "What are the actual register values?" → `livetools trace --read` or `bp` + `regs`
 - "How many draw calls happen?" → `livetools dipcnt`
 - "Who writes to this memory address?" → `livetools memwatch`
+- "Send keys/clicks to the game window?" → `livetools gamectl`
 
-### DX analysis scripts (fast first-pass)
+### DX analysis scripts (main agent, fast first-pass)
 
 These are targeted D3D9 scanners under `rtx_remix_tools/dx/scripts/`. They run in seconds and surface D3D-specific patterns that general-purpose retools would take longer to find. **Use these BEFORE retools** when the question is about D3D9 API usage, device calls, shaders, or vertex formats. Run as `python rtx_remix_tools/dx/scripts/<script> <args>`.
 
@@ -79,10 +86,10 @@ These are targeted D3D9 scanners under `rtx_remix_tools/dx/scripts/`. They run i
 
 These are fast first-pass scanners — they surface candidate addresses. Follow up with `retools` (decompiler, xrefs) and `livetools` (trace, bp) for deep analysis of the addresses they find.
 
-### dx9tracer (capture inline, delegate analysis)
+### dx9tracer (main agent for capture, delegate analysis)
 
-- "Trigger a frame capture" → `python -m graphics.directx.dx9.tracer trigger`
-- "Analyze captured frames" → delegate to the static-analyzer agent: summary, render-passes, shader-map, etc.
+- "Trigger a frame capture" → main agent: `python -m graphics.directx.dx9.tracer trigger`
+- "Analyze captured frames" → delegate to `static-analyzer`: summary, render-passes, shader-map, etc.
 
 ## Static Analysis (`retools/`) -- offline, on-disk PE files
 
@@ -91,11 +98,15 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 | Tool | Purpose | Example |
 |------|---------|---------|
 | `disasm.py $B $VA` | Disassemble N instructions at VA | `disasm.py binary.exe 0x401000 -n 50` |
-| `decompiler.py $B $VA --types` | **Ghidra-quality C decompilation** with knowledge base | `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h` |
+| `decompiler.py $B $VA --types --project` | **C decompilation** -- pyghidra (if project exists) or r2ghidra | `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h --project patches/proj` |
+| `pyghidra_backend.py analyze $B --project $P` | **Full Ghidra analysis** -- one-time, saves reusable project | `pyghidra_backend.py analyze game.exe --project patches/MyGame` |
+| `pyghidra_backend.py decompile $B $VA --project $P` | Decompile via saved Ghidra project | `pyghidra_backend.py decompile game.exe 0x401000 --project patches/MyGame` |
+| `pyghidra_backend.py status $B --project $P` | Check if Ghidra project exists | `pyghidra_backend.py status game.exe --project patches/MyGame` |
 | `funcinfo.py $B $VA` | Find function start/end, rets, calling convention, callees | `funcinfo.py binary.exe 0x401000` |
-| `cfg.py $B $VA` | Control flow graph (basic blocks + edges, text or mermaid) | `cfg.py binary.exe 0x401000 --format mermaid` |
-| `callgraph.py $B $VA` | Caller/callee tree (multi-level, --up/--down N) | `callgraph.py binary.exe 0x401000 --up 3` |
-| `xrefs.py $B $VA` | Find all calls/jumps TO an address | `xrefs.py binary.exe 0x401000 -t call` |
+| `cfg.py $B $VA` | Control flow graph (basic blocks + edges, text or mermaid). Resolves MSVC switch/jump tables automatically. `--switch-details` shows table info | `cfg.py binary.exe 0x401000 --format mermaid` |
+| `callgraph.py $B $VA` | Caller/callee tree (multi-level, --up/--down N). `--indirect` adds vtable/fptr calls to --down trees | `callgraph.py binary.exe 0x401000 --down 2 --indirect` |
+| `xrefs.py $B $VA` | Find all calls/jumps TO an address. `--indirect` also scans for `call [reg+offset]`, `call [reg]`, `call [addr]` | `xrefs.py binary.exe 0x401000 --indirect` |
+| `dataflow.py $B $VA` | Forward constant propagation (`--constants`) or backward register slice (`--slice VA:REG`) within a function | `dataflow.py binary.exe 0x401000 --constants` |
 | `datarefs.py $B $VA` | Find instructions that reference a global address (mem deref + `--imm` for push/mov constants) | `datarefs.py binary.exe 0x7A0000 --imm` |
 | `structrefs.py $B $OFF` | Find all `[reg+offset]` accesses (struct field usage) | `structrefs.py binary.exe 0x54 --base esi` |
 | `structrefs.py $B --aggregate` | Reconstruct C struct from all field accesses in a function | `structrefs.py binary.exe --aggregate --fn 0x401000 --base esi` |
@@ -116,7 +127,7 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 | `sigdb.py scan $B` | Bulk signature scan against DB | `sigdb.py scan game.exe` |
 | `sigdb.py identify $B $VA` | Single function signature lookup (multi-tier) | `sigdb.py identify game.exe 0x401200` |
 | `sigdb.py fingerprint $B` | Identify compiler version (Rich header + markers + imports) | `sigdb.py fingerprint game.exe` |
-| `context.py assemble $B $VA --project $P` | Gather full analysis context for a function. Includes forward constant propagation by default (`--no-dataflow` to skip on large functions) | `context.py assemble game.exe 0x401500 --project Warband` |
+| `context.py assemble $B $VA --project $P` | Gather full analysis context for a function. Includes forward constant propagation by default (`--no-dataflow` to skip) | `context.py assemble game.exe 0x401500 --project Warband` |
 | `context.py postprocess $B $VA --project $P` | Mechanically rename/annotate decompiler output (pipe) | `decompiler.py ... \| context.py postprocess ...` |
 | `sigdb.py build $MANIFEST` | Build/extend signature DB from manifest | `sigdb.py build sources.json` |
 | `sigdb.py pull` | Download signature DB from HuggingFace | `sigdb.py pull` or `sigdb.py pull --sources` |
@@ -151,9 +162,10 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 ## Dynamic Analysis (`livetools/`) -- Frida-based, attaches to running process
 
 ```
-python -m livetools attach <process>    # start session
-python -m livetools detach              # end session
-python -m livetools status              # check connection
+python -m livetools attach <process>                    # attach to running process by name or PID
+python -m livetools attach "C:/Games/game.exe" --spawn  # launch + instrument before init code runs
+python -m livetools detach                              # end session
+python -m livetools status                              # check connection
 ```
 
 | Command | Purpose |
@@ -166,12 +178,15 @@ python -m livetools status              # check connection
 | `regs` / `stack` / `bt` | Inspect registers, stack, backtrace at break |
 | `mem read $VA $SIZE` | Read live process memory (supports --as float32) |
 | `mem write $VA $HEX` | Write live process memory |
+| `mem alloc $SIZE` | Allocate rwx memory in target (for code caves) |
 | `disasm [$VA]` | Disassemble from live process |
 | `scan $PATTERN` | Search process memory for byte pattern |
 | `modules` | List loaded modules with base addresses |
 | `dipcnt on/off/read` | D3D9 DrawIndexedPrimitive call counter |
 | `dipcnt callers [N]` | Sample N DIP calls and histogram return addresses |
 | `memwatch start/stop/read` | Memory write watchpoint with backtrace |
+| `vishook on/off/stats` | Selective visibility override via code cave (forces visible above caller threshold) |
+| `gamectl key/keys/click/macro` | Send keys/clicks to game window (no Frida, no focus steal) |
 | `analyze $FILE` | Offline analysis of collected .jsonl trace data |
 
 **NOTE**: Some processes require their window to be focused for traces to capture data.
@@ -237,9 +252,19 @@ Targeted first-pass scanners for D3D9 games. Run from repo root. Output is candi
 |--------|-----------------|---------|
 | `find_d3d_calls.py $B` | D3D9/D3DX imports and call sites | `python rtx_remix_tools/dx/scripts/find_d3d_calls.py game.exe` |
 | `find_vs_constants.py $B` | `SetVertexShaderConstantF` call sites with register/count args | `python rtx_remix_tools/dx/scripts/find_vs_constants.py game.exe` |
+| `find_ps_constants.py $B` | `SetPixelShaderConstantF/I/B` call sites with register/count args | `python rtx_remix_tools/dx/scripts/find_ps_constants.py game.exe` |
 | `find_device_calls.py $B` | Device vtable call patterns and device pointer refs | `python rtx_remix_tools/dx/scripts/find_device_calls.py game.exe` |
+| `find_render_states.py $B` | SetRenderState arguments decoded by category (culling, blending, depth, fog) | `python rtx_remix_tools/dx/scripts/find_render_states.py game.exe` |
+| `find_texture_ops.py $B` | Texture pipeline: SetTexture stages, TSS color/alpha ops, sampler states | `python rtx_remix_tools/dx/scripts/find_texture_ops.py game.exe` |
+| `find_transforms.py $B` | SetTransform/MultiplyTransform types (World, View, Projection, Texture) | `python rtx_remix_tools/dx/scripts/find_transforms.py game.exe` |
+| `find_surface_formats.py $B` | CreateTexture/RenderTarget/DepthStencil D3DFMT extraction | `python rtx_remix_tools/dx/scripts/find_surface_formats.py game.exe` |
+| `find_stateblocks.py $B` | State block creation, recording, and apply patterns | `python rtx_remix_tools/dx/scripts/find_stateblocks.py game.exe` |
+| `decode_fvf.py $B` | FVF bitfield decode from SetFVF calls (or `--decode 0xNNN` manual) | `python rtx_remix_tools/dx/scripts/decode_fvf.py game.exe` |
 | `find_vtable_calls.py $B` | D3DX constant table usage and D3D9 vtable calls | `python rtx_remix_tools/dx/scripts/find_vtable_calls.py game.exe` |
 | `decode_vtx_decls.py $B --scan` | Vertex declaration formats (BLENDWEIGHT/BLENDINDICES = skinning) | `python rtx_remix_tools/dx/scripts/decode_vtx_decls.py game.exe --scan` |
+| `find_shader_bytecode.py $B` | Embedded shader bytecode extraction (version, size, `--dump-dir`) | `python rtx_remix_tools/dx/scripts/find_shader_bytecode.py game.exe` |
+| `classify_draws.py $B` | Draw call classification by state context (FFP/shader/hybrid %) | `python rtx_remix_tools/dx/scripts/classify_draws.py game.exe` |
+| `find_matrix_registers.py $B` | Identify View/Proj/World registers (CTAB + frequency + layout suggestion) | `python rtx_remix_tools/dx/scripts/find_matrix_registers.py game.exe` |
 | `find_skinning.py $B` | Consolidated skinning analysis: skinned decls, bone palettes, blend states, suggested INI | `python rtx_remix_tools/dx/scripts/find_skinning.py game.exe` |
 | `find_blend_states.py $B` | D3DRS_VERTEXBLEND + INDEXEDVERTEXBLENDENABLE + WORLDMATRIX transforms | `python rtx_remix_tools/dx/scripts/find_blend_states.py game.exe` |
 | `scan_d3d_region.py $B 0xSTART 0xEND` | Map all D3D9 vtable calls in a code region | `python rtx_remix_tools/dx/scripts/scan_d3d_region.py game.exe 0x401000 0x500000` |
@@ -289,6 +314,14 @@ Minidumps vary in how much data they capture depending on `MiniDumpWriteDump` fl
 ### `datarefs.py` / `search.py strings --xrefs` -- addressing modes
 
 These tools find references via absolute memory operands, immediate values (with `--imm` flag), and RIP-relative addressing. If you suspect a reference exists but the tool doesn't find it, the address might be computed at runtime. Try `search.py pattern` with the address bytes directly, or use `livetools memwatch`.
+
+### `pyghidra_backend.py` -- requires Ghidra installation
+
+Requires Ghidra 11.x+ installed and `GHIDRA_INSTALL_DIR` environment variable set. **Optional** -- the toolkit works without it (r2ghidra remains the fallback).
+
+**Disk usage**: Ghidra projects are ~10-20x the binary size. A 30MB game exe produces a ~300-600MB `.rep/` directory under `patches/<project>/ghidra/`. This directory is already covered by `.gitignore` (the `patches/` exclusion).
+
+**First-time analysis** takes 5-15 minutes depending on binary size. Subsequent decompilation from the saved project is instant (<1s plus ~3s JVM startup per process).
 
 ### `livetools` -- static vs runtime addresses
 

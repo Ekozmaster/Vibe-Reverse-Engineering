@@ -27,6 +27,7 @@ These are fast (<5s) and allowed inline:
 - "What constant flows into this register?" → `python -m retools.dataflow $B $VA --constants`
 - "Trace where this value comes from" → `python -m retools.dataflow $B $VA --slice TARGET_VA:REG`
 - "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json`
+- "Does a Ghidra project exist for this binary?" → `python retools/pyghidra_backend.py status $B --project $P`
 
 ### Delegate to `static-analyzer` subagent
 
@@ -59,6 +60,7 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 - "What are the actual register values?" → `livetools trace --read` or `bp` + `regs`
 - "How many draw calls happen?" → `livetools dipcnt`
 - "Who writes to this memory address?" → `livetools memwatch`
+- "Send keys/clicks to the game window?" → `livetools gamectl`
 
 ### DX analysis scripts (main agent, fast first-pass)
 
@@ -177,12 +179,15 @@ python -m livetools status                              # check connection
 | `regs` / `stack` / `bt` | Inspect registers, stack, backtrace at break |
 | `mem read $VA $SIZE` | Read live process memory (supports --as float32) |
 | `mem write $VA $HEX` | Write live process memory |
+| `mem alloc $SIZE` | Allocate rwx memory in target (for code caves) |
 | `disasm [$VA]` | Disassemble from live process |
 | `scan $PATTERN` | Search process memory for byte pattern |
 | `modules` | List loaded modules with base addresses |
 | `dipcnt on/off/read` | D3D9 DrawIndexedPrimitive call counter |
 | `dipcnt callers [N]` | Sample N DIP calls and histogram return addresses |
 | `memwatch start/stop/read` | Memory write watchpoint with backtrace |
+| `vishook on/off/stats` | Selective visibility override via code cave (forces visible above caller threshold) |
+| `gamectl key/keys/click/macro` | Send keys/clicks to game window (no Frida, no focus steal) |
 | `analyze $FILE` | Offline analysis of collected .jsonl trace data |
 
 **NOTE**: Some processes require their window to be focused for traces to capture data.

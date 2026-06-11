@@ -1,6 +1,6 @@
 ---
 name: dx9-ffp-port
-description: DX9 FFP Proxy -- Game Porting. TRIGGER when: user mentions porting a game for RTX Remix, working on renderer.cpp / ffp_state / remix-comp-proxy.ini / draw routing / VS constants / vertex declarations / matrix mapping / skinning, building or deploying a remix-comp-proxy patch, or diagnosing rendering issues in a patched game (white geometry, missing objects, wrong transforms, ImGui F4, diagnostics.log). Covers full workflow: static analysis, VS constant discovery, draw routing, INI config, build/deploy, pitfall diagnosis.
+description: Use when porting a game for RTX Remix or to the fixed-function pipeline, working on renderer.cpp / ffp_state / remix-comp-proxy.ini / draw routing / VS constants / vertex declarations / matrix mapping / skinning, building or deploying a remix-comp-proxy patch, or diagnosing rendering issues in a patched game (white geometry, missing objects, wrong transforms, ImGui F4, diagnostics.log).
 ---
 
 # DX9 FFP Proxy -- Game Porting
@@ -37,7 +37,7 @@ Each game folder under `patches/<GameName>/` is a self-contained remix-comp-prox
    - Rigid 3D (has NORMAL) -> NULLs shaders, applies FFP transforms
 4. Routes `DrawPrimitive` via `renderer::on_draw_primitive`: world-space (has decl, no POSITIONT, not skinned) -> FFP; otherwise pass-through
 5. Applies captured matrices via `ffp_state::apply_transforms` -> `SetTransform`
-6. Sets up texture stages and lighting for FFP rendering
+6. Sets up texture stages and lighting for FFP rendering (stages 1-7 disabled to prevent stale auxiliary textures reaching Remix)
 7. Loads the real d3d9 chain (RTX Remix `d3d9_remix.dll` or system d3d9) via d3d9_proxy
 
 ## Codebase File Map
@@ -60,7 +60,7 @@ Each game folder under `patches/<GameName>/` is a self-contained remix-comp-prox
 | `src/comp/modules/imgui.cpp` | ImGui debug overlay (F4) with FFP tab |
 | `src/comp/game/game.cpp` | Per-game address init (patterns, hooks) |
 | `src/comp/game/game.hpp` | Per-game variables and function typedefs |
-| `remix-comp-proxy.ini` | Runtime config: albedo stage, skinning toggle, diagnostics, DLL chain |
+| `remix-comp-proxy.ini` (in `assets/`) | Runtime config: albedo stage, skinning toggle, diagnostics, DLL chain |
 | `build.bat` | Build script: outputs d3d9.dll proxy. `build.bat [release\|debug] [--name Name]` |
 
 **`rtx_remix_tools/dx/remix-comp-proxy/` is the TEMPLATE.** Each game gets a full copy under `patches/<GameName>/` — the entire folder is self-contained and can be distributed as a standalone repo. Edit `src/comp/` directly in the game's copy.
@@ -305,7 +305,20 @@ AND !ffp.cur_decl_has_pos_t() AND !ffp.cur_decl_is_skinned()?
 - **Everything is white/black**: Albedo texture is on stage 1+, not stage 0. Set `AlbedoStage` in `remix-comp-proxy.ini`, or trace `SetTexture` calls to find the correct stage.
 - **Some objects render, others don't**: Check whether missing geometry has NORMAL in its vertex decl. Check `ffp.view_proj_valid()` is true at draw time. DrawPrimitive routes on decl presence + no POSITIONT + not skinned.
 - **Skinned meshes invisible**: Set `[Skinning] Enabled=1` in `remix-comp-proxy.ini`. Check log for skinning errors. Verify `bone_start_reg` and `num_bones` are non-zero in the log.
+- **Bones mixed up between NPCs**: Stale WORLDMATRIX slots from a previous object. The game may need a game-specific reset hook at a per-object boundary -- see Skinning Stability below.
 - **Game crashes on startup**: Set `[Remix] Enabled=0` in `remix-comp-proxy.ini` to test without Remix. Check `WINDOW_CLASS_NAME` in `comp/main.cpp`.
 - **Geometry at origin / piled up**: World matrix register mapping wrong. Re-examine VS constant writes via `livetools trace` or DX9 tracer `--const-provenance`.
 - **World geometry shifts after skinned draws**: `WORLDMATRIX(0)` clobbered by bone[0]. The proxy tracks `world_dirty_` for re-application. If still broken, check for bone register overlap with world matrix range in `ffp_state.hpp`.
 - **ImGui overlay not appearing**: Press F4. Check that `WINDOW_CLASS_NAME` is correct and the window was found (console output). Check for DirectInput hook conflicts.
+
+### Skinning Stability: Finding Game-Specific Hook Points
+
+The proxy's generic heuristics handle most games. If bones still leak between objects, the game needs a hook at a per-object boundary function -- one that's called once per skinned object, before its bones are uploaded.
+
+**Finding the per-object function:**
+
+1. **Capture** 2+ frames with the D3D9 tracer while multiple skinned NPCs are on screen
+2. **Hotpaths**: `--hotpaths --resolve-addrs <game.exe>` -- look at callers of bone-range `SetVertexShaderConstantF` writes
+3. **Caller histogram**: `--callers SetVertexShaderConstantF` -- the function that appears N times per frame (N = number of skinned objects) is the per-object boundary
+4. **Live confirm**: `livetools trace <candidate_addr> --count 50` -- with 3 NPCs, expect ~3 hits/frame
+5. **Static context**: `callgraph.py --up` + `decompiler.py` on the caller -- confirm it loops over objects

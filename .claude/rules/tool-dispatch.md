@@ -18,6 +18,7 @@ Run all tools from repo root via `python -m <module>`. **ALWAYS pass `--types pa
 - `python -m retools.dataflow $B $VA --constants` — forward constant propagation
 - `python -m retools.dataflow $B $VA --slice TARGET_VA:REG` — backward register slice
 - `python -m retools.asi_patcher build spec.json` — build ASI patch DLL
+- `python retools/pyghidra_backend.py status $B --project $P` — Ghidra project existence check
 
 ## Delegate to `static-analyzer`
 
@@ -29,36 +30,22 @@ Everything else in `retools`. Tell it WHAT you need, not HOW. D3D9-specific ques
 
 ## Live tools (main agent, attached process)
 
+Full syntax and recipes: the `/dynamic-analysis` skill (canonical livetools reference).
+
 - `livetools attach <name_or_pid>` — attach to running process
 - `livetools attach <path> --spawn` — launch exe suspended, instrument, resume (catches init code)
-- `livetools trace` / `collect` — hit logging, register reads
+- `livetools trace` / `steptrace` / `collect` — hit logging, register reads, instruction traces
 - `livetools bp` / `watch` / `regs` / `stack` / `bt` — breakpoints + inspection
-- `livetools mem read/write` / `scan` — memory ops
-- `livetools dipcnt` / `memwatch` — D3D9 counters, write watchpoints
+- `livetools mem read/write/alloc` / `scan` — memory ops
+- `livetools dipcnt` / `memwatch` — D3D9 draw counters, write watchpoints
+- `livetools vishook` — selective visibility override via code cave
+- `livetools gamectl` — send keys/clicks to game window (no focus steal)
 - `livetools modules` — loaded module list
+- `livetools analyze <jsonl>` — offline trace aggregation
 
 ## DX analysis scripts (main agent, fast first-pass)
 
-Under `rtx_remix_tools/dx/scripts/`. Use BEFORE retools for D3D9 questions. Run as `python rtx_remix_tools/dx/scripts/<script> <args>`.
-
-- `find_d3d_calls.py $B` — D3D9/D3DX imports + call sites
-- `find_vs_constants.py $B` — SetVertexShaderConstantF sites with register/count
-- `find_ps_constants.py $B` — SetPixelShaderConstantF/I/B sites with register/count
-- `find_device_calls.py $B` — device vtable call patterns
-- `find_vtable_calls.py $B` — D3DX CTAB + D3D9 vtable calls
-- `find_render_states.py $B` — SetRenderState arguments with enum decoding
-- `find_texture_ops.py $B` — texture pipeline: stages, TSS ops, sampler states
-- `find_transforms.py $B` — SetTransform types (World, View, Projection, Texture)
-- `find_surface_formats.py $B` — CreateTexture/RT/DS format extraction
-- `find_stateblocks.py $B` — state block creation/recording/apply patterns
-- `decode_fvf.py $B` — FVF bitfield decode from SetFVF calls
-- `decode_vtx_decls.py $B --scan` — vertex declaration formats
-- `find_shader_bytecode.py $B` — embedded shader bytecode extraction
-- `classify_draws.py $B` — draw call classification (FFP/shader/hybrid)
-- `find_matrix_registers.py $B` — identify View/Proj/World matrix registers (CTAB + frequency)
-- `find_skinning.py $B` — consolidated skinning analysis (decls, bone palettes, blend states, INI suggestion)
-- `find_blend_states.py $B` — D3DRS_VERTEXBLEND / INDEXEDVERTEXBLENDENABLE + WORLDMATRIX transforms
-- `scan_d3d_region.py $B 0xSTART 0xEND` — D3D calls in code region
+Targeted D3D9 scanners under `rtx_remix_tools/dx/scripts/` — use BEFORE retools for D3D9 questions (imports, VS/PS constants, render states, texture pipeline, transforms, FVF/vertex decls, draw classification, matrix registers, skinning, shader bytecode). Run as `python rtx_remix_tools/dx/scripts/<script> $B`. Full script table with examples: `.claude/references/tool-catalog.md`.
 
 ## dx9tracer
 
