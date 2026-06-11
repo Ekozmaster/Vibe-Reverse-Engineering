@@ -256,7 +256,7 @@ Key names: `RETURN`, `ESCAPE`, `SPACE`, arrows, `TAB`, `F1`-`F12`, `A`-`Z`, `0`-
 
 ### vishook -- Selective visibility override via code cave
 
-Patches a jmp trampoline to route through a code cave that forces a "visible" result (st0 = 102400.0, optional byte out = 1) for callers at/above a threshold address, while callers below it run the original function. Designed for `__thiscall` visibility checks returning float on st(0) with `ret 0x10`.
+Patches a jmp trampoline to route through a code cave that forces a "visible" result (st0 = 102400.0, optional byte out = 1) for callers at/above a threshold address, while callers below it run the original function. Designed for `__thiscall` visibility checks returning float on st(0) with `ret 0x10`. The `--threshold` value is parsed as hex: the default `500000` means 0x500000.
 
 ```bash
 python -m livetools vishook on <jmp_site> <orig_target> [--threshold 500000]
