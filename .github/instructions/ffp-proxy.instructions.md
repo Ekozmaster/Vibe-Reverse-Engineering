@@ -18,7 +18,7 @@ Each game folder under `patches/<GameName>/` is a self-contained remix-comp-prox
 | `src/comp/modules/renderer.cpp` | Draw call routing -- `on_draw_indexed_prim()` and `on_draw_primitive()` |
 | `src/comp/modules/d3d9ex.cpp` | `IDirect3DDevice9` hook layer -- intercepts all 119 methods |
 | `src/comp/modules/skinning.cpp` | Skinning module (vertex expansion, bone upload, FFP blending) |
-| `src/comp/modules/diagnostics.cpp` | Diagnostic logging to `ffp_proxy.log` |
+| `src/comp/modules/diagnostics.cpp` | Diagnostic logging to `rtx_comp/diagnostics.log` |
 | `src/comp/modules/imgui.cpp` | ImGui debug overlay (F4 toggle) |
 | `src/shared/common/ffp_state.cpp` | FFP state tracker -- engage/disengage, matrix transforms, texture stages |
 | `src/shared/common/ffp_state.hpp` | `ffp_state` class with all state accessors |
@@ -104,7 +104,7 @@ Deploy: `d3d9.dll` + `remix-comp-proxy.ini` to game directory. Place `d3d9_remix
 
 ### Step 5: Diagnose with Log and ImGui
 
-The proxy writes `ffp_proxy.log` after a configurable delay (default 50 seconds) -- do not change the delay. Check VS regs written, vertex declarations, matrix values. Press **F4** for ImGui debug overlay.
+The proxy writes `rtx_comp/diagnostics.log` after a configurable delay (default 50 seconds) -- do not change the delay. Check VS regs written, vertex declarations, matrix values. Press **F4** for ImGui debug overlay.
 
 The user must be in-game with geometry visible when captures are needed.
 

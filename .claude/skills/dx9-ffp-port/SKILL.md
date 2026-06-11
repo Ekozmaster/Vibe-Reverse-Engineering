@@ -60,7 +60,7 @@ Each game folder under `patches/<GameName>/` is a self-contained remix-comp-prox
 | `src/comp/modules/imgui.cpp` | ImGui debug overlay (F4) with FFP tab |
 | `src/comp/game/game.cpp` | Per-game address init (patterns, hooks) |
 | `src/comp/game/game.hpp` | Per-game variables and function typedefs |
-| `remix-comp-proxy.ini` | Runtime config: albedo stage, skinning toggle, diagnostics, DLL chain |
+| `remix-comp-proxy.ini` (in `assets/`) | Runtime config: albedo stage, skinning toggle, diagnostics, DLL chain |
 | `build.bat` | Build script: outputs d3d9.dll proxy. `build.bat [release\|debug] [--name Name]` |
 
 **`rtx_remix_tools/dx/remix-comp-proxy/` is the TEMPLATE.** Each game gets a full copy under `patches/<GameName>/` — the entire folder is self-contained and can be distributed as a standalone repo. Edit `src/comp/` directly in the game's copy.

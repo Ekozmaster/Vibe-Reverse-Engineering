@@ -26,6 +26,7 @@ These are fast (<5s) and allowed inline:
 - "What constant flows into this register?" → `python -m retools.dataflow $B $VA --constants`
 - "Trace where this value comes from" → `python -m retools.dataflow $B $VA --slice TARGET_VA:REG`
 - "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json`
+- "Does a Ghidra project exist for this binary?" → `python retools/pyghidra_backend.py status $B --project $P`
 
 ### Delegate to `static-analyzer` subagent
 
@@ -58,6 +59,7 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 - "What are the actual register values?" → `livetools trace --read` or `bp` + `regs`
 - "How many draw calls happen?" → `livetools dipcnt`
 - "Who writes to this memory address?" → `livetools memwatch`
+- "Send keys/clicks to the game window?" → `livetools gamectl`
 
 ### DX analysis scripts (main agent, fast first-pass)
 
