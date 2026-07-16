@@ -126,17 +126,60 @@ def analyze(binary: str, project_dir: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# daemon routing
+# ---------------------------------------------------------------------------
+
+def _route_daemon(game: str, cmd: dict):
+    """Return the daemon response dict if a live daemon serves *game*, else None.
+
+    A pure no-op (returns None) whenever no live daemon is reachable, so
+    callers fall through to the cold in-process path unchanged.
+    """
+    if os.environ.get("RETOOLS_GHIDRA_COLD") == "1":
+        return None
+    try:
+        import ghidra_client
+    except ImportError:
+        return None
+    project_dir = str(Path("patches") / game / "ghidra")
+    if not ghidra_client.is_daemon_alive(project_dir):
+        return None
+    try:
+        return ghidra_client.send_command(project_dir, cmd, timeout=120)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # decompile
 # ---------------------------------------------------------------------------
+
+def _decompile_open(program, va: int) -> str:
+    """Decompile the function containing *va* in an already-open program."""
+    from ghidra.app.decompiler import DecompInterface, DecompileOptions
+    from ghidra.util.task import ConsoleTaskMonitor
+
+    ifc = DecompInterface()
+    ifc.setOptions(DecompileOptions())
+    ifc.openProgram(program)
+    addr = program.getAddressFactory().getDefaultAddressSpace().getAddress(va)
+    func = program.getListing().getFunctionContaining(addr)
+    if func is None:
+        return f"[error] no function found at 0x{va:X}"
+    result = ifc.decompileFunction(func, 60, ConsoleTaskMonitor())
+    return result.getDecompiledFunction().getC()
+
 
 def decompile(project_dir: str, binary: str, va: int) -> str:
     """Decompile a function at the given virtual address.
 
     Opens a previously-analyzed Ghidra project and uses DecompInterface
-    to produce C output for the function containing ``va``.
+    to produce C output for the function containing ``va``. Transparently
+    routes to a live per-project daemon (see ``ghidra_client``) when one is
+    running, to skip the ~3s JVM cold start on repeat calls.
 
     Args:
-        project_dir: Path to the Ghidra project directory.
+        project_dir: Path to the Ghidra project directory (patches/<game>/ghidra).
         binary: Path to the original PE binary.
         va: Virtual address inside the target function.
 
@@ -148,6 +191,12 @@ def decompile(project_dir: str, binary: str, va: int) -> str:
 
     if not is_analyzed(project_dir, binary_name):
         return f"[error] no analyzed project for {binary_name} in {project_dir}"
+
+    game = Path(project_dir).parent.name  # patches/<game>/ghidra -> <game>
+    routed = _route_daemon(game, {"cmd": "decompile", "binary": binary, "va": va})
+    if routed is not None:
+        return routed.get("text", f"[error] {routed.get('error')}") if routed.get("ok") \
+            else f"[error] {routed.get('error')}"
 
     pyghidra = _import_pyghidra()
     if pyghidra is None:
@@ -167,21 +216,7 @@ def decompile(project_dir: str, binary: str, va: int) -> str:
         analyze=False,
     ) as flat_api:
         program = flat_api.getCurrentProgram()
-        from ghidra.app.decompiler import DecompInterface, DecompileOptions
-        from ghidra.util.task import ConsoleTaskMonitor
-
-        ifc = DecompInterface()
-        ifc.setOptions(DecompileOptions())
-        ifc.openProgram(program)
-
-        addr = program.getAddressFactory().getDefaultAddressSpace().getAddress(va)
-        func = program.getListing().getFunctionContaining(addr)
-        if func is None:
-            return f"[error] no function found at 0x{va:X}"
-
-        monitor = ConsoleTaskMonitor()
-        result = ifc.decompileFunction(func, 60, monitor)
-        return result.getDecompiledFunction().getC()
+        return _decompile_open(program, va)
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +311,14 @@ def export(project_dir: str, binary: str, db_path: str) -> str:
     if not is_analyzed(project_dir, binary_path.name):
         return f"[error] no analyzed project for {binary_path.name} in {project_dir}"
 
+    game = Path(project_dir).parent.name
+    routed = _route_daemon(game, {"cmd": "export", "binary": binary, "db": db_path})
+    if routed is not None:
+        if not routed.get("ok"):
+            return f"[error] {routed.get('error')}"
+        summary = ", ".join(f"{k}={v}" for k, v in routed["counts"].items())
+        return f"Export complete: {summary} -> {db_path}"
+
     pyghidra = _import_pyghidra()
     if pyghidra is None:
         return "[error] pyghidra is not installed"
@@ -366,6 +409,15 @@ def kb_apply(project_dir: str, binary: str, kb_path: str) -> str:
     binary_path = Path(binary)
     if not is_analyzed(project_dir, binary_path.name):
         return f"[error] no analyzed project for {binary_path.name} in {project_dir}"
+
+    game = Path(project_dir).parent.name
+    routed = _route_daemon(game, {"cmd": "kb_apply", "binary": binary, "kb": kb_path})
+    if routed is not None:
+        if not routed.get("ok"):
+            return f"[error] {routed.get('error')}"
+        summary = ", ".join(f"{k}={v}" for k, v in routed["counts"].items())
+        return f"kb-apply complete: {summary}"
+
     pyghidra = _import_pyghidra()
     if pyghidra is None:
         return "[error] pyghidra is not installed"
@@ -399,6 +451,8 @@ def main():
         prog="pyghidra_backend",
         description="Pyghidra headless Ghidra backend",
     )
+    parser.add_argument("--cold", action="store_true",
+                         help="Force cold in-process start, bypassing any live daemon")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- analyze ---
@@ -430,6 +484,8 @@ def main():
     p_kb.add_argument("--kb", required=True, help="Path to kb.h")
 
     args = parser.parse_args()
+    if args.cold:
+        os.environ["RETOOLS_GHIDRA_COLD"] = "1"
     ghidra_dir = str(Path(args.project) / "ghidra")
     binary_name = Path(args.binary).name
 
