@@ -26,6 +26,7 @@ from structrefs import aggregate_struct
 from search import find_strings
 from sigdb import SignatureDB, extract_structural_sig
 from dataflow import propagate_cfg, Const, Unknown
+from index import GameIndex
 
 # Pattern: fcn.XXXXXXXX or FUN_XXXXXXXX (r2ghidra or Ghidra naming)
 _FCN_RE = re.compile(r"(?:fcn\.|FUN_)([0-9a-fA-F]{8,16})")
@@ -91,6 +92,27 @@ def postprocess(raw_output: str, kb_names: dict[int, str],
 # assemble
 # ---------------------------------------------------------------------------
 
+def _callees_from_index(db_path: str, func_ea: int) -> list[tuple[int, str]] | None:
+    """Resolve (callee_addr, name) pairs for a function from index.db.
+
+    Returns None when the index is absent so the caller falls back to scanning.
+    """
+    if not Path(db_path).is_file():
+        return None
+    conn = GameIndex.open_ro(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT x.to_ea, COALESCE(f.name, '') FROM xrefs x "
+            "LEFT JOIN funcs f ON f.address = x.to_ea "
+            "WHERE x.from_func = ? AND x.is_code = 1 AND x.type = 'call' "
+            "ORDER BY x.to_ea",
+            (func_ea,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [(int(a), n) for a, n in rows]
+
+
 def _find_kb_path(project_dir: str, project_dir_for_kb: str | None = None) -> Path:
     """Locate kb.h: try explicit override, then patches/<project>/kb.h."""
     if project_dir_for_kb:
@@ -138,19 +160,25 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
     else:
         lines.append(f"[identity] unknown function at 0x{start:0{w}X}")
 
-    # -- Callees --
+    # -- Callees (index fast-path, else scan) --
     rets, calls, end_va = analyze(b, start, max_size=0x2000)
     lines.append("[callees]")
-    seen_targets: set[int | str] = set()
-    for _, target in calls:
-        if target in seen_targets:
-            continue
-        seen_targets.add(target)
-        if isinstance(target, int):
-            name = kb_names.get(target, "unknown")
-            lines.append(f"  0x{target:0{w}X}: {name}")
-        else:
-            lines.append(f"  {target}: indirect call")
+    db_index = GameIndex.default_db_path(Path(project_dir).name)
+    indexed = _callees_from_index(db_index, start)
+    if indexed:
+        for target, name in indexed:
+            lines.append(f"  0x{target:0{w}X}: {name or kb_names.get(target, 'unknown')}")
+    else:
+        seen_targets: set[int | str] = set()
+        for _, target in calls:
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            if isinstance(target, int):
+                name = kb_names.get(target, "unknown")
+                lines.append(f"  0x{target:0{w}X}: {name}")
+            else:
+                lines.append(f"  {target}: indirect call")
 
     # -- Struct fields (best-effort) --
     try:

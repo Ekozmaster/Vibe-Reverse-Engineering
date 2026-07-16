@@ -320,3 +320,33 @@ class TestAssembleDataflow:
             result = assemble(b, 0x401500, str(proj), no_dataflow=True)
 
         assert "[dataflow]" not in result
+
+
+# ---------------------------------------------------------------------------
+# _callees_from_index
+# ---------------------------------------------------------------------------
+
+class TestIndexFastPath:
+    def test_callees_from_index(self, tmp_path):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+        from index import GameIndex
+        from context import _callees_from_index
+
+        db = str(tmp_path / "index.db")
+        gi = GameIndex(db)
+        gi.replace("funcs", [{"address": 0x2000, "name": "Target"}], source="ghidra")
+        gi.replace("xrefs", [{"from_ea": 0x1010, "to_ea": 0x2000, "type": "call",
+                              "is_code": 1, "from_func": 0x1000}], source="ghidra")
+        gi.close()
+
+        callees = _callees_from_index(db, 0x1000)
+        assert callees == [(0x2000, "Target")]
+
+    def test_missing_index_returns_none(self, tmp_path):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+        from context import _callees_from_index
+        assert _callees_from_index(str(tmp_path / "absent.db"), 0x1000) is None
