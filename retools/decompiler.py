@@ -93,7 +93,9 @@ def _ensure_r2_in_path(r2_bin: str) -> None:
 
 
 def _load_types(r2, types_arg: str) -> None:
-    """Parse a knowledge-base string and send type/function/global commands to r2."""
+    """Parse a knowledge base and send type/function/global commands to r2."""
+    from retools.kb import parse_kb
+
     if types_arg == "-":
         text = sys.stdin.read()
     elif os.path.isfile(types_arg):
@@ -101,29 +103,17 @@ def _load_types(r2, types_arg: str) -> None:
     else:
         text = types_arg
 
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("//"):
-            continue
-
-        if line.startswith("@ "):
-            rest = line[2:]
-            addr_str, sig = rest.split(None, 1)
-            addr = int(addr_str, 16)
-            name = sig.rstrip(";").split("(")[0].split()[-1]
-            r2.cmd(f"af @ {addr:#x}")
-            r2.cmd(f"afn {name} @ {addr:#x}")
-            r2.cmd(f"afs {sig.rstrip(';')} @ {addr:#x}")
-        elif line.startswith("$ "):
-            parts = line[2:].split()
-            addr = int(parts[0], 16)
-            name = parts[-1]
-            r2.cmd(f"f {name} @ {addr:#x}")
-            if len(parts) > 2:
-                type_name = " ".join(parts[1:-1])
-                r2.cmd(f"tl {type_name} @ {addr:#x}")
-        else:
-            r2.cmd(f"td {line}")
+    kb = parse_kb(text)
+    for fn in kb.functions:
+        r2.cmd(f"af @ {fn.address:#x}")
+        r2.cmd(f"afn {fn.name} @ {fn.address:#x}")
+        r2.cmd(f"afs {fn.signature} @ {fn.address:#x}")
+    for g in kb.globals:
+        r2.cmd(f"f {g.name} @ {g.address:#x}")
+        if g.type:
+            r2.cmd(f"tl {g.type} @ {g.address:#x}")
+    for td in kb.typedefs:
+        r2.cmd(f"td {td}")
 
 
 def decompile(binary: str, va: int, *, backend: str = "auto",

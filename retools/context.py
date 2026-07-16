@@ -40,69 +40,19 @@ _STRUCT_ACCESS_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 def _parse_kb_names(kb_path: Path) -> dict[int, str]:
-    """Parse ``@ 0xADDR sig;`` lines and extract the function name.
-
-    Handles signatures like:
-        @ 0x401000 void __cdecl ProcessInput(int key);
-        @ 0xDEAD _malloc;
-    """
+    """Map function address -> name from a kb.h file."""
     if not kb_path.is_file():
         return {}
-    names: dict[int, str] = {}
-    for line in kb_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line.startswith("@ "):
-            continue
-        # Split: "@", "0xADDR", rest...
-        parts = line.split(None, 2)
-        if len(parts) < 3:
-            continue
-        try:
-            va = int(parts[1], 16)
-        except ValueError:
-            continue
-        sig = parts[2].rstrip(";").strip()
-        # Extract name: last identifier before '(' or the whole token
-        paren = sig.find("(")
-        if paren != -1:
-            pre = sig[:paren].strip()
-        else:
-            pre = sig
-        # Name is the last whitespace-separated token
-        name = pre.rsplit(None, 1)[-1] if pre else ""
-        # Strip pointer/ref decorators
-        name = name.lstrip("*&")
-        if name:
-            names[va] = name
-    return names
+    from kb import parse_kb
+    return {f.address: f.name for f in parse_kb(kb_path).functions if f.name}
 
 
 def _parse_kb_globals(kb_path: Path) -> dict[int, str]:
-    """Parse ``$ 0xADDR type name`` lines and extract the global name.
-
-    Handles lines like:
-        $ 0x7C5548 Object* g_mainObject
-        $ 0x7C554C Flags g_renderFlags
-    """
+    """Map global address -> name from a kb.h file."""
     if not kb_path.is_file():
         return {}
-    globals_: dict[int, str] = {}
-    for line in kb_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line.startswith("$ "):
-            continue
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        try:
-            va = int(parts[1], 16)
-        except ValueError:
-            continue
-        # Name is the last token (type may have pointer decorators)
-        name = parts[-1]
-        if name:
-            globals_[va] = name
-    return globals_
+    from kb import parse_kb
+    return {g.address: g.name for g in parse_kb(kb_path).globals if g.name}
 
 
 # ---------------------------------------------------------------------------

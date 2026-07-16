@@ -96,24 +96,6 @@ def _is_packed(pe: pefile.PE) -> bool:
 # KB file I/O
 # ---------------------------------------------------------------------------
 
-def _read_existing_addresses(kb_path: str) -> set[int]:
-    """Parse existing kb.h and return the set of known addresses."""
-    addresses: set[int] = set()
-    if not os.path.isfile(kb_path):
-        return addresses
-    with open(kb_path) as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("@ 0x"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    try:
-                        addresses.add(int(parts[1], 16))
-                    except ValueError:
-                        pass
-    return addresses
-
-
 def _write_kb_entries(kb_path: str, entries: list[str], known: set[int]) -> int:
     """Append new entries to kb.h, skipping addresses already present.
 
@@ -388,7 +370,8 @@ def bootstrap(
         return {"packed": True, "functions_identified": 0}
 
     b = Binary(binary_path)
-    known_addresses = _read_existing_addresses(kb_path)
+    from kb import read_existing_addresses
+    known_addresses = read_existing_addresses(kb_path)
     stats: dict = {
         "packed": False,
         "compiler": "unknown",
