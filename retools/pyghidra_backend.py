@@ -297,6 +297,105 @@ def export(project_dir: str, binary: str, db_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# kb-apply
+# ---------------------------------------------------------------------------
+
+def _kb_apply_program(program, kb, flat_api, *, apply_prototypes=True, apply_types=True) -> dict:
+    """Apply a parsed Kb to an open program. Idempotent (USER_DEFINED upserts).
+
+    apply_prototypes/apply_types gate the Ghidra-only signature/DTM code so a
+    fake program (tests) can exercise the name/label path without those classes.
+    """
+    try:
+        from ghidra.program.model.symbol import SourceType
+    except ImportError:
+        # No Ghidra JVM bridge (e.g. under test with a fake program); the
+        # name/label path only needs a stand-in value to pass through.
+        class SourceType:
+            USER_DEFINED = None
+
+    space = program.getAddressFactory().getDefaultAddressSpace()
+    listing = program.getListing()
+    symtab = program.getSymbolTable()
+
+    counts = {"functions": 0, "globals": 0, "typedefs": 0}
+
+    sig_parser = None
+    if apply_prototypes:
+        from ghidra.app.util.parser import FunctionSignatureParser
+        from ghidra.util.task import ConsoleTaskMonitor
+        sig_parser = FunctionSignatureParser(program.getDataTypeManager(), None)
+        _monitor = ConsoleTaskMonitor()
+
+    for fn in kb.functions:
+        addr = space.getAddress(fn.address)
+        func = listing.getFunctionContaining(addr)
+        if func is None and flat_api is not None:
+            func = flat_api.createFunction(addr, fn.name)
+        if func is None:
+            continue
+        func.setName(fn.name, SourceType.USER_DEFINED)
+        counts["functions"] += 1
+        if apply_prototypes and sig_parser is not None:
+            from ghidra.app.cmd.function import ApplyFunctionSignatureCmd
+            try:
+                definition = sig_parser.parse(func.getSignature(), fn.signature + ";")
+                if definition is not None:
+                    cmd = ApplyFunctionSignatureCmd(addr, definition, SourceType.USER_DEFINED)
+                    cmd.applyTo(program, _monitor)
+            except Exception:
+                pass  # prototype text may be unparseable; name is already applied
+
+    for g in kb.globals:
+        addr = space.getAddress(g.address)
+        symtab.createLabel(addr, g.name, SourceType.USER_DEFINED)
+        counts["globals"] += 1
+
+    if apply_types:
+        from ghidra.app.util.cparser.C import CParser
+        dtm = program.getDataTypeManager()
+        parser = CParser(dtm)
+        for td in kb.typedefs:
+            try:
+                parser.parse(td if td.endswith(";") else td + ";")
+                counts["typedefs"] += 1
+            except Exception:
+                pass  # non-type bare lines are skipped
+
+    return counts
+
+
+def kb_apply(project_dir: str, binary: str, kb_path: str) -> str:
+    """Apply kb.h to the analyzed Ghidra program (one transaction)."""
+    from kb import parse_kb
+
+    binary_path = Path(binary)
+    if not is_analyzed(project_dir, binary_path.name):
+        return f"[error] no analyzed project for {binary_path.name} in {project_dir}"
+    pyghidra = _import_pyghidra()
+    if pyghidra is None:
+        return "[error] pyghidra is not installed"
+    if not os.environ.get("GHIDRA_INSTALL_DIR"):
+        return "[error] GHIDRA_INSTALL_DIR environment variable not set"
+
+    kb = parse_kb(Path(kb_path))
+    pyghidra.start()
+    with pyghidra.open_program(
+        binary, project_location=str(project_dir),
+        project_name=binary_path.stem, analyze=False,
+    ) as flat_api:
+        program = flat_api.getCurrentProgram()
+        txn = program.startTransaction("kb_apply")
+        try:
+            counts = _kb_apply_program(program, kb, flat_api)
+        finally:
+            program.endTransaction(txn, True)
+        program.save("kb_apply", None)
+    summary = ", ".join(f"{k}={v}" for k, v in counts.items())
+    return f"kb-apply complete: {summary}"
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -330,6 +429,12 @@ def main():
     p_export.add_argument("--project", required=True, help="Project directory")
     p_export.add_argument("--db", default=None, help="index.db path (default patches/<stem>/index.db)")
 
+    # --- kb-apply ---
+    p_kb = sub.add_parser("kb-apply", help="Apply kb.h names/types into the Ghidra project")
+    p_kb.add_argument("binary", help="Path to PE binary")
+    p_kb.add_argument("--project", required=True, help="Project directory")
+    p_kb.add_argument("--kb", required=True, help="Path to kb.h")
+
     args = parser.parse_args()
     ghidra_dir = str(Path(args.project) / "ghidra")
     binary_name = Path(args.binary).name
@@ -356,6 +461,10 @@ def main():
         from index import GameIndex
         db_path = args.db or GameIndex.default_db_path(Path(args.binary).stem)
         print(export(ghidra_dir, args.binary, db_path))
+        raise SystemExit(0)
+
+    if args.command == "kb-apply":
+        print(kb_apply(ghidra_dir, args.binary, args.kb))
         raise SystemExit(0)
 
 

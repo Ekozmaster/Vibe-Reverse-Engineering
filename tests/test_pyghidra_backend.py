@@ -377,3 +377,51 @@ class TestExportProgram:
         assert row[0] == "Foo"
         assert row[1] == "void Foo(void)"
         assert row[2] == "ghidra"
+
+
+# ---------------------------------------------------------------------------
+# kb-apply / _kb_apply_program
+# ---------------------------------------------------------------------------
+
+class TestKbApplyProgram:
+    def test_applies_function_name_and_global(self, tmp_path):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+        from pyghidra_backend import _kb_apply_program
+        from kb import parse_kb
+
+        applied = {"names": [], "labels": []}
+
+        class FakeAddr:
+            def __init__(self, off): self._off = off
+
+        class FakeAddrSpace:
+            def getAddress(self, off): return FakeAddr(off)
+
+        class FakeAddrFactory:
+            def getDefaultAddressSpace(self): return FakeAddrSpace()
+
+        class FakeFunc:
+            def setName(self, name, src): applied["names"].append(name)
+
+        class FakeListing:
+            def getFunctionContaining(self, addr): return FakeFunc()
+
+        class FakeSymbolTable:
+            def createLabel(self, addr, name, src):
+                applied["labels"].append(name)
+                return object()
+
+        class FakeProgram:
+            def getAddressFactory(self): return FakeAddrFactory()
+            def getListing(self): return FakeListing()
+            def getSymbolTable(self): return FakeSymbolTable()
+
+        kb = parse_kb("@ 0x401000 void Foo(void);\n$ 0x7C5548 int g_x\n")
+        counts = _kb_apply_program(FakeProgram(), kb, flat_api=None,
+                                   apply_prototypes=False, apply_types=False)
+        assert "Foo" in applied["names"]
+        assert "g_x" in applied["labels"]
+        assert counts["functions"] == 1
+        assert counts["globals"] == 1
