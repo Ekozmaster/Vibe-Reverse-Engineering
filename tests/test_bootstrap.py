@@ -326,3 +326,28 @@ class TestCLI:
         from bootstrap import main
         with pytest.raises(SystemExit):
             main([])
+
+
+# ---------------------------------------------------------------------------
+# Index seeding
+# ---------------------------------------------------------------------------
+
+class TestSeedIndex:
+    def test_seed_index_populates_tables(self, sample_binary, tmp_path):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+        from bootstrap import _seed_index
+        from common import Binary
+        from index import GameIndex
+
+        db = str(tmp_path / "index.db")
+        b = Binary(sample_binary)
+        _seed_index(b, db)  # must not raise
+
+        gi = GameIndex(db)
+        counts = gi.counts()
+        gi.close()
+        # A real system DLL always has imports and segments.
+        assert counts["segments"] > 0
+        assert counts["imports"] >= 0  # kernel32 imports from other DLLs

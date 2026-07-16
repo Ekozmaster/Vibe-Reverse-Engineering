@@ -316,6 +316,81 @@ def _propagate_labels(
     return kb_entries
 
 
+def _seed_index(b: Binary, db_path: str) -> None:
+    """Populate index.db from already-computed pefile data (source='bootstrap').
+
+    Never raises out to the caller; the index is a convenience, not a
+    prerequisite for a successful bootstrap.
+    """
+    from index import GameIndex
+    from search import find_imports, find_strings
+
+    gi = GameIndex(db_path)
+    try:
+        # segments
+        seg_rows = []
+        for s in b.pe.sections:
+            name = s.Name.rstrip(b"\x00").decode("ascii", errors="ignore")
+            start = b.base + s.VirtualAddress
+            seg_rows.append({
+                "start_ea": start,
+                "end_ea": start + s.Misc_VirtualSize,
+                "name": name,
+                "class": None,
+                "perm": int(s.Characteristics),
+            })
+        gi.replace("segments", seg_rows, source="bootstrap")
+
+        # imports
+        imp_rows = []
+        if hasattr(b.pe, "DIRECTORY_ENTRY_IMPORT"):
+            for entry in b.pe.DIRECTORY_ENTRY_IMPORT:
+                module = entry.dll.decode("ascii", errors="ignore")
+                for imp in entry.imports:
+                    nm = (imp.name.decode("ascii", errors="ignore")
+                          if imp.name else f"ordinal_{imp.ordinal}")
+                    imp_rows.append({
+                        "address": imp.address,
+                        "name": nm,
+                        "module": module,
+                        "ordinal": imp.ordinal,
+                    })
+        gi.replace("imports", imp_rows, source="bootstrap")
+
+        # entries (exports)
+        exp_rows = []
+        if hasattr(b.pe, "DIRECTORY_ENTRY_EXPORT"):
+            for exp in b.pe.DIRECTORY_ENTRY_EXPORT.symbols:
+                if not exp.address:
+                    continue
+                exp_rows.append({
+                    "ordinal": exp.ordinal,
+                    "address": b.base + exp.address,
+                    "name": exp.name.decode("ascii", errors="ignore") if exp.name else None,
+                })
+        gi.replace("entries", exp_rows, source="bootstrap")
+
+        # strings
+        str_rows = []
+        for sref in find_strings(b, min_len=4):
+            if sref.va is None:
+                continue
+            str_rows.append({
+                "address": sref.va,
+                "length": len(sref.value),
+                "type": "ascii",
+                "encoding": "ascii",
+                "content": sref.value,
+            })
+        gi.replace("strings", str_rows, source="bootstrap")
+
+        # provisional funcs + names from the entry-point table
+        func_rows = [{"address": va, "name": None} for va in b.func_table]
+        gi.replace("funcs", func_rows, source="bootstrap")
+    finally:
+        gi.close()
+
+
 # ---------------------------------------------------------------------------
 # bootstrap -- orchestrator
 # ---------------------------------------------------------------------------
@@ -462,6 +537,12 @@ def bootstrap(
 
     report_lines.append("")
     Path(report_path).write_text("\n".join(report_lines))
+
+    # -- Seed the per-game index (best-effort; never breaks bootstrap) ------
+    try:
+        _seed_index(b, os.path.join(project_dir, "index.db"))
+    except Exception as e:  # index is a convenience, not a prerequisite
+        print(f"index seeding skipped: {e}", file=sys.stderr)
 
     return stats
 
