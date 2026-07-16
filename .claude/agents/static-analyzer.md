@@ -65,7 +65,7 @@ python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h --pro
 
 When told to use a specific backend, use it. Otherwise prefer auto mode with both `--types` and `--project`.
 
-**Ghidra daemon**: if `python -m retools.ghidra_server <Project>` is running (port 27043; livetools owns 27042), `decompile`/`export`/`kb-apply` route through it automatically and repeat calls become sub-second. Warm the server yourself before a batch of decompiles on the same project: `python -m retools.ghidra_server <Project> --idle 600` (background it). `RETOOLS_GHIDRA_COLD=1` or `--cold` forces a cold in-process run when you need to bypass the daemon.
+**Ghidra daemon**: if `python -m retools.ghidra_server <Project>` is running (port 27043; livetools owns 27042), `decompile`/`export`/`kb-apply` route through it automatically and repeat calls become sub-second. Warm the server yourself before a batch of decompiles on the same project: `python -m retools.ghidra_server <Project> --idle 600` (background it). `RETOOLS_GHIDRA_COLD=1` or `--cold` forces a cold in-process run when you need to bypass the daemon. The daemon records its pid/port/project/binary in `patches/<Project>/ghidra/.state.json`, deleted on shutdown once the Ghidra program is closed and the Windows `.rep` lock is released.
 
 ### Query-first workflow
 

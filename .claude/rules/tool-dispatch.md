@@ -31,7 +31,7 @@ Everything else in `retools`. Tell it WHAT you need, not HOW. D3D9-specific ques
 - `pyghidra_backend.py export` (seed index.db from a Ghidra project) / `kb-apply` (push kb.h into the Ghidra project)
 - dx9tracer offline analysis (summary, render-passes, shader-map, etc.)
 
-**Ghidra daemon**: `python -m retools.ghidra_server <Game> [--idle 600]` keeps one warm Ghidra program per project on port 27043 (livetools owns 27042). `decompile`/`export`/`kb-apply` route through a live daemon automatically when one is running for that project — repeat decompiles become sub-second instead of paying JVM startup each time. `RETOOLS_GHIDRA_COLD=1` or `--cold` forces a cold in-process run.
+**Ghidra daemon**: `python -m retools.ghidra_server <Game> [--idle 600]` keeps one warm Ghidra program per project on port 27043 (livetools owns 27042). `decompile`/`export`/`kb-apply` route through a live daemon automatically when one is running for that project — repeat decompiles become sub-second instead of paying JVM startup each time. `RETOOLS_GHIDRA_COLD=1` or `--cold` forces a cold in-process run. The daemon tracks itself in `patches/<Game>/ghidra/.state.json` (pid/port/project/binary), deleted on shutdown once the Ghidra program is closed.
 
 ## Live tools (main agent, attached process)
 

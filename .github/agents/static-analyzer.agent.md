@@ -66,7 +66,7 @@ Always pass `--types <kb_file>` to `decompiler.py` when a KB file exists for the
 
 **Read-First mutation discipline**: `kb-apply` mutates the Ghidra project. Decompile or `query` the target function first, run `kb-apply`, then re-decompile to verify the change landed. `kb-apply` is idempotent — re-running it must produce stable counts.
 
-**Cost guard**: run `export` once per analysis pass (after `kb-apply`), not once per query. Warm `ghidra_server.py` for a project before a batch of decompiles.
+**Cost guard**: run `export` once per analysis pass (after `kb-apply`), not once per query. Warm `ghidra_server.py` for a project before a batch of decompiles — it tracks itself in `patches/<Project>/ghidra/.state.json`, deleted on shutdown once the Ghidra program is closed.
 
 ## Knowledge Base
 
