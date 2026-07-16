@@ -350,4 +350,4 @@ class TestSeedIndex:
         gi.close()
         # A real system DLL always has imports and segments.
         assert counts["segments"] > 0
-        assert counts["imports"] >= 0  # kernel32 imports from other DLLs
+        assert counts["imports"] > 0  # kernel32 imports from ntdll and others

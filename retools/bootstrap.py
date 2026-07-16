@@ -323,7 +323,7 @@ def _seed_index(b: Binary, db_path: str) -> None:
     prerequisite for a successful bootstrap.
     """
     from index import GameIndex
-    from search import find_imports, find_strings
+    from search import find_strings
 
     gi = GameIndex(db_path)
     try:
