@@ -188,7 +188,7 @@ def decompile(project_dir: str, binary: str, va: int) -> str:
 # export
 # ---------------------------------------------------------------------------
 
-def _iter_xrefs(program, func_entries):
+def _iter_xrefs(program):
     """Yield xref row dicts for references originating inside known functions.
 
     Streams the reference iterator; never materializes the full ref set.
@@ -241,10 +241,8 @@ def _export_program(program, gi, xrefs=None, blocks=None) -> dict:
     """
     func_rows = []
     name_rows = []
-    entries = set()
     for func in program.getFunctionManager().getFunctions(True):
         ep = func.getEntryPoint().getOffset()
-        entries.add(ep)
         body = func.getBody()
         name = func.getName()
         func_rows.append({
@@ -258,7 +256,7 @@ def _export_program(program, gi, xrefs=None, blocks=None) -> dict:
         })
         name_rows.append({"address": ep, "name": name})
 
-    xref_rows = list(_iter_xrefs(program, entries)) if xrefs is None else xrefs
+    xref_rows = list(_iter_xrefs(program)) if xrefs is None else xrefs
     block_rows = list(_iter_blocks(program)) if blocks is None else blocks
 
     counts = {
