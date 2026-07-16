@@ -332,6 +332,29 @@ class TestCLI:
 # Index seeding
 # ---------------------------------------------------------------------------
 
+class TestStringSweepDedup:
+    def test_bootstrap_scans_strings_once(self, tmp_path):
+        """bootstrap must sweep the binary for strings a single time and reuse
+        the result for both the error-string KB seed and the index seed."""
+        import search
+        from bootstrap import bootstrap
+
+        pe_path = _make_minimal_pe(str(tmp_path))
+        project_dir = str(tmp_path / "project")
+
+        calls = {"n": 0}
+        orig = search.find_strings
+
+        def counting(b, **kw):
+            calls["n"] += 1
+            return orig(b, **kw)
+
+        with patch("search.find_strings", counting):
+            bootstrap(pe_path, project_dir)
+
+        assert calls["n"] == 1
+
+
 class TestSeedIndex:
     def test_seed_index_populates_tables(self, sample_binary, tmp_path):
         import sys

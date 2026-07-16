@@ -7,6 +7,7 @@ using Ghidra's DecompInterface via the pyghidra bridge.
 import argparse
 import os
 import shutil
+import socket
 import sys
 import time
 from pathlib import Path
@@ -129,44 +130,69 @@ def analyze(binary: str, project_dir: str) -> str:
 # daemon routing
 # ---------------------------------------------------------------------------
 
-def _route_daemon(game: str, cmd: dict):
-    """Return the daemon response dict if a live daemon serves *game*, else None.
+def _route_daemon(project_dir: str, cmd: dict):
+    """Return the daemon response if a live daemon serves *project_dir*, else None.
 
-    A pure no-op (returns None) whenever no live daemon is reachable, so
-    callers fall through to the cold in-process path unchanged. The probe
-    and send are wrapped in one broad except so a missing ghidra_client
-    module, a dead/absent daemon, a corrupted state file (e.g. a
-    wrong-typed "port" raising inside is_daemon_alive), or a transport
-    error during send_command all degrade to the cold path instead of
-    raising.
+    *project_dir* is the caller's own Ghidra project directory
+    (``patches/<game>/ghidra``), so routing works from any cwd and honours an
+    absolute ``--project`` -- the daemon's state file lives there. The command
+    is tagged with the game name so the daemon can reject a stale state file
+    that points at another project's daemon (returns None -> cold path).
+
+    Failure handling is deliberately split: a missing client module, a corrupt
+    state file, or a daemon that is not reachable soft-fails to None (cold
+    path, nothing ran). But once the command has been sent, a ``socket.timeout``
+    may mean the daemon is still executing it, so that error propagates rather
+    than triggering a cold re-run that would double-execute a mutating command.
     """
     if os.environ.get("RETOOLS_GHIDRA_COLD") == "1":
         return None
     try:
         import ghidra_client
-        # Relative path: daemon routing only engages under the canonical
-        # patches/<game>/ghidra layout with cwd=repo root. A different cwd
-        # or layout silently falls back to the cold path (correct-but-slow).
-        project_dir = str(Path("patches") / game / "ghidra")
-        if not ghidra_client.is_daemon_alive(project_dir):
-            return None
-        return ghidra_client.send_command(project_dir, cmd, timeout=120)
-    except Exception:
+    except ImportError:
         return None
+    try:
+        alive = ghidra_client.is_daemon_alive(project_dir)
+    except Exception:
+        return None  # unreadable/corrupt state file -> no reachable daemon
+    if not alive:
+        return None
+    game = Path(project_dir).parent.name  # patches/<game>/ghidra -> <game>
+    # The daemon resolves paths against its own cwd, which need not match the
+    # client's, so send absolute paths (resolved here, where the user invoked).
+    cmd = {**cmd, "game": game}
+    for k in ("binary", "db", "kb"):
+        if cmd.get(k) is not None:
+            cmd[k] = str(Path(cmd[k]).resolve())
+    try:
+        resp = ghidra_client.send_command(project_dir, cmd, timeout=120)
+    except socket.timeout:
+        raise
+    except OSError:
+        return None  # daemon vanished before doing the work -> safe cold path
+    if resp.get("wrong_project"):
+        return None  # stale state pointed at another project's daemon
+    return resp
 
 
 # ---------------------------------------------------------------------------
 # decompile
 # ---------------------------------------------------------------------------
 
-def _decompile_open(program, va: int) -> str:
-    """Decompile the function containing *va* in an already-open program."""
+def _decompile_open(program, va: int, ifc=None) -> str:
+    """Decompile the function containing *va* in an already-open program.
+
+    *ifc* lets a caller (the daemon) pass a warm DecompInterface so repeat
+    decompiles reuse one native decompiler process; when None a throwaway one
+    is built for this single call.
+    """
     from ghidra.app.decompiler import DecompInterface, DecompileOptions
     from ghidra.util.task import ConsoleTaskMonitor
 
-    ifc = DecompInterface()
-    ifc.setOptions(DecompileOptions())
-    ifc.openProgram(program)
+    if ifc is None:
+        ifc = DecompInterface()
+        ifc.setOptions(DecompileOptions())
+        ifc.openProgram(program)
     addr = program.getAddressFactory().getDefaultAddressSpace().getAddress(va)
     func = program.getListing().getFunctionContaining(addr)
     if func is None:
@@ -197,8 +223,7 @@ def decompile(project_dir: str, binary: str, va: int) -> str:
     if not is_analyzed(project_dir, binary_name):
         return f"[error] no analyzed project for {binary_name} in {project_dir}"
 
-    game = Path(project_dir).parent.name  # patches/<game>/ghidra -> <game>
-    routed = _route_daemon(game, {"cmd": "decompile", "binary": binary, "va": va})
+    routed = _route_daemon(project_dir, {"cmd": "decompile", "binary": binary, "va": va})
     if routed is not None:
         return routed.get("text", f"[error] {routed.get('error')}") if routed.get("ok") \
             else f"[error] {routed.get('error')}"
@@ -236,10 +261,18 @@ def _iter_xrefs(program):
     ref_mgr = program.getReferenceManager()
     func_mgr = program.getFunctionManager()
     it = ref_mgr.getReferenceIterator(program.getMinAddress())
+    # References arrive in ascending address order and consecutive ones almost
+    # always share a containing function, so cache the last one and re-test its
+    # body before paying another cross-JVM manager lookup.
+    cached = None
     while it.hasNext():
         ref = it.next()
         from_addr = ref.getFromAddress()
-        containing = func_mgr.getFunctionContaining(from_addr)
+        if cached is not None and cached.getBody().contains(from_addr):
+            containing = cached
+        else:
+            containing = func_mgr.getFunctionContaining(from_addr)
+            cached = containing
         if containing is None:
             continue
         rt = ref.getReferenceType()
@@ -263,14 +296,18 @@ def _iter_blocks(program):
     from ghidra.program.model.block import BasicBlockModel
     from ghidra.util.task import ConsoleTaskMonitor
 
+    func_mgr = program.getFunctionManager()
     model = BasicBlockModel(program)
     monitor = ConsoleTaskMonitor()
     it = model.getCodeBlocks(monitor)
     while it.hasNext():
         blk = it.next()
-        start = blk.getFirstStartAddress().getOffset()
+        start_addr = blk.getFirstStartAddress()
+        start = start_addr.getOffset()
         end = blk.getMaxAddress().getOffset() + 1
-        yield {"func_ea": start, "start_ea": start, "end_ea": end, "size": end - start}
+        func = func_mgr.getFunctionContaining(start_addr)
+        func_ea = func.getEntryPoint().getOffset() if func is not None else start
+        yield {"func_ea": func_ea, "start_ea": start, "end_ea": end, "size": end - start}
 
 
 def _export_program(program, gi, xrefs=None, blocks=None) -> dict:
@@ -316,8 +353,7 @@ def export(project_dir: str, binary: str, db_path: str) -> str:
     if not is_analyzed(project_dir, binary_path.name):
         return f"[error] no analyzed project for {binary_path.name} in {project_dir}"
 
-    game = Path(project_dir).parent.name
-    routed = _route_daemon(game, {"cmd": "export", "binary": binary, "db": db_path})
+    routed = _route_daemon(project_dir, {"cmd": "export", "binary": binary, "db": db_path})
     if routed is not None:
         if not routed.get("ok"):
             return f"[error] {routed.get('error')}"
@@ -348,8 +384,15 @@ def export(project_dir: str, binary: str, db_path: str) -> str:
 # kb-apply
 # ---------------------------------------------------------------------------
 
-def _kb_apply_program(program, kb, flat_api, *, apply_prototypes=True, apply_types=True) -> dict:
+def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -> dict:
     """Apply a parsed Kb to an open program. Idempotent (USER_DEFINED upserts).
+
+    An ``@`` entry renames the function that contains its address; when no
+    function is there (bootstrap emits ``@`` lines for RTTI vtables and string
+    refs, which are data) it becomes a label instead of a bogus function. All
+    mutation goes through Program-level APIs so it stays inside the caller's
+    single transaction -- FlatProgramAPI.createFunction would open its own
+    nested transaction and leave it dangling, which then fails program.save().
 
     apply_prototypes/apply_types gate the Ghidra-only signature/DTM code so a
     fake program (tests) can exercise the name/label path without those classes.
@@ -360,7 +403,7 @@ def _kb_apply_program(program, kb, flat_api, *, apply_prototypes=True, apply_typ
     listing = program.getListing()
     symtab = program.getSymbolTable()
 
-    counts = {"functions": 0, "globals": 0, "typedefs": 0}
+    counts = {"functions": 0, "labels": 0, "globals": 0, "typedefs": 0}
 
     sig_parser = None
     if apply_prototypes:
@@ -372,9 +415,13 @@ def _kb_apply_program(program, kb, flat_api, *, apply_prototypes=True, apply_typ
     for fn in kb.functions:
         addr = space.getAddress(fn.address)
         func = listing.getFunctionContaining(addr)
-        if func is None and flat_api is not None:
-            func = flat_api.createFunction(addr, fn.name)
         if func is None:
+            # No function here -> label the address (vtable / string / data).
+            try:
+                symtab.createLabel(addr, fn.name, SourceType.USER_DEFINED)
+                counts["labels"] += 1
+            except Exception:
+                pass  # name may be invalid; others still apply
             continue
         func.setName(fn.name, SourceType.USER_DEFINED)
         counts["functions"] += 1
@@ -410,6 +457,22 @@ def _kb_apply_program(program, kb, flat_api, *, apply_prototypes=True, apply_typ
     return counts
 
 
+def _kb_apply_txn(program, kb) -> dict:
+    """Apply *kb* to *program* inside one transaction and return the counts.
+
+    Persistence is the caller's job, because an explicit ``program.save`` is
+    rejected ("Unable to lock due to active transaction") while the program is
+    live inside pyghidra's ``open_program`` context. The supported path is
+    pyghidra's own ``project.save(program)`` on context exit: the cold path gets
+    it from leaving the ``with`` block, the daemon by closing the program.
+    """
+    txn = program.startTransaction("kb_apply")
+    try:
+        return _kb_apply_program(program, kb)
+    finally:
+        program.endTransaction(txn, True)
+
+
 def kb_apply(project_dir: str, binary: str, kb_path: str) -> str:
     """Apply kb.h to the analyzed Ghidra program (one transaction)."""
     from kb import parse_kb
@@ -418,8 +481,7 @@ def kb_apply(project_dir: str, binary: str, kb_path: str) -> str:
     if not is_analyzed(project_dir, binary_path.name):
         return f"[error] no analyzed project for {binary_path.name} in {project_dir}"
 
-    game = Path(project_dir).parent.name
-    routed = _route_daemon(game, {"cmd": "kb_apply", "binary": binary, "kb": kb_path})
+    routed = _route_daemon(project_dir, {"cmd": "kb_apply", "binary": binary, "kb": kb_path})
     if routed is not None:
         if not routed.get("ok"):
             return f"[error] {routed.get('error')}"
@@ -439,12 +501,7 @@ def kb_apply(project_dir: str, binary: str, kb_path: str) -> str:
         project_name=binary_path.stem, analyze=False,
     ) as flat_api:
         program = flat_api.getCurrentProgram()
-        txn = program.startTransaction("kb_apply")
-        try:
-            counts = _kb_apply_program(program, kb, flat_api)
-        finally:
-            program.endTransaction(txn, True)
-        program.save("kb_apply", None)
+        counts = _kb_apply_txn(program, kb)
     summary = ", ".join(f"{k}={v}" for k, v in counts.items())
     return f"kb-apply complete: {summary}"
 
@@ -483,7 +540,7 @@ def main():
     p_export = sub.add_parser("export", help="Export analyzed facts into index.db")
     p_export.add_argument("binary", help="Path to PE binary")
     p_export.add_argument("--project", required=True, help="Project directory")
-    p_export.add_argument("--db", default=None, help="index.db path (default patches/<stem>/index.db)")
+    p_export.add_argument("--db", default=None, help="index.db path (default <project>/index.db)")
 
     # --- kb-apply ---
     p_kb = sub.add_parser("kb-apply", help="Apply kb.h names/types into the Ghidra project")
@@ -517,7 +574,7 @@ def main():
 
     if args.command == "export":
         from index import GameIndex
-        db_path = args.db or GameIndex.default_db_path(Path(args.binary).stem)
+        db_path = args.db or GameIndex.project_db_path(args.project)
         print(export(ghidra_dir, args.binary, db_path))
         raise SystemExit(0)
 

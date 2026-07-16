@@ -226,27 +226,33 @@ def _analyze_imports(b: Binary) -> list:
         return []
 
 
-def _seed_strings(b: Binary) -> tuple[int, list[str]]:
+_ERROR_KEYWORDS = [
+    "error", "fail", "assert", "fatal", "exception",
+    "invalid", "corrupt", "abort", "panic", "warning",
+]
+
+
+def _seed_strings(all_strings: list) -> tuple[int, list[str]]:
     """Seed KB with error/diagnostic string references.
 
+    Filters a single precomputed string sweep rather than re-scanning: an
+    error string is any string of length >= 6 containing a keyword, which is
+    exactly what ``find_strings(filter_keywords=..., min_len=6)`` would return
+    because the sweep yields maximal printable runs.
+
     Args:
-        b: Loaded Binary instance.
+        all_strings: Result of one ``find_strings(b, min_len=4)`` sweep.
 
     Returns:
-        (string count, list of KB entry strings).
+        (matched string count, list of KB entry strings).
     """
-    error_keywords = [
-        "error", "fail", "assert", "fatal", "exception",
-        "invalid", "corrupt", "abort", "panic", "warning",
+    matched = [
+        s for s in all_strings
+        if len(s.value) >= 6 and any(kw in s.value.lower() for kw in _ERROR_KEYWORDS)
     ]
-    try:
-        from search import find_strings
-        strings = find_strings(b, filter_keywords=error_keywords, min_len=6)
-    except (ImportError, ValueError):
-        return 0, []
 
     kb_entries = []
-    for sref in strings:
+    for sref in matched:
         if sref.va is None:
             continue
         safe_str = sref.value[:80].replace("*/", "* /")
@@ -254,7 +260,7 @@ def _seed_strings(b: Binary) -> tuple[int, list[str]]:
         label = re.sub(r"[^A-Za-z0-9_]", "_", sref.value[:40]).strip("_")
         if label:
             kb_entries.append(f"{comment}\n@ 0x{sref.va:X} str_{label};")
-    return len(strings), kb_entries
+    return len(matched), kb_entries
 
 
 def _propagate_labels(
@@ -316,14 +322,18 @@ def _propagate_labels(
     return kb_entries
 
 
-def _seed_index(b: Binary, db_path: str) -> None:
+def _seed_index(b: Binary, db_path: str, strings: list | None = None) -> None:
     """Populate index.db from already-computed pefile data (source='bootstrap').
 
     Never raises out to the caller; the index is a convenience, not a
-    prerequisite for a successful bootstrap.
+    prerequisite for a successful bootstrap. *strings* reuses the caller's
+    single ``find_strings`` sweep; when None it sweeps once itself.
     """
     from index import GameIndex
-    from search import find_strings
+
+    if strings is None:
+        from search import find_strings
+        strings = find_strings(b, min_len=4)
 
     gi = GameIndex(db_path)
     try:
@@ -372,7 +382,7 @@ def _seed_index(b: Binary, db_path: str) -> None:
 
         # strings
         str_rows = []
-        for sref in find_strings(b, min_len=4):
+        for sref in strings:
             if sref.va is None:
                 continue
             str_rows.append({
@@ -472,7 +482,13 @@ def bootstrap(
     imports = _analyze_imports(b)
     stats["imports"] = len(imports)
 
-    string_count, string_entries = _seed_strings(b)
+    # One string sweep feeds both the error-string KB seed and the index seed.
+    try:
+        from search import find_strings
+        all_strings = find_strings(b, min_len=4)
+    except (ImportError, ValueError):
+        all_strings = []
+    string_count, string_entries = _seed_strings(all_strings)
     stats["strings_seeded"] = string_count
 
     all_entries = sig_entries + rtti_entries + string_entries
@@ -540,7 +556,7 @@ def bootstrap(
 
     # -- Seed the per-game index (best-effort; never breaks bootstrap) ------
     try:
-        _seed_index(b, os.path.join(project_dir, "index.db"))
+        _seed_index(b, os.path.join(project_dir, "index.db"), all_strings)
     except Exception as e:  # index is a convenience, not a prerequisite
         print(f"index seeding skipped: {e}", file=sys.stderr)
 

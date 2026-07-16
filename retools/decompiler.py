@@ -49,6 +49,12 @@ except ImportError:
 _HERE = Path(__file__).resolve().parent
 _PROJECT = _HERE.parent
 
+# Keep the repo root importable so `python retools/decompiler.py` (which puts
+# only retools/ on sys.path) can still resolve the `retools.*` package imports
+# used below, matching the `-m retools.decompiler` invocation.
+if str(_PROJECT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT))
+
 _BACKEND_CMDS = {
     "pdg": "pdg",    # r2ghidra – best quality
     "pdc": "pdc",    # r2 built-in pseudo-C

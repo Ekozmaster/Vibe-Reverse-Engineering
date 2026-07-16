@@ -11,6 +11,7 @@ import json
 import os
 import socket
 import struct
+from json import JSONDecodeError
 from pathlib import Path
 
 HOST = "127.0.0.1"
@@ -28,7 +29,7 @@ def read_state(project_dir: str) -> dict | None:
         return None
     try:
         return json.loads(p.read_text())
-    except Exception:
+    except (OSError, JSONDecodeError):
         return None
 
 
@@ -52,16 +53,25 @@ def _pid_alive(pid: int | None) -> bool:
 
 
 def is_daemon_alive(project_dir: str) -> bool:
+    """Whether this project's own daemon is running.
+
+    The recorded pid is checked first: all projects share one port, so a hard
+    kill can leave a stale state file while a *different* project's daemon holds
+    the port. Verifying the pid before connecting stops this project's commands
+    from being routed into that foreign daemon; a dead pid also prunes the
+    stale state file.
+    """
     state = read_state(project_dir)
     if state is None:
+        return False
+    if not _pid_alive(state.get("pid")):
+        state_path(project_dir).unlink(missing_ok=True)
         return False
     try:
         s = socket.create_connection((HOST, state.get("port", PORT)), timeout=2)
         s.close()
         return True
     except OSError:
-        if not _pid_alive(state.get("pid")):
-            state_path(project_dir).unlink(missing_ok=True)
         return False
 
 

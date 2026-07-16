@@ -100,3 +100,61 @@ class TestGameIndex:
         assert n == 0
         assert gi.counts()["xrefs"] == 0
         gi.close()
+
+    def test_empty_schema_version_recovers(self, tmp_path):
+        """A crash between schema DDL and the version INSERT leaves schema_version
+        created-but-empty; reopening must repair it, not silently skip the insert."""
+        from index import GameIndex, SCHEMA_VERSION
+        db = str(tmp_path / "index.db")
+        GameIndex(db).close()
+        # Simulate the crash window: drop the version row, keep the table.
+        conn = sqlite3.connect(db)
+        conn.execute("DELETE FROM schema_version")
+        conn.commit()
+        conn.close()
+        gi = GameIndex(db)  # must not leave the DB versionless
+        ver = gi._conn.execute("SELECT version FROM schema_version").fetchone()
+        gi.close()
+        assert ver is not None and ver[0] == SCHEMA_VERSION
+
+    def test_bootstrap_rerun_does_not_downgrade_ghidra(self, tmp_path):
+        """Re-running bootstrap after a ghidra export must not overwrite the
+        authoritative ghidra funcs row with a provisional bootstrap row."""
+        from index import GameIndex
+        gi = GameIndex(str(tmp_path / "index.db"))
+        gi.replace("funcs", [{"address": 0x1000, "name": None}], source="bootstrap")
+        gi.replace("funcs", [{"address": 0x1000, "name": "RealName"}], source="ghidra")
+        # Second bootstrap pass re-seeds the same provisional address.
+        gi.replace("funcs", [{"address": 0x1000, "name": None}], source="bootstrap")
+        row = gi._conn.execute("SELECT name, source FROM funcs WHERE address=0x1000").fetchone()
+        gi.close()
+        assert row == ("RealName", "ghidra")
+
+    def test_xrefs_from_func_is_indexed(self, tmp_path):
+        """The callees view and context lookups filter on xrefs.from_func;
+        it must have a supporting index so the lookup is not a full scan."""
+        from index import GameIndex
+        db = str(tmp_path / "index.db")
+        GameIndex(db).close()
+        conn = sqlite3.connect(db)
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM xrefs WHERE from_func = 0x1000"
+        ).fetchall()
+        conn.close()
+        assert any("ix_xrefs_from_func" in " ".join(str(c) for c in row) for row in plan)
+
+    def test_project_db_path(self, tmp_path):
+        from index import GameIndex
+        p = GameIndex.project_db_path(str(tmp_path / "patches" / "MyGame"))
+        assert p.replace("\\", "/").endswith("patches/MyGame/index.db")
+
+    def test_resolve_db_returns_existing(self, tmp_path):
+        from index import GameIndex
+        db = str(tmp_path / "index.db")
+        GameIndex(db).close()
+        assert GameIndex.resolve_db("ignored", db) == db
+
+    def test_resolve_db_exits_when_absent(self, tmp_path):
+        from index import GameIndex
+        with pytest.raises(SystemExit):
+            GameIndex.resolve_db("NoSuchGame", str(tmp_path / "absent.db"))

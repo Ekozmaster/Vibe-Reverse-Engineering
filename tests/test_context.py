@@ -336,7 +336,10 @@ class TestIndexFastPath:
 
         db = str(tmp_path / "index.db")
         gi = GameIndex(db)
-        gi.replace("funcs", [{"address": 0x2000, "name": "Target"}], source="ghidra")
+        # Both the caller (0x1000) and callee (0x2000) are known functions, as in
+        # a real Ghidra export.
+        gi.replace("funcs", [{"address": 0x1000, "name": "Caller"},
+                             {"address": 0x2000, "name": "Target"}], source="ghidra")
         gi.replace("xrefs", [{"from_ea": 0x1010, "to_ea": 0x2000, "type": "call",
                               "is_code": 1, "from_func": 0x1000}], source="ghidra")
         gi.close()
@@ -369,3 +372,79 @@ class TestIndexFastPath:
         gi.close()
 
         assert _callees_from_index(db, 0x1000) is None
+
+    def test_unknown_start_returns_none(self, tmp_path):
+        """When the queried start isn't a known function entry (find_start
+        disagreed with Ghidra), an empty result must not be trusted."""
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+        from index import GameIndex
+        from context import _callees_from_index
+
+        db = str(tmp_path / "index.db")
+        gi = GameIndex(db)
+        gi.replace("funcs", [{"address": 0x2000, "name": "Known"}], source="ghidra")
+        gi.replace("xrefs", [{"from_ea": 0x2010, "to_ea": 0x3000, "type": "call",
+                              "is_code": 1, "from_func": 0x2000}], source="ghidra")
+        gi.close()
+        # 0x9999 is not a function entry -> caller must scan, not trust []
+        assert _callees_from_index(db, 0x9999) is None
+
+    def test_schemaless_db_returns_none(self, tmp_path):
+        """A present but foreign/half-initialised index.db (no xrefs table) must
+        fall back to None rather than raising OperationalError."""
+        import sqlite3
+        from context import _callees_from_index
+
+        db = str(tmp_path / "index.db")
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE unrelated (x INTEGER)")
+        conn.commit()
+        conn.close()
+        assert _callees_from_index(db, 0x1000) is None
+
+
+class TestAssembleIndexBranch:
+    def _mock_binary(self):
+        b = MagicMock()
+        b.is_64 = False
+        b.base = 0x400000
+        b.disasm.return_value = []
+        b.abs_mem_refs.return_value = []
+        b.abs_imm_refs.return_value = []
+        return b
+
+    def test_kb_name_beats_index_name_and_indirect_recovered(self, tmp_path):
+        """On the index fast-path, a fresh kb.h name outranks the exported Ghidra
+        name, and indirect-call markers from the scan are still emitted."""
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+        from index import GameIndex
+        from context import assemble
+
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        gi = GameIndex(str(proj / "index.db"))
+        gi.replace("funcs", [{"address": 0x401500, "name": "FUN_00401500"},
+                             {"address": 0x401200, "name": "FUN_00401200"}], source="ghidra")
+        gi.replace("xrefs", [{"from_ea": 0x401510, "to_ea": 0x401200, "type": "call",
+                              "is_code": 1, "from_func": 0x401500}], source="ghidra")
+        gi.close()
+
+        kb = proj / "kb.h"
+        kb.write_text("@ 0x401200 void __cdecl RealCallee();\n")
+
+        b = self._mock_binary()
+        with patch("context.find_start", return_value=0x401500), \
+             patch("context.analyze", return_value=([], [(0x401510, 0x401200),
+                                                          (0x401520, "dword ptr [eax + 0x14]")], 0x401600)), \
+             patch("context.aggregate_struct", return_value=[]), \
+             patch("context.find_strings", return_value=[]), \
+             patch("context.propagate_cfg", return_value={}):
+            result = assemble(b, 0x401500, str(proj), project_dir_for_kb=str(proj))
+
+        assert "RealCallee" in result           # kb.h name wins over FUN_00401200
+        assert "FUN_00401200" not in result
+        assert "indirect call" in result        # indirect marker recovered

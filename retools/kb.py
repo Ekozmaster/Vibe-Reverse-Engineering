@@ -49,18 +49,17 @@ def extract_function_name(sig: str) -> str:
     return pre.rsplit(None, 1)[-1].lstrip("*&")
 
 
-def _resolve_text(text_or_path: str | Path) -> str:
-    if isinstance(text_or_path, Path):
-        return text_or_path.read_text(encoding="utf-8", errors="replace")
-    if os.path.isfile(text_or_path):
-        return Path(text_or_path).read_text(encoding="utf-8", errors="replace")
-    return text_or_path
-
-
 def parse_kb(text_or_path: str | Path) -> Kb:
-    """Parse kb.h content (a string) or a path to a kb.h file."""
+    """Parse kb.h content or a file.
+
+    A ``Path`` is read from disk; a ``str`` is always treated as content. Callers
+    that hold a filesystem path pass a ``Path`` so a one-line kb string is never
+    mistaken for a filename.
+    """
+    text = (text_or_path.read_text(encoding="utf-8", errors="replace")
+            if isinstance(text_or_path, Path) else text_or_path)
     kb = Kb()
-    for raw in _resolve_text(text_or_path).splitlines():
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("//"):
             continue

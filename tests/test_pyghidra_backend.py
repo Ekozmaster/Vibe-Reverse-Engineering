@@ -415,7 +415,10 @@ class TestKbApplyProgram:
             def setName(self, name, src): applied["names"].append(name)
 
         class FakeListing:
-            def getFunctionContaining(self, addr): return FakeFunc()
+            # A real function lives at 0x401000; 0x402000 is a data address
+            # (e.g. an RTTI vtable) with no containing function.
+            def getFunctionContaining(self, addr):
+                return FakeFunc() if addr._off == 0x401000 else None
 
         class FakeSymbolTable:
             def createLabel(self, addr, name, src):
@@ -427,12 +430,16 @@ class TestKbApplyProgram:
             def getListing(self): return FakeListing()
             def getSymbolTable(self): return FakeSymbolTable()
 
-        kb = parse_kb("@ 0x401000 void Foo(void);\n$ 0x7C5548 int g_x\n")
-        counts = _kb_apply_program(FakeProgram(), kb, flat_api=None,
+        kb = parse_kb("@ 0x401000 void Foo(void);\n"
+                      "@ 0x402000 SomeClass_vtable;\n"
+                      "$ 0x7C5548 int g_x\n")
+        counts = _kb_apply_program(FakeProgram(), kb,
                                    apply_prototypes=False, apply_types=False)
-        assert "Foo" in applied["names"]
-        assert "g_x" in applied["labels"]
+        assert "Foo" in applied["names"]            # existing function renamed
+        assert "SomeClass_vtable" in applied["labels"]  # data @ -> label, not a bogus function
+        assert "g_x" in applied["labels"]           # $ global -> label
         assert counts["functions"] == 1
+        assert counts["labels"] == 1
         assert counts["globals"] == 1
 
 
@@ -504,7 +511,192 @@ class TestDecompileRouting:
         monkeypatch.setattr(pyghidra_backend, "is_analyzed", lambda project_dir, binary_name: True)
         monkeypatch.setattr(
             pyghidra_backend, "_route_daemon",
-            lambda game, cmd: {"ok": True, "text": "ROUTED"},
+            lambda project_dir, cmd: {"ok": True, "text": "ROUTED"},
         )
         result = pyghidra_backend.decompile(str(tmp_path / "ghidra"), "test.exe", 0x401000)
         assert result == "ROUTED"
+
+
+class TestRouteDaemonSafety:
+    def test_wrong_project_response_falls_back_to_cold(self, monkeypatch):
+        """A daemon that reports it serves a different project must not answer;
+        _route_daemon returns None so the caller takes the cold path."""
+        from pyghidra_backend import _route_daemon
+        import ghidra_client
+
+        monkeypatch.setattr(ghidra_client, "is_daemon_alive", lambda project_dir: True)
+        monkeypatch.setattr(
+            ghidra_client, "send_command",
+            lambda project_dir, cmd, timeout=None: {"ok": False, "wrong_project": True},
+        )
+        assert _route_daemon(str(Path("patches") / "G" / "ghidra"), {"cmd": "decompile"}) is None
+
+    def test_timeout_propagates_not_silent_cold_retry(self, monkeypatch):
+        """A timeout on a live daemon may have already run the command; falling
+        through to a cold re-run would double-execute, so it must raise."""
+        import socket
+        from pyghidra_backend import _route_daemon
+        import ghidra_client
+
+        monkeypatch.setattr(ghidra_client, "is_daemon_alive", lambda project_dir: True)
+
+        def _timeout(project_dir, cmd, timeout=None):
+            raise socket.timeout("timed out")
+
+        monkeypatch.setattr(ghidra_client, "send_command", _timeout)
+        with pytest.raises(Exception):
+            _route_daemon(str(Path("patches") / "G" / "ghidra"), {"cmd": "export"})
+
+    def test_injects_game_identity(self, monkeypatch):
+        """_route_daemon tags the command with the game derived from project_dir
+        so the daemon can reject cross-project routing."""
+        from pyghidra_backend import _route_daemon
+        import ghidra_client
+
+        seen = {}
+        monkeypatch.setattr(ghidra_client, "is_daemon_alive", lambda project_dir: True)
+        monkeypatch.setattr(
+            ghidra_client, "send_command",
+            lambda project_dir, cmd, timeout=None: seen.update(cmd) or {"ok": True},
+        )
+        _route_daemon(str(Path("patches") / "MyGame" / "ghidra"),
+                      {"cmd": "export", "binary": "game.exe", "db": "patches/MyGame/index.db"})
+        assert seen.get("game") == "MyGame"
+        # Paths are absolutised so the daemon can't resolve them against a
+        # different cwd than the client's.
+        assert Path(seen["binary"]).is_absolute()
+        assert Path(seen["db"]).is_absolute()
+
+
+class TestIterBlocks:
+    def test_func_ea_is_containing_function_entry(self, monkeypatch):
+        """Every basic block must be keyed by its owning function's entry point,
+        not by the block's own start address."""
+        import sys
+        import types
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+
+        for name in ("ghidra", "ghidra.program", "ghidra.program.model",
+                     "ghidra.program.model.block", "ghidra.util", "ghidra.util.task"):
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+
+        class FakeAddr:
+            def __init__(self, off): self._off = off
+            def getOffset(self): return self._off
+
+        class FakeBlock:
+            def __init__(self, start, end):
+                self._start = FakeAddr(start)
+                self._end = FakeAddr(end - 1)
+            def getFirstStartAddress(self): return self._start
+            def getMaxAddress(self): return self._end
+
+        class FakeIter:
+            def __init__(self, blocks): self._b = list(blocks)
+            def hasNext(self): return bool(self._b)
+            def next(self): return self._b.pop(0)
+
+        class FakeModel:
+            def __init__(self, program): pass
+            def getCodeBlocks(self, monitor):
+                return FakeIter([FakeBlock(0x401000, 0x401020),
+                                 FakeBlock(0x401020, 0x401055)])
+
+        class FakeFunc:
+            def getEntryPoint(self): return FakeAddr(0x401000)
+
+        class FakeFuncMgr:
+            def getFunctionContaining(self, addr): return FakeFunc()
+
+        class FakeProgram:
+            def getFunctionManager(self): return FakeFuncMgr()
+
+        monkeypatch.setattr(sys.modules["ghidra.program.model.block"],
+                            "BasicBlockModel", FakeModel, raising=False)
+        monkeypatch.setattr(sys.modules["ghidra.util.task"],
+                            "ConsoleTaskMonitor", lambda: object(), raising=False)
+
+        from pyghidra_backend import _iter_blocks
+        rows = list(_iter_blocks(FakeProgram()))
+        assert [r["func_ea"] for r in rows] == [0x401000, 0x401000]
+        assert [r["start_ea"] for r in rows] == [0x401000, 0x401020]
+
+
+class TestIterXrefs:
+    def test_containing_function_is_cached_across_consecutive_refs(self):
+        """Consecutive refs in the same function must not each pay a manager
+        lookup; the containing function is cached and re-tested by body."""
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+        from pyghidra_backend import _iter_xrefs
+
+        class FakeAddr:
+            def __init__(self, off): self._off = off
+            def getOffset(self): return self._off
+
+        class FakeType:
+            def isCall(self): return True
+            def isJump(self): return False
+            def isData(self): return False
+
+        class FakeRef:
+            def __init__(self, frm, to):
+                self._f = FakeAddr(frm)
+                self._t = FakeAddr(to)
+            def getFromAddress(self): return self._f
+            def getToAddress(self): return self._t
+            def getReferenceType(self): return FakeType()
+
+        class FakeBody:
+            def contains(self, addr): return 0x401000 <= addr.getOffset() < 0x402000
+
+        class FakeFunc:
+            def getBody(self): return FakeBody()
+            def getEntryPoint(self): return FakeAddr(0x401000)
+
+        class FakeRefIter:
+            def __init__(self, refs): self._r = list(refs)
+            def hasNext(self): return bool(self._r)
+            def next(self): return self._r.pop(0)
+
+        class FakeRefMgr:
+            def getReferenceIterator(self, addr):
+                return FakeRefIter([FakeRef(0x401010, 0x500000), FakeRef(0x401030, 0x500004)])
+
+        calls = {"n": 0}
+
+        class FakeFuncMgr:
+            def getFunctionContaining(self, addr):
+                calls["n"] += 1
+                return FakeFunc()
+
+        class FakeProgram:
+            def getReferenceManager(self): return FakeRefMgr()
+            def getFunctionManager(self): return FakeFuncMgr()
+            def getMinAddress(self): return FakeAddr(0)
+
+        rows = list(_iter_xrefs(FakeProgram()))
+        assert len(rows) == 2
+        assert all(r["from_func"] == 0x401000 for r in rows)
+        assert calls["n"] == 1  # second ref served from cache
+
+
+class TestExportCLIDbPath:
+    def test_export_db_defaults_to_project_dir(self, tmp_path, monkeypatch):
+        """`export --project patches/MyGame` (no --db) must write to
+        patches/MyGame/index.db, not patches/<binary-stem>/index.db."""
+        import pyghidra_backend
+        captured = {}
+        monkeypatch.setattr(
+            pyghidra_backend, "export",
+            lambda ghidra_dir, binary, db_path: captured.update(db=db_path) or "ok",
+        )
+        binary = tmp_path / "game.exe"
+        binary.write_bytes(b"MZ")
+        proj = tmp_path / "patches" / "MyGame"
+        sys.argv = ["pyghidra_backend", "export", str(binary), "--project", str(proj)]
+        with pytest.raises(SystemExit):
+            pyghidra_backend.main()
+        assert captured["db"] == str(proj / "index.db")

@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import argparse
 import re
+import sqlite3
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
-from kb import parse_kb
+from kb import parse_kb, Kb
 from funcinfo import find_start, analyze
 from structrefs import aggregate_struct
 from search import find_strings
@@ -95,24 +96,32 @@ def postprocess(raw_output: str, kb_names: dict[int, str],
 def _callees_from_index(db_path: str, func_ea: int) -> list[tuple[int, str]] | None:
     """Resolve (callee_addr, name) pairs for a function from index.db.
 
-    Returns None when the index is absent so the caller falls back to scanning.
+    Returns None (so the caller falls back to a disassembly scan) when the index
+    is absent, has no Ghidra xrefs, is missing/foreign-schema'd, or does not know
+    *func_ea* as a function entry -- in the last case an empty result would mean
+    "find_start disagreed with Ghidra", not "this function calls nothing", and
+    must not be trusted.
     """
     if not Path(db_path).is_file():
         return None
     conn = GameIndex.open_ro(db_path)
     try:
-        # xrefs is exclusively ghidra-sourced (bootstrap never writes it), so a
-        # bootstrap-only index has an empty xrefs table -- fall back to scanning
-        # rather than trusting an authoritative-looking empty callees result.
-        if conn.execute("SELECT 1 FROM xrefs LIMIT 1").fetchone() is None:
-            return None
-        rows = conn.execute(
-            "SELECT x.to_ea, COALESCE(f.name, '') FROM xrefs x "
-            "LEFT JOIN funcs f ON f.address = x.to_ea "
-            "WHERE x.from_func = ? AND x.is_code = 1 AND x.type = 'call' "
-            "GROUP BY x.to_ea ORDER BY x.to_ea",
-            (func_ea,),
-        ).fetchall()
+        try:
+            has_xrefs = conn.execute("SELECT 1 FROM xrefs LIMIT 1").fetchone() is not None
+            known = conn.execute(
+                "SELECT 1 FROM funcs WHERE address = ? LIMIT 1", (func_ea,)
+            ).fetchone() is not None
+            if not has_xrefs or not known:
+                return None
+            rows = conn.execute(
+                "SELECT x.to_ea, COALESCE(f.name, '') FROM xrefs x "
+                "LEFT JOIN funcs f ON f.address = x.to_ea "
+                "WHERE x.from_func = ? AND x.is_code = 1 AND x.type = 'call' "
+                "GROUP BY x.to_ea ORDER BY x.to_ea",
+                (func_ea,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return None  # half-initialised or foreign schema -> scan instead
     finally:
         conn.close()
     return [(int(a), n) for a, n in rows]
@@ -154,10 +163,11 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
     start = find_start(b, va) or va
     lines: list[str] = [f"=== CONTEXT FOR 0x{start:0{w}X} ==="]
 
-    # -- KB lookup --
+    # -- KB lookup (parse once, derive both maps) --
     kb_path = _find_kb_path(project_dir, project_dir_for_kb)
-    kb_names = _parse_kb_names(kb_path)
-    kb_globals = _parse_kb_globals(kb_path)
+    kb = parse_kb(kb_path) if kb_path.is_file() else Kb()
+    kb_names = {f.address: f.name for f in kb.functions if f.name}
+    kb_globals = {g.address: g.name for g in kb.globals if g.name}
 
     # -- Identity --
     if start in kb_names:
@@ -168,11 +178,20 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
     # -- Callees (index fast-path, else scan) --
     rets, calls, end_va = analyze(b, start, max_size=0x2000)
     lines.append("[callees]")
-    db_index = GameIndex.default_db_path(Path(project_dir).name)
+    db_index = GameIndex.project_db_path(project_dir)
     indexed = _callees_from_index(db_index, start)
     if indexed is not None:
+        # kb.h is the hand-edited source of truth, so a kb name outranks the
+        # exported Ghidra name (which may be a stale FUN_ auto-name).
         for target, name in indexed:
-            lines.append(f"  0x{target:0{w}X}: {name or kb_names.get(target, 'unknown')}")
+            lines.append(f"  0x{target:0{w}X}: {kb_names.get(target) or name or 'unknown'}")
+        # Ghidra emits no xref row for unresolved indirect calls, so recover
+        # those markers from the scan to keep virtual dispatch visible.
+        seen_indirect: set[str] = set()
+        for _, target in calls:
+            if isinstance(target, str) and target not in seen_indirect:
+                seen_indirect.add(target)
+                lines.append(f"  {target}: indirect call")
     else:
         seen_targets: set[int | str] = set()
         for _, target in calls:

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS xrefs (from_ea INTEGER, to_ea INTEGER, type TEXT, is_
                     from_func INTEGER, source TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_xrefs_to ON xrefs(to_ea);
 CREATE INDEX IF NOT EXISTS ix_xrefs_from ON xrefs(from_ea);
+CREATE INDEX IF NOT EXISTS ix_xrefs_from_func ON xrefs(from_func);
 CREATE TABLE IF NOT EXISTS strings (address INTEGER PRIMARY KEY, length INTEGER, type TEXT, encoding TEXT,
                       content TEXT, source TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS imports (address INTEGER, name TEXT, module TEXT, ordinal INTEGER, source TEXT NOT NULL);
@@ -68,9 +69,25 @@ _TABLE_COLUMNS = {
 
 _MAX_ADDR = (1 << 63) - 1
 
+# Authoritative producers outrank provisional ones at the same address. A row
+# never overwrites a row written by a higher-priority source, so re-running
+# bootstrap after a Ghidra export cannot downgrade a named Ghidra function back
+# to a provisional (name=NULL) bootstrap row. Unlisted sources rank 0.
+_SOURCE_PRIORITY = {"bootstrap": 0, "ghidra": 10}
+
+# Tables whose single-address primary key can collide across sources, so their
+# inserts must respect _SOURCE_PRIORITY. Append-only tables (xrefs, imports,
+# entries, segments, blocks) never collide destructively and are excluded.
+_PRIORITY_KEY = {"funcs": "address"}
+
 
 def _is_addr_col(col: str) -> bool:
     return col == "address" or col.endswith("_ea") or col == "from_func"
+
+
+def _priority_case(ref: str) -> str:
+    whens = " ".join(f"WHEN '{s}' THEN {p}" for s, p in _SOURCE_PRIORITY.items())
+    return f"CASE {ref}.source {whens} ELSE 0 END"
 
 
 class GameIndex:
@@ -89,35 +106,34 @@ class GameIndex:
         self._init_schema()
 
     def _init_schema(self) -> None:
-        cur = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
-        )
-        if cur.fetchone() is not None:
-            row = self._conn.execute("SELECT version FROM schema_version").fetchone()
-            if row and row[0] > SCHEMA_VERSION:
-                self._conn.close()
-                self._conn = None
-                raise RuntimeError(
-                    f"Index schema version {row[0]} is newer than code version "
-                    f"{SCHEMA_VERSION}. Update the code."
-                )
-            return
+        # The DDL is fully idempotent (CREATE ... IF NOT EXISTS), so running it
+        # unconditionally also repairs a schema left partial by an interrupted
+        # first open. The version row is written separately and may be missing if
+        # a crash landed between the DDL and its INSERT -- treat missing as fresh.
         self._conn.executescript(_SCHEMA_SQL)
-        self._conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        self._conn.commit()
+        row = self._conn.execute("SELECT version FROM schema_version").fetchone()
+        if row is None:
+            self._conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+            self._conn.commit()
+        elif row[0] > SCHEMA_VERSION:
+            self._conn.close()
+            self._conn = None
+            raise RuntimeError(
+                f"Index schema version {row[0]} is newer than code version "
+                f"{SCHEMA_VERSION}. Update the code."
+            )
 
     def replace(self, table: str, rows: list[dict], source: str) -> int:
         """Replace all *source* rows in *table* with *rows*, transactionally.
 
         Rows are dicts keyed by column name (``source`` is injected). Any row
         whose address column exceeds signed-64 range is skipped with a warning.
-        If a row's address collides with a row from another source, it overwrites it
-        (last writer wins), allowing authoritative sources (e.g. Ghidra) to replace
-        provisional data (e.g. bootstrap). This is a plain address-keyed upsert with
-        no source-priority check, so re-running bootstrap AFTER a ghidra export
-        overwrites the authoritative source='ghidra' funcs row with a provisional
-        source='bootstrap' row (name=NULL) at the same address; recovery is to
-        re-run export.
+
+        Cross-source collisions on a single-address key (see ``_PRIORITY_KEY``)
+        respect ``_SOURCE_PRIORITY``: a row never overwrites one from a
+        higher-priority source. So Ghidra's export replaces provisional bootstrap
+        rows, but a later bootstrap re-run leaves the authoritative Ghidra rows
+        intact.
 
         Returns:
             Number of rows inserted.
@@ -147,7 +163,16 @@ class GameIndex:
                   file=sys.stderr)
 
         placeholders = ",".join("?" * len(cols))
-        insert_sql = f"INSERT OR REPLACE INTO {table} ({','.join(cols)}) VALUES ({placeholders})"
+        key = _PRIORITY_KEY.get(table)
+        if key is not None:
+            set_clause = ", ".join(f"{c}=excluded.{c}" for c in cols if c != key)
+            insert_sql = (
+                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "
+                f"ON CONFLICT({key}) DO UPDATE SET {set_clause} "
+                f"WHERE {_priority_case('excluded')} >= {_priority_case(table)}"
+            )
+        else:
+            insert_sql = f"INSERT OR REPLACE INTO {table} ({','.join(cols)}) VALUES ({placeholders})"
         with self._conn:  # single transaction
             self._conn.execute(f"DELETE FROM {table} WHERE source=?", (source,))
             self._conn.executemany(insert_sql, tuples)
@@ -161,10 +186,7 @@ class GameIndex:
 
     def close(self) -> None:
         if self._conn is not None:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
+            self._conn.close()
             self._conn = None
 
     @classmethod
@@ -175,7 +197,34 @@ class GameIndex:
 
     @staticmethod
     def default_db_path(game: str) -> str:
+        """Canonical index.db for a game *name* (used by the name-only CLIs)."""
         return str(_PROJECT / "patches" / game / "index.db")
+
+    @staticmethod
+    def resolve_db(game: str, db: str | None = None) -> str:
+        """Resolve a game's index.db for the read CLIs, or exit with guidance.
+
+        Shared by the ``index status`` and ``query`` front-ends so both print the
+        same message and honour ``--db`` identically.
+        """
+        db_path = db or GameIndex.default_db_path(game)
+        if not Path(db_path).is_file():
+            print(f"[error] no index at {db_path}. Run bootstrap or 'pyghidra_backend export' first.",
+                  file=sys.stderr)
+            raise SystemExit(1)
+        return db_path
+
+    @staticmethod
+    def project_db_path(project_dir: str) -> str:
+        """index.db location for a project *directory*.
+
+        The index always lives beside kb.h in the project dir, so bootstrap
+        (writer), export (writer), and context (reader) resolve the same file
+        from the same ``--project`` value regardless of cwd. Equivalent to
+        ``default_db_path`` when the project dir is the canonical
+        ``patches/<game>``.
+        """
+        return str(Path(project_dir) / "index.db")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -186,13 +235,9 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--db", default=None, help="Explicit index.db path")
     args = p.parse_args(argv)
 
-    db_path = args.db or GameIndex.default_db_path(args.game)
-    if not Path(db_path).is_file():
-        print(f"[error] no index at {db_path}. Run bootstrap or 'pyghidra_backend export' first.",
-              file=sys.stderr)
-        raise SystemExit(1)
+    db_path = GameIndex.resolve_db(args.game, args.db)
 
-    gi = GameIndex(db_path)
+    gi = GameIndex(db_path)  # repairs a missing version row on open
     ver = gi._conn.execute("SELECT version FROM schema_version").fetchone()[0]
     counts = gi.counts()
     gi.close()

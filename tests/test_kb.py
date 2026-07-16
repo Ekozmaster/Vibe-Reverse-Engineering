@@ -79,6 +79,27 @@ class TestParseKb:
         assert isinstance(kb.functions, list)
 
 
+class TestParseKbInputHandling:
+    def test_content_that_names_a_file_is_parsed_as_content(self, tmp_path, monkeypatch):
+        """A one-line kb string is parsed as content even if it happens to match
+        an existing filename -- parse_kb must not sniff strings as paths."""
+        from kb import parse_kb
+        monkeypatch.chdir(tmp_path)
+        # Create a file whose name equals the content we pass.
+        content = "@ 0x401000 void Foo(void);"
+        (tmp_path / content.replace("/", "_")).write_text("@ 0xDEAD void Other(void);\n")
+        kb = parse_kb(content)  # str -> treated as content, never read as a path
+        assert kb.functions[0].name == "Foo"
+        assert kb.functions[0].address == 0x401000
+
+    def test_path_is_read(self, tmp_path):
+        from kb import parse_kb
+        p = tmp_path / "kb.h"
+        p.write_text("@ 0x402000 void Bar(void);\n")
+        kb = parse_kb(p)
+        assert kb.functions[0].name == "Bar"
+
+
 class TestReadExistingAddresses:
     def test_collects_function_addresses(self, tmp_path):
         from kb import read_existing_addresses

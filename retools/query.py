@@ -77,11 +77,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--schema", metavar="TABLE", help="Print PRAGMA table_info for TABLE and exit")
     args = p.parse_args(argv)
 
-    db_path = args.db or GameIndex.default_db_path(args.game)
-    if not Path(db_path).is_file():
-        print(f"[error] no index at {db_path}. Run bootstrap or 'pyghidra_backend export' first.",
-              file=sys.stderr)
-        raise SystemExit(1)
+    db_path = GameIndex.resolve_db(args.game, args.db)
 
     conn = GameIndex.open_ro(db_path)
     try:

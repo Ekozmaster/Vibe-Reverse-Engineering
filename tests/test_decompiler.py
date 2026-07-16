@@ -9,6 +9,33 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
 
 
+class TestScriptModeImports:
+    def test_load_types_import_resolves_in_script_mode(self, tmp_path):
+        """`python retools/decompiler.py` puts only retools/ on sys.path[0];
+        _load_types must still be able to import the kb parser."""
+        import subprocess
+        import textwrap
+
+        retools = Path(__file__).resolve().parent.parent / "retools"
+        driver = tmp_path / "driver.py"
+        driver.write_text(textwrap.dedent(f"""
+            import sys
+            sys.path.insert(0, r"{retools}")   # simulate script-dir-only sys.path
+            import decompiler
+
+            class FakeR2:
+                def cmd(self, c): pass
+
+            decompiler._load_types(FakeR2(), "@ 0x401000 void Foo(void);")
+            print("OK")
+        """))
+        proc = subprocess.run(
+            [sys.executable, str(driver)],
+            cwd=str(tmp_path), capture_output=True, text=True,
+        )
+        assert "OK" in proc.stdout, proc.stderr
+
+
 class TestBackendRouting:
     def test_auto_no_project_uses_r2(self):
         """--backend auto without --project should use r2ghidra."""
