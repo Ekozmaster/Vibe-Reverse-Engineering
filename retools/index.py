@@ -70,7 +70,7 @@ _MAX_ADDR = (1 << 63) - 1
 
 
 def _is_addr_col(col: str) -> bool:
-    return col == "address" or col.endswith("_ea")
+    return col == "address" or col.endswith("_ea") or col == "from_func"
 
 
 class GameIndex:
@@ -111,6 +111,9 @@ class GameIndex:
 
         Rows are dicts keyed by column name (``source`` is injected). Any row
         whose address column exceeds signed-64 range is skipped with a warning.
+        If a row's address collides with a row from another source, it overwrites it
+        (last writer wins), allowing authoritative sources (e.g. Ghidra) to replace
+        provisional data (e.g. bootstrap).
 
         Returns:
             Number of rows inserted.
@@ -140,7 +143,7 @@ class GameIndex:
                   file=sys.stderr)
 
         placeholders = ",".join("?" * len(cols))
-        insert_sql = f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders})"
+        insert_sql = f"INSERT OR REPLACE INTO {table} ({','.join(cols)}) VALUES ({placeholders})"
         with self._conn:  # single transaction
             self._conn.execute(f"DELETE FROM {table} WHERE source=?", (source,))
             self._conn.executemany(insert_sql, tuples)

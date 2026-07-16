@@ -76,3 +76,27 @@ class TestGameIndex:
         conn.close()
         with pytest.raises(RuntimeError):
             GameIndex(db)
+
+    def test_cross_source_overwrite(self, tmp_path):
+        from index import GameIndex
+        gi = GameIndex(str(tmp_path / "index.db"))
+        # Bootstrap writes a func with None name
+        gi.replace("funcs", [{"address": 0x1000, "name": None}], source="bootstrap")
+        # Ghidra overwrites the same address with a real name
+        gi.replace("funcs", [{"address": 0x1000, "name": "Foo"}], source="ghidra")
+        # Should have 1 row, with name='Foo' from ghidra source
+        assert gi.counts()["funcs"] == 1
+        row = gi._conn.execute("SELECT name, source FROM funcs").fetchone()
+        assert row[0] == "Foo"
+        assert row[1] == "ghidra"
+        gi.close()
+
+    def test_from_func_high_bit_skipped(self, tmp_path):
+        from index import GameIndex
+        gi = GameIndex(str(tmp_path / "index.db"))
+        n = gi.replace("xrefs", [
+            {"from_ea": 0x1000, "to_ea": 0x2000, "type": "call", "is_code": 1, "from_func": 0x8000000000000000}
+        ], source="ghidra")
+        assert n == 0
+        assert gi.counts()["xrefs"] == 0
+        gi.close()
