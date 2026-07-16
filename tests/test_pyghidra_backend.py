@@ -322,3 +322,58 @@ class TestCLI:
             main()
         captured = capsys.readouterr()
         assert "void bar(void)" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# export / _export_program
+# ---------------------------------------------------------------------------
+
+class TestExportProgram:
+    def test_export_program_writes_ghidra_rows(self, tmp_path):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+        from pyghidra_backend import _export_program
+        from index import GameIndex
+
+        # --- minimal fakes mimicking the Ghidra API surface used by _export_program ---
+        class FakeAddr:
+            def __init__(self, off): self._off = off
+            def getOffset(self): return self._off
+
+        class FakeBody:
+            def __init__(self, start, end, n):
+                self._max = FakeAddr(end)
+                self._n = n
+            def getMaxAddress(self): return self._max
+            def getNumAddresses(self): return self._n
+
+        class FakeSig:
+            def getPrototypeString(self): return "void Foo(void)"
+
+        class FakeFunc:
+            def __init__(self, ep, name):
+                self._ep = FakeAddr(ep)
+                self._name = name
+            def getEntryPoint(self): return self._ep
+            def getName(self): return self._name
+            def getBody(self): return FakeBody(self._ep.getOffset(), self._ep.getOffset() + 0x40, 0x40)
+            def getSignature(self): return FakeSig()
+
+        class FakeFuncMgr:
+            def getFunctions(self, forward): return [FakeFunc(0x148001000, "Foo")]
+
+        class FakeProgram:
+            def getFunctionManager(self): return FakeFuncMgr()
+
+        gi = GameIndex(str(tmp_path / "index.db"))
+        # _export_program must accept an optional iterables override so xrefs/blocks
+        # (which need Ghidra-only classes) can be supplied empty in the fake path.
+        counts = _export_program(FakeProgram(), gi, xrefs=[], blocks=[])
+        assert counts["funcs"] == 1
+        assert gi.counts()["funcs"] == 1
+        row = gi._conn.execute("SELECT name, prototype, source FROM funcs").fetchone()
+        gi.close()
+        assert row[0] == "Foo"
+        assert row[1] == "void Foo(void)"
+        assert row[2] == "ghidra"
