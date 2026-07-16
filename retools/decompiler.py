@@ -104,6 +104,8 @@ def _load_types(r2, types_arg: str) -> None:
         text = types_arg
 
     kb = parse_kb(text)
+    for td in kb.typedefs:
+        r2.cmd(f"td {td}")
     for fn in kb.functions:
         r2.cmd(f"af @ {fn.address:#x}")
         r2.cmd(f"afn {fn.name} @ {fn.address:#x}")
@@ -112,8 +114,6 @@ def _load_types(r2, types_arg: str) -> None:
         r2.cmd(f"f {g.name} @ {g.address:#x}")
         if g.type:
             r2.cmd(f"tl {g.type} @ {g.address:#x}")
-    for td in kb.typedefs:
-        r2.cmd(f"td {td}")
 
 
 def decompile(binary: str, va: int, *, backend: str = "auto",

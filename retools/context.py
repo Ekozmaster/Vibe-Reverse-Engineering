@@ -20,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
+from kb import parse_kb
 from funcinfo import find_start, analyze
 from structrefs import aggregate_struct
 from search import find_strings
@@ -43,7 +44,6 @@ def _parse_kb_names(kb_path: Path) -> dict[int, str]:
     """Map function address -> name from a kb.h file."""
     if not kb_path.is_file():
         return {}
-    from kb import parse_kb
     return {f.address: f.name for f in parse_kb(kb_path).functions if f.name}
 
 
@@ -51,7 +51,6 @@ def _parse_kb_globals(kb_path: Path) -> dict[int, str]:
     """Map global address -> name from a kb.h file."""
     if not kb_path.is_file():
         return {}
-    from kb import parse_kb
     return {g.address: g.name for g in parse_kb(kb_path).globals if g.name}
 
 

@@ -51,3 +51,34 @@ class TestBackendRouting:
 
         mock_backend.decompile.assert_called_once()
         assert result == "void func() {}"
+
+
+class FakeR2:
+    def __init__(self):
+        self.cmds = []
+
+    def cmd(self, c):
+        self.cmds.append(c)
+        return ""
+
+
+class TestLoadTypesOrdering:
+    def test_typedefs_emitted_before_references(self, tmp_path):
+        """td must be sent to r2 before any tl/afs that could reference the type."""
+        kb_path = tmp_path / "kb.h"
+        kb_path.write_text(
+            "struct Foo { int x; };\n"
+            "$ 0x7C5548 Foo* g_mainObject\n"
+            "@ 0x401000 void __cdecl ProcessInput(int key);\n"
+        )
+
+        from decompiler import _load_types
+        r2 = FakeR2()
+        _load_types(r2, str(kb_path))
+
+        td_idx = next(i for i, c in enumerate(r2.cmds) if c.startswith("td "))
+        tl_idx = next(i for i, c in enumerate(r2.cmds) if c.startswith("tl "))
+        afs_idx = next(i for i, c in enumerate(r2.cmds) if c.startswith("afs "))
+
+        assert td_idx < tl_idx
+        assert td_idx < afs_idx
