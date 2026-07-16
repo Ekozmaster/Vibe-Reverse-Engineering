@@ -37,7 +37,7 @@ def run_query(conn: sqlite3.Connection, sql: str) -> dict:
             "elapsed_ms": round(elapsed, 3),
             "error": None,
         }
-    except sqlite3.OperationalError as e:
+    except (sqlite3.Error, sqlite3.Warning) as e:
         elapsed = (time.perf_counter() - t0) * 1000.0
         return {
             "columns": [],

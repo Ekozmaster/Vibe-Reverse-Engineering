@@ -350,3 +350,22 @@ class TestIndexFastPath:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
         from context import _callees_from_index
         assert _callees_from_index(str(tmp_path / "absent.db"), 0x1000) is None
+
+    def test_empty_xrefs_returns_none(self, tmp_path):
+        """Bootstrap-only projects write funcs but never xrefs (ghidra-only).
+
+        _callees_from_index must fall back to None (scan) rather than
+        trusting an empty callees query result as authoritative.
+        """
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+        from index import GameIndex
+        from context import _callees_from_index
+
+        db = str(tmp_path / "index.db")
+        gi = GameIndex(db)
+        gi.replace("funcs", [{"address": 0x1000, "name": "SomeFunc"}], source="bootstrap")
+        gi.close()
+
+        assert _callees_from_index(db, 0x1000) is None

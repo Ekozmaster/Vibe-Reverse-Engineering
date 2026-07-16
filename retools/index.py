@@ -113,7 +113,11 @@ class GameIndex:
         whose address column exceeds signed-64 range is skipped with a warning.
         If a row's address collides with a row from another source, it overwrites it
         (last writer wins), allowing authoritative sources (e.g. Ghidra) to replace
-        provisional data (e.g. bootstrap).
+        provisional data (e.g. bootstrap). This is a plain address-keyed upsert with
+        no source-priority check, so re-running bootstrap AFTER a ghidra export
+        overwrites the authoritative source='ghidra' funcs row with a provisional
+        source='bootstrap' row (name=NULL) at the same address; recovery is to
+        re-run export.
 
         Returns:
             Number of rows inserted.

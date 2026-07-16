@@ -101,6 +101,11 @@ def _callees_from_index(db_path: str, func_ea: int) -> list[tuple[int, str]] | N
         return None
     conn = GameIndex.open_ro(db_path)
     try:
+        # xrefs is exclusively ghidra-sourced (bootstrap never writes it), so a
+        # bootstrap-only index has an empty xrefs table -- fall back to scanning
+        # rather than trusting an authoritative-looking empty callees result.
+        if conn.execute("SELECT 1 FROM xrefs LIMIT 1").fetchone() is None:
+            return None
         rows = conn.execute(
             "SELECT x.to_ea, COALESCE(f.name, '') FROM xrefs x "
             "LEFT JOIN funcs f ON f.address = x.to_ea "

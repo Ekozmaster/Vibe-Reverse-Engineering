@@ -144,6 +144,9 @@ def _route_daemon(game: str, cmd: dict):
         return None
     try:
         import ghidra_client
+        # Relative path: daemon routing only engages under the canonical
+        # patches/<game>/ghidra layout with cwd=repo root. A different cwd
+        # or layout silently falls back to the cold path (correct-but-slow).
         project_dir = str(Path("patches") / game / "ghidra")
         if not ghidra_client.is_daemon_alive(project_dir):
             return None
@@ -387,8 +390,11 @@ def _kb_apply_program(program, kb, flat_api, *, apply_prototypes=True, apply_typ
 
     for g in kb.globals:
         addr = space.getAddress(g.address)
-        symtab.createLabel(addr, g.name, SourceType.USER_DEFINED)
-        counts["globals"] += 1
+        try:
+            symtab.createLabel(addr, g.name, SourceType.USER_DEFINED)
+            counts["globals"] += 1
+        except Exception:
+            pass  # global name may be invalid; others still apply
 
     if apply_types:
         from ghidra.app.util.cparser.C import CParser
