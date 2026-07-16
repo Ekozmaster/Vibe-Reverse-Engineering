@@ -44,7 +44,9 @@ When analyzing a binary for the first time (no existing or sparsely populated `p
 | Decompiler postprocess (`context.py postprocess`) | Main agent -- instant |
 | Dataflow: constants + backward slice (`dataflow.py`) | Main agent -- fast (<5s) |
 | File editing, patch specs, builds | Main agent — directly |
-| KB updates from subagent findings | `static-analyzer` writes to `kb.h`; main agent may refine |
+| KB updates from subagent findings | `static-analyzer` writes to `kb.h`, then `kb-apply` pushes it into Ghidra; main agent may refine |
+| `index status` / `query` (SQL over `index.db`) | Main agent -- fast (<5s); prefer over xrefs/datarefs/search/funcinfo when index.db already has the answer |
+| `pyghidra_backend.py export` (seed `index.db` from Ghidra) | `static-analyzer` subagent -- run once per analysis pass, after `kb-apply` |
 
 ## Subagent Output Files
 
@@ -62,14 +64,16 @@ Multiple `static-analyzer` instances can run in parallel for independent questio
 
 ## Dual-Backend Deep Analysis
 
-For deep analysis tasks (finding subsystems, mapping call chains, understanding large code areas), spawn **two parallel static-analyzer agents using different decompiler backends**:
+Ghidra (indexed into `index.db`, daemon-backed via `ghidra_server.py`, kb-applied) is the **primary** backend once a project exists — prefer it plus `retools.query` over spawning two agents for most exploratory work. Reserve the dual-agent pattern below for two specific cases: **no Ghidra project exists yet** for this binary, or **pyghidra output on a specific function looks wrong** and you need an independent r2ghidra read to cross-check it.
+
+When one of those applies, spawn **two parallel static-analyzer agents using different decompiler backends**:
 
 1. **r2ghidra agent** — uses `--backend pdg` (with `--types kb.h`), writes to `patches/<project>/findings_r2.md`
 2. **pyghidra agent** — uses `pyghidra_backend.py decompile` (requires Ghidra project), writes to `patches/<project>/findings.md`
 
-**Why both:** Each backend has different strengths. r2ghidra is better at `__thiscall` recovery on small functions and low-level D3D details. pyghidra resolves more library calls, finds larger function scopes, and propagates types better. Neither finds everything alone — merging both gives the most complete picture.
+**Why both:** Each backend has different strengths. r2ghidra is better at `__thiscall` recovery on small functions, low-level D3D details, and needs no JVM/project setup. pyghidra resolves more library calls, finds larger function scopes, propagates types better, and its output is exportable into `index.db` for future queries. Neither finds everything alone — merging both gives the most complete picture.
 
-**When to use dual-backend:** Complex exploratory tasks ("find the culling system", "map the rendering pipeline", "understand the network protocol"). Not needed for single-function decompilation — use `--backend auto` for that.
+**When to use dual-backend:** Only when no Ghidra project exists yet, or when pyghidra output on a specific function looks wrong. Not needed for single-function decompilation once a Ghidra project exists — use `--backend auto` (Ghidra primary, r2ghidra fallback).
 
 **Synthesis:** When both agents return, the main agent reads both findings files and merges them into a unified analysis. Conflicting information is resolved by checking which backend's output is more complete for that specific function.
 

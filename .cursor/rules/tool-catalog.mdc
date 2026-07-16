@@ -28,6 +28,8 @@ These are fast (<5s) and allowed inline:
 - "Trace where this value comes from" → `python -m retools.dataflow $B $VA --slice TARGET_VA:REG`
 - "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json`
 - "Does a Ghidra project exist for this binary?" → `python retools/pyghidra_backend.py status $B --project $P`
+- "What's in this game's index?" → `python -m retools.index status <Game> [--db PATH]`
+- "Query facts already indexed (funcs, names, xrefs, strings, imports, callers/callees)" → `python -m retools.query <Game> "SQL" [--db PATH] [--json] [--list-tables] [--schema TABLE]`
 
 ### Delegate to `static-analyzer` subagent
 
@@ -36,13 +38,13 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 **D3D9-specific questions?** Check the DX analysis scripts section below first — they're faster and more targeted than general retools for D3D API usage, device calls, shader constants, and vertex formats.
 
 - "What does this function do?" → decompile + callgraph + xrefs + dataflow --constants
-- "Who calls this function?" → xrefs or callgraph --up
-- "What does this function call?" → callgraph --down (add --indirect for vtable calls)
+- "Who calls this function?" → xrefs or callgraph --up (prefer `retools.query "SELECT * FROM callers WHERE callee_addr=..."` when index.db exists)
+- "What does this function call?" → callgraph --down (add --indirect for vtable calls) (prefer `retools.query "SELECT * FROM callees WHERE caller=..."` when index.db exists)
 - "Who calls this virtual method?" → xrefs --indirect + filter by vtable slot offset
 - "What constant reaches this call?" → dataflow --constants or --slice VA:REG
 - "Resolve a switch/jump table" → cfg (auto-resolves MSVC switch patterns)
-- "Find a string and who uses it" → string search with xrefs
-- "Where is this global read/written?" → datarefs
+- "Find a string and who uses it" → string search with xrefs (prefer `retools.query "SELECT * FROM grep WHERE name LIKE '%...%'"` when index.db exists)
+- "Where is this global read/written?" → datarefs (prefer `retools.query` against `names`/`xrefs` when index.db exists)
 - "Where is struct field +0x54 used?" → structrefs
 - "What does this struct look like?" → structrefs --aggregate
 - "What C++ class is this vtable?" → RTTI resolution
@@ -52,6 +54,8 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 - "Map all throw sites to error strings" → throwmap list
 - "First time analyzing a binary?" → bootstrap (2-5 min) + pyghidra analyze (5-15 min) in parallel
 - "Bulk signature scan" → sigdb scan (1-3 min)
+- "Seed/refresh the index from a Ghidra project" → `pyghidra_backend.py export` (funcs/names/xrefs/blocks, source='ghidra', authoritative over provisional bootstrap rows)
+- "Push kb.h names/prototypes into the Ghidra project" → `pyghidra_backend.py kb-apply` (idempotent)
 - Any combination of the above
 
 ### Live tools (main agent, requires attached process)
@@ -103,19 +107,24 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 | `pyghidra_backend.py analyze $B --project $P` | **Full Ghidra analysis** -- one-time, saves reusable project | `pyghidra_backend.py analyze game.exe --project patches/MyGame` |
 | `pyghidra_backend.py decompile $B $VA --project $P` | Decompile via saved Ghidra project | `pyghidra_backend.py decompile game.exe 0x401000 --project patches/MyGame` |
 | `pyghidra_backend.py status $B --project $P` | Check if Ghidra project exists | `pyghidra_backend.py status game.exe --project patches/MyGame` |
-| `funcinfo.py $B $VA` | Find function start/end, rets, calling convention, callees | `funcinfo.py binary.exe 0x401000` |
+| `pyghidra_backend.py export $B --project $P [--db]` | Seed funcs/names/xrefs/blocks from an analyzed Ghidra program into index.db (`source='ghidra'`, overwrites provisional bootstrap rows at the same address) | `pyghidra_backend.py export game.exe --project patches/MyGame` |
+| `pyghidra_backend.py kb-apply $B --project $P --kb $KB` | Push kb.h names/prototypes/globals/typedefs into the Ghidra project. Idempotent — safe to re-run | `pyghidra_backend.py kb-apply game.exe --project patches/MyGame --kb patches/MyGame/kb.h` |
+| `index.py status $GAME [--db]` | Per-table row counts + schema_version for `patches/<game>/index.db` | `python -m retools.index status MyGame` |
+| `query.py $GAME "SQL" [--db] [--json] [--list-tables] [--schema TABLE]` | Read-only SQL over index.db. Views: `callers`, `callees`, `grep`. Addresses render as hex via `printf('0x%x', address)`. Connection is opened read-only — cannot mutate | `python -m retools.query MyGame "SELECT * FROM grep WHERE name LIKE '%Ground%'"` |
+| `ghidra_server.py $GAME [--idle SECS]` | Run a per-project Ghidra daemon (port 27043; livetools owns 27042) holding one warm program so repeat `decompile`/`export`/`kb-apply` calls are sub-second instead of paying JVM+analysis startup each time | `python -m retools.ghidra_server MyGame --idle 600` |
+| `funcinfo.py $B $VA` | Find function start/end, rets, calling convention, callees. Prefer `retools.query` on `funcs`/`blocks` when index.db exists | `funcinfo.py binary.exe 0x401000` |
 | `cfg.py $B $VA` | Control flow graph (basic blocks + edges, text or mermaid). Resolves MSVC switch/jump tables automatically. `--switch-details` shows table info | `cfg.py binary.exe 0x401000 --format mermaid` |
 | `callgraph.py $B $VA` | Caller/callee tree (multi-level, --up/--down N). `--indirect` adds vtable/fptr calls to --down trees | `callgraph.py binary.exe 0x401000 --down 2 --indirect` |
-| `xrefs.py $B $VA` | Find all calls/jumps TO an address. `--indirect` also scans for `call [reg+offset]`, `call [reg]`, `call [addr]` | `xrefs.py binary.exe 0x401000 --indirect` |
+| `xrefs.py $B $VA` | Find all calls/jumps TO an address. `--indirect` also scans for `call [reg+offset]`, `call [reg]`, `call [addr]`. Prefer `retools.query "SELECT * FROM callers WHERE callee_addr=..."` when index.db exists | `xrefs.py binary.exe 0x401000 --indirect` |
 | `dataflow.py $B $VA` | Forward constant propagation (`--constants`) or backward register slice (`--slice VA:REG`) within a function | `dataflow.py binary.exe 0x401000 --constants` |
-| `datarefs.py $B $VA` | Find instructions that reference a global address (mem deref + `--imm` for push/mov constants) | `datarefs.py binary.exe 0x7A0000 --imm` |
+| `datarefs.py $B $VA` | Find instructions that reference a global address (mem deref + `--imm` for push/mov constants). Prefer `retools.query` against `xrefs`/`names` when index.db exists | `datarefs.py binary.exe 0x7A0000 --imm` |
 | `structrefs.py $B $OFF` | Find all `[reg+offset]` accesses (struct field usage) | `structrefs.py binary.exe 0x54 --base esi` |
 | `structrefs.py $B --aggregate` | Reconstruct C struct from all field accesses in a function | `structrefs.py binary.exe --aggregate --fn 0x401000 --base esi` |
 | `vtable.py $B dump $VA` | Dump C++ vtable slots with instruction preview | `vtable.py binary.exe dump 0x6A0000` |
 | `vtable.py $B calls $OFF` | Find all indirect `call [reg+offset]` (vtable call sites) | `vtable.py binary.exe calls 0xB0` |
 | `rtti.py $B vtable $VA` | Resolve C++ class name + inheritance chain from vtable (MSVC RTTI) | `rtti.py binary.dll vtable 0x6A0000` |
 | `rtti.py $B throwinfo $RVA` | Resolve exception type from `_ThrowInfo` (MSVC RTTI) | `rtti.py binary.dll throwinfo 0x5040CF8` |
-| `search.py $B strings` | Extract strings with keyword filter | `search.py binary.exe strings -f render,draw` |
+| `search.py $B strings` | Extract strings with keyword filter. Prefer `retools.query "SELECT * FROM grep WHERE name LIKE '%...%'"` when index.db exists | `search.py binary.exe strings -f render,draw` |
 | `search.py $B strings --xrefs` | Find strings AND code locations that reference them | `search.py binary.exe strings -f "error" --xrefs` |
 | `search.py $B pattern` | Find exact byte pattern | `search.py binary.exe pattern "D9 56 54 D8 1D"` |
 | `search.py $B imports` | List PE imports, filter by DLL | `search.py binary.exe imports -d kernel32` |
@@ -162,33 +171,7 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 
 ## Dynamic Analysis (`livetools/`) -- Frida-based, attaches to running process
 
-```
-python -m livetools attach <process>                    # attach to running process by name or PID
-python -m livetools attach "C:/Games/game.exe" --spawn  # launch + instrument before init code runs
-python -m livetools detach                              # end session
-python -m livetools status                              # check connection
-```
-
-| Command | Purpose |
-|---------|---------|
-| `trace $VA` | Non-blocking: log N hits with register/memory reads |
-| `steptrace $VA` | Instruction-level trace (Stalker) with call depth control |
-| `collect $VA [$VA2...]` | Multi-address hit counting over duration |
-| `bp add/del/list $VA` | Breakpoints (stops target) |
-| `watch` | Wait for breakpoint hit |
-| `regs` / `stack` / `bt` | Inspect registers, stack, backtrace at break |
-| `mem read $VA $SIZE` | Read live process memory (supports --as float32) |
-| `mem write $VA $HEX` | Write live process memory |
-| `mem alloc $SIZE` | Allocate rwx memory in target (for code caves) |
-| `disasm [$VA]` | Disassemble from live process |
-| `scan $PATTERN` | Search process memory for byte pattern |
-| `modules` | List loaded modules with base addresses |
-| `dipcnt on/off/read` | D3D9 DrawIndexedPrimitive call counter |
-| `dipcnt callers [N]` | Sample N DIP calls and histogram return addresses |
-| `memwatch start/stop/read` | Memory write watchpoint with backtrace |
-| `vishook on/off/stats` | Selective visibility override via code cave (forces visible above caller threshold) |
-| `gamectl key/keys/click/macro` | Send keys/clicks to game window (no Frida, no focus steal) |
-| `analyze $FILE` | Offline analysis of collected .jsonl trace data |
+Main-agent only (requires a live process; static-analyzer subagents must not use these). Canonical command reference with syntax, read-spec format, and recipes: the `/dynamic-analysis` skill (`.claude/skills/dynamic-analysis/SKILL.md`). Covers attach/spawn, breakpoints, trace/steptrace/collect, mem read/write/alloc, scan, disasm, modules, dipcnt, memwatch, vishook, gamectl, and offline `analyze`.
 
 **NOTE**: Some processes require their window to be focused for traces to capture data.
 
@@ -202,7 +185,7 @@ A proxy DLL that intercepts all 119 `IDirect3DDevice9` methods, capturing every 
 
 ```
 python -m graphics.directx.dx9.tracer codegen -o d3d9_trace_hooks.inc            # C hooks (standalone proxy)
-python -m graphics.directx.dx9.tracer codegen -f cpp -o tracer_dispatch.inc      # C++ dispatch (remix-comp-proxy module)
+python -m graphics.directx.dx9.tracer codegen -f cpp -o tracer_dispatch.inc      # C++ dispatch (remix-comp module)
 cd graphics/directx/dx9/tracer/src && build.bat                                  # build standalone proxy DLL
 # Deploy d3d9.dll + proxy.ini to game directory
 python -m graphics.directx.dx9.tracer trigger --game-dir <GAME_DIR>              # trigger capture (3s countdown)
@@ -316,13 +299,17 @@ Minidumps vary in how much data they capture depending on `MiniDumpWriteDump` fl
 
 These tools find references via absolute memory operands, immediate values (with `--imm` flag), and RIP-relative addressing. If you suspect a reference exists but the tool doesn't find it, the address might be computed at runtime. Try `search.py pattern` with the address bytes directly, or use `livetools memwatch`.
 
-### `pyghidra_backend.py` -- requires Ghidra installation
+### `pyghidra_backend.py` -- Ghidra primary, r2ghidra fallback
+
+Ghidra (via `pyghidra_backend.py`, indexed into `index.db`, daemon-backed, kb-applied) is the **primary** decompilation backend once a project exists — it gives better type propagation, library call resolution, and lets `retools.query` answer structural questions without re-scanning the binary. r2ghidra (`decompiler.py --backend pdg`) is the **zero-setup fallback and second opinion**: no Ghidra install required, faster on small functions, and useful to cross-check a pyghidra result that looks wrong. `decompiler.py --backend auto` tries pyghidra first and falls back to r2ghidra automatically — this routing is unchanged.
 
 Requires Ghidra 11.x+ installed and `GHIDRA_INSTALL_DIR` environment variable set. **Optional** -- the toolkit works without it (r2ghidra remains the fallback).
 
 **Disk usage**: Ghidra projects are ~10-20x the binary size. A 30MB game exe produces a ~300-600MB `.rep/` directory under `patches/<project>/ghidra/`. This directory is already covered by `.gitignore` (the `patches/` exclusion).
 
-**First-time analysis** takes 5-15 minutes depending on binary size. Subsequent decompilation from the saved project is instant (<1s plus ~3s JVM startup per process).
+**First-time analysis** takes 5-15 minutes depending on binary size. Subsequent decompilation from the saved project is near-instant (<1s plus ~3s JVM startup per cold process) -- or truly sub-second when a `ghidra_server.py` daemon is warm for that project. `export` and `kb-apply` route through the same live daemon when one is running; `RETOOLS_GHIDRA_COLD=1` or `--cold` forces a cold in-process run for either.
+
+**Index-first**: after `export`, prefer `retools.query` over datarefs/xrefs/search/funcinfo for anything already captured in `index.db` (funcs, names, xrefs, strings, imports, blocks) -- it's a local SQL query instead of a fresh binary scan. Fall back to the scanners only for facts index.db doesn't have yet.
 
 ### `livetools` -- static vs runtime addresses
 

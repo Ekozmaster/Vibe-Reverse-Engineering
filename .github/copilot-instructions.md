@@ -23,6 +23,8 @@ Run `python verify_install.py` from the repo root before first use. If pyghidra/
 - `readmem.py` — single typed read from a PE file
 - `asi_patcher.py build` — build step, not analysis
 - `pyghidra_backend.py status` — project existence check (<1s)
+- `index.py status <Game> [--db PATH]` — per-table row counts + schema_version for the game's index.db
+- `query.py <Game> "SQL" [--db PATH] [--json] [--list-tables] [--schema TABLE]` — read-only SQL over index.db (`callers`/`callees`/`grep` views); prefer this over a fresh xrefs/datarefs/search/funcinfo scan whenever index.db already has the answer
 
 If you're about to run a second `retools` command in the same turn, stop and delegate everything to a subagent.
 
@@ -32,16 +34,17 @@ Run all tools from the repo root using `python -m <module>` syntax (e.g. `python
 
 The main agent owns `livetools` — always use them to verify static findings and act on leads from subagents. Use `attach <name_or_pid>` for running processes, or `attach <path> --spawn` to launch + instrument before init code runs. When a subagent returns addresses or candidates, immediately follow up with live tools (trace, breakpoint, mem read/write) rather than spawning more static analysis. Static analysis finds clues; live tools confirm and act on them. Do not wait idle for subagents — use live tools to explore independently while static analysis runs in the background.
 
-## Dual-Backend Decompilation
+## Ghidra-Primary Decompilation
 
-The decompiler supports two backends with different strengths:
+Ghidra, via `pyghidra_backend.py`, is the **primary** decompilation backend once a project exists — indexed into `index.db`, daemon-backed (`ghidra_server.py`, port 27043; livetools owns 27042), and kb-applied. It gives better MSVC type propagation, library call resolution, and larger function scope detection, and its facts can be queried with `retools.query` instead of re-scanning the binary. Requires a Ghidra project (`pyghidra_backend.py analyze` creates one). Use when `patches/<project>/ghidra/<binary>.gpr` exists.
 
-- **pyghidra (preferred)** — better MSVC type propagation, library call resolution, larger function scope detection. Requires a Ghidra project (`pyghidra_backend.py analyze` creates one). Use when `patches/<project>/ghidra/<binary>.gpr` exists.
-- **r2ghidra (fallback)** — better `__thiscall` on small functions, no JVM startup. Always available.
+**r2ghidra (zero-setup fallback / second opinion)** — no Ghidra install required, better `__thiscall` on small functions, no JVM startup, and useful to cross-check a pyghidra result that looks wrong.
 
-**Auto mode**: `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h --project patches/proj` tries pyghidra first, falls back to r2ghidra. Use `--project` alongside `--types` for auto selection.
+**Auto mode**: `python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h --project patches/proj` tries pyghidra first, falls back to r2ghidra. Use `--project` alongside `--types` for auto selection. This routing is unchanged.
 
-**Dual-backend deep analysis**: For complex exploratory tasks (finding subsystems, mapping call chains), run both backends in parallel on the same functions and merge findings. r2ghidra results go to `findings_r2.md`, pyghidra to `findings.md`. Neither backend finds everything alone -- merging both gives the most complete picture.
+**Index and daemon**: `pyghidra_backend.py export` seeds `funcs`/`names`/`xrefs`/`blocks` into `index.db` (`source='ghidra'`, overwrites provisional bootstrap rows at the same address). `pyghidra_backend.py kb-apply` pushes kb.h names/prototypes/globals into the Ghidra project (idempotent). `python -m retools.ghidra_server <Game> [--idle 600]` keeps one warm Ghidra program per project so repeat `decompile`/`export`/`kb-apply` calls become sub-second; `RETOOLS_GHIDRA_COLD=1` or `--cold` forces a cold run.
+
+**Dual-backend deep analysis**: reserve this for two cases — **no Ghidra project exists yet**, or **pyghidra output on a specific function looks wrong** and needs an independent r2ghidra cross-check. Run both backends in parallel on the same functions and merge findings: r2ghidra results go to `findings_r2.md`, pyghidra to `findings.md`. Not needed once a Ghidra project exists and `--backend auto` is available.
 
 ## Engineering Standards
 

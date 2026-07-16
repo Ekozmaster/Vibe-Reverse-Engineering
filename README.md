@@ -28,6 +28,10 @@ pip install -r requirements.txt
 
 **Static analysis** (`retools/`) works directly on PE files on disk: disassembly, decompilation, cross-references, call graphs, vtable analysis, byte pattern search, and more.
 
+**Indexed queries** (`retools/index.py` + `retools/query.py`) cache analyzed facts (functions, names, cross-references, strings, imports) into a per-game SQLite file (`patches/<Game>/index.db`), so the agent can answer "who calls this" or "find all strings matching X" with a local SQL query instead of re-scanning the binary. Bootstrap and Ghidra analysis both feed it; Ghidra-sourced facts win over provisional ones.
+
+**Ghidra server** (`retools/ghidra_server.py`) keeps one Ghidra program warm per game project so repeat decompilations return in well under a second instead of paying Ghidra's analysis cost on every call.
+
 **Dynamic analysis** (`livetools/`) attaches to a running process via Frida: breakpoints, register/memory inspection, function tracing, instruction-level stepping, and live memory patching.
 
 **Game window automation** (`livetools/gamectl.py`) sends keystrokes and mouse clicks to a game window without Frida. Uses `SendInput` with `AttachThreadInput` focus management — works with DirectInput/RawInput games that ignore `PostMessage`. Target by process exe name:

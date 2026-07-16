@@ -26,13 +26,15 @@ grep -cE '^[@$]|^struct |^enum ' patches/<project>/kb.h 2>/dev/null || echo 0
 ```
 If the count is under 50 (or the file doesn't exist), run `python -m retools.bootstrap <binary> --project <Project>` first. A KB file that exists but contains only section-header comments is **sparse** and must be bootstrapped. Do not skip bootstrap just because the file exists.
 
+**3. Index**: Check `python -m retools.index status <Project>` before scanning the binary yourself — if `index.db` already has `funcs`/`xrefs`/`names`/`strings`, prefer `retools.query` over a fresh xrefs/datarefs/search/funcinfo pass.
+
 ## Running Tools
 
-Run all tools from the repo root using `python -m retools.<module>` syntax:
+Run all tools from the repo root using `python -m retools.<module>` syntax. Decompilation has two backends: **pyghidra is primary** once a Ghidra project exists (better type propagation, library call resolution, and its output feeds `index.db`); **r2ghidra is the zero-setup fallback and second opinion** (no Ghidra install needed, faster on small functions). `--backend auto` tries pyghidra first, falls back to r2ghidra.
 
 ```
 python -m retools.decompiler binary.exe 0x401000
-python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h
+python -m retools.decompiler binary.exe 0x401000 --types patches/proj/kb.h --project patches/proj
 python -m retools.search binary.exe strings -f "error" --xrefs
 python -m retools.xrefs binary.exe 0x401000 -t call
 python -m retools.callgraph binary.exe 0x401000 --up 3
@@ -45,6 +47,11 @@ python -m retools.sigdb scan binary.exe --db retools/data/signatures.db
 python -m retools.sigdb identify binary.exe 0x401000 --db retools/data/signatures.db
 python -m retools.sigdb fingerprint binary.exe
 python -m retools.context assemble binary.exe 0x401000 --project MyGame
+python retools/pyghidra_backend.py export binary.exe --project patches/MyGame
+python retools/pyghidra_backend.py kb-apply binary.exe --project patches/MyGame --kb patches/MyGame/kb.h
+python -m retools.index status MyGame
+python -m retools.query MyGame "SELECT * FROM funcs WHERE name LIKE '%Update%'"
+python -m retools.ghidra_server MyGame --idle 600
 ```
 
 If `retools/data/signatures.db` is missing, run `python -m retools.sigdb pull` to download it before using `sigdb scan` or `sigdb build`.
@@ -52,6 +59,14 @@ If `retools/data/signatures.db` is missing, run `python -m retools.sigdb pull` t
 Collect MORE information per command run. Prefer wide queries over narrow ones — a single decompilation with `--types` is better than five disassembly snippets.
 
 Always pass `--types <kb_file>` to `decompiler.py` when a KB file exists for the project.
+
+**Query-first**: before `xrefs`/`datarefs`/`search`/`funcinfo`, check `index status`/`query` for the answer — it's a local SQL query instead of a fresh binary scan.
+
+**Hard pushdown rule**: `decompile` and `export` require a specific function address (or, for `export`, an analyzed program) — never invoke them without one.
+
+**Read-First mutation discipline**: `kb-apply` mutates the Ghidra project. Decompile or `query` the target function first, run `kb-apply`, then re-decompile to verify the change landed. `kb-apply` is idempotent — re-running it must produce stable counts.
+
+**Cost guard**: run `export` once per analysis pass (after `kb-apply`), not once per query. Warm `ghidra_server.py` for a project before a batch of decompiles.
 
 ## Knowledge Base
 
@@ -104,3 +119,13 @@ Format:
 Also update `patches/<project>/kb.h` with any new function signatures, structs, or globals discovered.
 
 In your return message, state the file path you wrote to and give a brief summary. The main agent will read the file for full details.
+
+## Routing to Adjacent Skills/Docs
+
+| Need | Go to |
+|------|-------|
+| Full tool syntax, flags, caveats, run-directly vs delegate guidance | `.github/instructions/tool-catalog.instructions.md` |
+| Bootstrap ordering, Ghidra-primary/r2ghidra-fallback framing, delegation rules | `.github/copilot-instructions.md` ("Delegation Rule" / "Ghidra-Primary Decompilation") |
+| Attaching to a live process, breakpoints, tracing, memory patching | `/dynamic-analysis` skill (main agent only — this agent must not use livetools) |
+| Porting a DX9 game to FFP for RTX Remix (renderer.cpp, ffp_state, vertex decls, skinning) | `dx9-ffp-port` skill |
+| D3D9-specific static questions (VS/PS constants, render states, vertex formats) | DX analysis scripts (`rtx_remix_tools/dx/scripts/`) before general retools |
