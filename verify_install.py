@@ -175,6 +175,8 @@ def check_retools_import():
         "retools.vtable", "retools.rtti", "retools.search",
         "retools.readmem", "retools.dumpinfo", "retools.throwmap",
         "retools.asi_patcher",
+        "retools.kb", "retools.index", "retools.query",
+        "retools.ghidra_server", "retools.ghidra_client",
     ]
     ok, bad = 0, []
     for mod in modules:
