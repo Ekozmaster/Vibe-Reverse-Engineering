@@ -434,3 +434,77 @@ class TestKbApplyProgram:
         assert "g_x" in applied["labels"]
         assert counts["functions"] == 1
         assert counts["globals"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _route_daemon
+# ---------------------------------------------------------------------------
+
+class TestRouteDaemon:
+    """Covers all four branches of _route_daemon without Ghidra or sockets."""
+
+    def test_daemon_present_returns_response(self, monkeypatch):
+        from pyghidra_backend import _route_daemon
+        import ghidra_client
+
+        monkeypatch.setattr(ghidra_client, "is_daemon_alive", lambda project_dir: True)
+        monkeypatch.setattr(
+            ghidra_client, "send_command",
+            lambda project_dir, cmd, timeout=None: {"ok": True, "text": "ROUTED"},
+        )
+        result = _route_daemon("TestGame", {"cmd": "decompile", "binary": "b.exe", "va": 1})
+        assert result == {"ok": True, "text": "ROUTED"}
+
+    def test_cold_env_returns_none(self, monkeypatch):
+        from pyghidra_backend import _route_daemon
+        import ghidra_client
+
+        monkeypatch.setenv("RETOOLS_GHIDRA_COLD", "1")
+        # Even a daemon that would answer "alive" must not be reached.
+        monkeypatch.setattr(ghidra_client, "is_daemon_alive", lambda project_dir: True)
+        assert _route_daemon("TestGame", {"cmd": "decompile"}) is None
+
+    def test_dead_daemon_returns_none(self, monkeypatch):
+        from pyghidra_backend import _route_daemon
+        import ghidra_client
+
+        monkeypatch.setattr(ghidra_client, "is_daemon_alive", lambda project_dir: False)
+        assert _route_daemon("TestGame", {"cmd": "decompile"}) is None
+
+    def test_send_error_returns_none(self, monkeypatch):
+        from pyghidra_backend import _route_daemon
+        import ghidra_client
+
+        monkeypatch.setattr(ghidra_client, "is_daemon_alive", lambda project_dir: True)
+
+        def _raise(project_dir, cmd, timeout=None):
+            raise ConnectionError("boom")
+
+        monkeypatch.setattr(ghidra_client, "send_command", _raise)
+        assert _route_daemon("TestGame", {"cmd": "decompile"}) is None
+
+    def test_corrupted_state_degrades_to_none(self, monkeypatch):
+        """A malformed state file raising inside is_daemon_alive still degrades cleanly."""
+        from pyghidra_backend import _route_daemon
+        import ghidra_client
+
+        def _raise(project_dir):
+            raise TypeError("'>' not supported between instances of 'str' and 'int'")
+
+        monkeypatch.setattr(ghidra_client, "is_daemon_alive", _raise)
+        assert _route_daemon("TestGame", {"cmd": "decompile"}) is None
+
+
+class TestDecompileRouting:
+    """Proves decompile() actually uses _route_daemon's result when present."""
+
+    def test_decompile_uses_daemon_when_routed(self, tmp_path, monkeypatch):
+        import pyghidra_backend
+
+        monkeypatch.setattr(pyghidra_backend, "is_analyzed", lambda project_dir, binary_name: True)
+        monkeypatch.setattr(
+            pyghidra_backend, "_route_daemon",
+            lambda game, cmd: {"ok": True, "text": "ROUTED"},
+        )
+        result = pyghidra_backend.decompile(str(tmp_path / "ghidra"), "test.exe", 0x401000)
+        assert result == "ROUTED"

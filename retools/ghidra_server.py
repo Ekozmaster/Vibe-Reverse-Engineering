@@ -41,6 +41,7 @@ class GhidraDaemon:
         self._running = True
         self._last_activity = time.monotonic()
         self._lock = threading.Lock()
+        self._conn_threads = []
 
     # -- program lifecycle ---------------------------------------------------
 
@@ -58,13 +59,40 @@ class GhidraDaemon:
         self._program = self._flat_api.getCurrentProgram()
         return {"ok": True, "binary": binary}
 
-    def _close_program(self) -> None:
+    def _ensure_open(self, binary: str) -> dict:
+        """Open *binary*, swapping out a warm program for a different one.
+
+        Callers run inside ``handle()``'s lock, so a binary switch closes the
+        stale program via the no-lock ``_close_program_locked`` (the
+        lock-acquiring ``_close_program`` would deadlock here).
+        """
+        if self._program is not None and self.binary != binary:
+            self._close_program_locked()
+        if self._program is None:
+            return self._open(binary)
+        return {"ok": True, "binary": self.binary, "already": True}
+
+    def _close_program_locked(self) -> None:
+        """Tear down the open program. Caller must already hold ``self._lock``."""
         if self._ctx is not None:
             try:
                 self._ctx.__exit__(None, None, None)
             except Exception:
                 pass
         self._ctx = self._flat_api = self._program = None
+
+    def _close_program(self) -> None:
+        """Tear down the open program, waiting for any in-flight command first.
+
+        Acquires ``self._lock`` so this cannot run concurrently with a
+        command still executing inside ``handle()`` -- otherwise a
+        long-running decompile could be closed out from under it (crash /
+        ``.rep`` corruption). Only call this from outside ``handle()``
+        (e.g. ``_cleanup``); command handlers already hold the lock and
+        must use ``_close_program_locked`` directly.
+        """
+        with self._lock:
+            self._close_program_locked()
 
     # -- commands ------------------------------------------------------------
 
@@ -73,23 +101,19 @@ class GhidraDaemon:
                 "open": self._program is not None}
 
     def _cmd_open(self, cmd):
-        if self._program is not None:
-            return {"ok": True, "binary": self.binary, "already": True}
-        return self._open(cmd["binary"])
+        return self._ensure_open(cmd["binary"])
 
     def _cmd_decompile(self, cmd):
-        if self._program is None:
-            r = self._open(cmd["binary"])
-            if not r.get("ok"):
-                return r
+        r = self._ensure_open(cmd["binary"])
+        if not r.get("ok"):
+            return r
         va = int(cmd["va"])
         return {"ok": True, "text": pb._decompile_open(self._program, va)}
 
     def _cmd_export(self, cmd):
-        if self._program is None:
-            r = self._open(cmd["binary"])
-            if not r.get("ok"):
-                return r
+        r = self._ensure_open(cmd["binary"])
+        if not r.get("ok"):
+            return r
         from index import GameIndex
         gi = GameIndex(cmd["db"])
         try:
@@ -99,10 +123,9 @@ class GhidraDaemon:
         return {"ok": True, "counts": counts}
 
     def _cmd_kb_apply(self, cmd):
-        if self._program is None:
-            r = self._open(cmd["binary"])
-            if not r.get("ok"):
-                return r
+        r = self._ensure_open(cmd["binary"])
+        if not r.get("ok"):
+            return r
         from kb import parse_kb
         kb = parse_kb(Path(cmd["kb"]))
         txn = self._program.startTransaction("kb_apply")
@@ -114,11 +137,11 @@ class GhidraDaemon:
         return {"ok": True, "counts": counts}
 
     def _cmd_close(self, cmd):
-        self._close_program()
+        self._close_program_locked()
         return {"ok": True}
 
     def _cmd_shutdown(self, cmd):
-        self._close_program()
+        self._close_program_locked()
         self._running = False
         return {"ok": True}
 
@@ -163,17 +186,26 @@ class GhidraDaemon:
         print(f"[ghidra daemon] listening on {HOST}:{PORT}, project={self.game}")
         threading.Thread(target=self._idle_watch, daemon=True).start()
 
-        while self._running:
-            try:
-                conn, _ = srv.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            threading.Thread(target=self._handle_conn, args=(conn,), daemon=True).start()
-
-        srv.close()
-        self._cleanup()
+        try:
+            while self._running:
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                t = threading.Thread(target=self._handle_conn, args=(conn,), daemon=True)
+                t.start()
+                self._conn_threads.append(t)
+        finally:
+            srv.close()
+            # Drain in-flight connection handlers before tearing down the
+            # program; _close_program's lock acquisition is the actual
+            # correctness guarantee below, this just avoids leaving threads
+            # dangling on a closed socket.
+            for t in self._conn_threads:
+                t.join(timeout=5.0)
+            self._cleanup()
 
     def _handle_conn(self, conn):
         try:
@@ -218,10 +250,7 @@ def main():
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
-    try:
-        daemon.serve()
-    finally:
-        daemon._cleanup()
+    daemon.serve()  # serve() guarantees cleanup in its own try/finally
 
 
 if __name__ == "__main__":

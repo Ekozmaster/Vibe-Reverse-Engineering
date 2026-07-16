@@ -133,18 +133,20 @@ def _route_daemon(game: str, cmd: dict):
     """Return the daemon response dict if a live daemon serves *game*, else None.
 
     A pure no-op (returns None) whenever no live daemon is reachable, so
-    callers fall through to the cold in-process path unchanged.
+    callers fall through to the cold in-process path unchanged. The probe
+    and send are wrapped in one broad except so a missing ghidra_client
+    module, a dead/absent daemon, a corrupted state file (e.g. a
+    wrong-typed "port" raising inside is_daemon_alive), or a transport
+    error during send_command all degrade to the cold path instead of
+    raising.
     """
     if os.environ.get("RETOOLS_GHIDRA_COLD") == "1":
         return None
     try:
         import ghidra_client
-    except ImportError:
-        return None
-    project_dir = str(Path("patches") / game / "ghidra")
-    if not ghidra_client.is_daemon_alive(project_dir):
-        return None
-    try:
+        project_dir = str(Path("patches") / game / "ghidra")
+        if not ghidra_client.is_daemon_alive(project_dir):
+            return None
         return ghidra_client.send_command(project_dir, cmd, timeout=120)
     except Exception:
         return None
