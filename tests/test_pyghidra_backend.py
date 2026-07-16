@@ -384,12 +384,21 @@ class TestExportProgram:
 # ---------------------------------------------------------------------------
 
 class TestKbApplyProgram:
-    def test_applies_function_name_and_global(self, tmp_path):
+    def test_applies_function_name_and_global(self, monkeypatch):
         import sys
+        import types
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
         from pyghidra_backend import _kb_apply_program
         from kb import parse_kb
+
+        for name in ("ghidra", "ghidra.program", "ghidra.program.model", "ghidra.program.model.symbol"):
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+
+        class _SourceType:
+            USER_DEFINED = object()
+
+        monkeypatch.setattr(sys.modules["ghidra.program.model.symbol"], "SourceType", _SourceType, raising=False)
 
         applied = {"names": [], "labels": []}
 

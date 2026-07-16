@@ -306,13 +306,7 @@ def _kb_apply_program(program, kb, flat_api, *, apply_prototypes=True, apply_typ
     apply_prototypes/apply_types gate the Ghidra-only signature/DTM code so a
     fake program (tests) can exercise the name/label path without those classes.
     """
-    try:
-        from ghidra.program.model.symbol import SourceType
-    except ImportError:
-        # No Ghidra JVM bridge (e.g. under test with a fake program); the
-        # name/label path only needs a stand-in value to pass through.
-        class SourceType:
-            USER_DEFINED = None
+    from ghidra.program.model.symbol import SourceType
 
     space = program.getAddressFactory().getDefaultAddressSpace()
     listing = program.getListing()
