@@ -105,7 +105,7 @@ def _callees_from_index(db_path: str, func_ea: int) -> list[tuple[int, str]] | N
             "SELECT x.to_ea, COALESCE(f.name, '') FROM xrefs x "
             "LEFT JOIN funcs f ON f.address = x.to_ea "
             "WHERE x.from_func = ? AND x.is_code = 1 AND x.type = 'call' "
-            "ORDER BY x.to_ea",
+            "GROUP BY x.to_ea ORDER BY x.to_ea",
             (func_ea,),
         ).fetchall()
     finally:
@@ -165,7 +165,7 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
     lines.append("[callees]")
     db_index = GameIndex.default_db_path(Path(project_dir).name)
     indexed = _callees_from_index(db_index, start)
-    if indexed:
+    if indexed is not None:
         for target, name in indexed:
             lines.append(f"  0x{target:0{w}X}: {name or kb_names.get(target, 'unknown')}")
     else:
