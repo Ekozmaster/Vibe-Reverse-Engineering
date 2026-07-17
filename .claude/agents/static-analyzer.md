@@ -27,7 +27,7 @@ test -f retools/data/signatures.db || python retools/sigdb.py pull
 ```bash
 grep -cE '^[@$]|^struct |^enum ' patches/<project>/kb.h 2>/dev/null || echo 0
 ```
-If the count is under 50 (or the file doesn't exist), run `python -m retools.bootstrap <binary> --project <Project>` first. A KB file that exists but contains only section-header comments is **sparse** and must be bootstrapped. Do not skip bootstrap just because the file exists.
+If the count is under 50 (or the file doesn't exist), run `python -m retools.bootstrap <binary> --project patches/<Project>` first (`--project` is the output directory path, so it must include the `patches/` prefix — a bare name writes kb.h outside the project tree). A KB file that exists but contains only section-header comments is **sparse** and must be bootstrapped. Do not skip bootstrap just because the file exists.
 
 **4. Ghidra project**: Check if a Ghidra project exists for the binary:
 ```bash
@@ -95,7 +95,7 @@ python -m retools.callgraph binary.exe 0x401000 --up 3
 python -m retools.structrefs binary.exe --aggregate --fn 0x401000 --base esi
 python -m retools.dumpinfo crash.dmp diagnose --binary d3d9.dll
 python -m retools.throwmap d3d9.dll match --dump crash.dmp
-python -m retools.bootstrap binary.exe --project MyGame
+python -m retools.bootstrap binary.exe --project patches/MyGame
 python -m retools.sigdb scan binary.exe --db retools/data/signatures.db
 python -m retools.sigdb identify binary.exe 0x401000 --db retools/data/signatures.db
 python -m retools.sigdb fingerprint binary.exe

@@ -132,7 +132,7 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 | `search.py $B insn --near` | Find instructions near another pattern | `search.py binary.dll insn "mov *,0x10000" --near "cmp *,0x10000" --range 0x400` |
 | `readmem.py $B $VA $TYPE` | Read typed data (float, uint32, ptr, bytes...) | `readmem.py binary.exe 0x401000 float` |
 | `asi_patcher.py build` | Generate .asi DLL patch from JSON spec | `asi_patcher.py build spec.json --vcvarsall ...` |
-| `bootstrap.py $B --project $P` | Auto-seed KB: compiler ID, signatures, RTTI, imports, propagation | `bootstrap.py game.exe --project Warband` |
+| `bootstrap.py $B --project $P` | Auto-seed KB: compiler ID, signatures, RTTI, imports, propagation. `--project` is the **output directory** (`$P` = `patches/<project>`), not a bare name | `bootstrap.py game.exe --project patches/Warband` |
 | `sigdb.py scan $B` | Bulk signature scan against DB | `sigdb.py scan game.exe` |
 | `sigdb.py identify $B $VA` | Single function signature lookup (multi-tier) | `sigdb.py identify game.exe 0x401200` |
 | `sigdb.py fingerprint $B` | Identify compiler version (Rich header + markers + imports) | `sigdb.py fingerprint game.exe` |

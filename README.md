@@ -53,19 +53,19 @@ Agent instructions are **single-sourced** — edit once, every harness picks it 
 - **`AGENTS.md`** (repo root) — canonical instructions: project conventions, engineering standards, and pointers to the tool catalog. Read natively by Cursor, Kiro, Codex, and most agents. VS Code Copilot loads it via the shipped `.vscode/settings.json` (`chat.useAgentsMdFile`); Claude Code imports it from `.claude/CLAUDE.md`.
 - **`.claude/`** — the maintained tree for everything deeper: skills (`.claude/skills/`), tool catalog (`.claude/references/`), workflow rules (`.claude/rules/`), and subagent definitions (`.claude/agents/`). These files are plain Markdown any agent can read by path.
 
-Claude Code picks up the skills automatically. For any other harness, install them with the [skills CLI](https://github.com/vercel-labs/skills):
+Skills install themselves: Claude Code reads `.claude/skills/` natively, and AGENTS.md instructs every other agent to install the skills into its own skills directory on first use (via the [skills CLI](https://github.com/vercel-labs/skills) or a manual copy). Normally you don't need to do anything — open the repo and start working.
+
+To install manually instead, or to consume the skills from another project:
 
 ```bash
-# Working inside this repo (pick your agent):
-npx skills add . -a cursor -y
-npx skills add . -a copilot -y
-npx skills add . -a kiro-cli -y
+# Inside this repo (pick your agent):
+npx skills add ./.claude/skills -a cursor -y     # or -a copilot, -a kiro-cli, ...
 
-# Consuming from elsewhere:
+# From anywhere else:
 npx skills add Ekozmaster/Vibe-Reverse-Engineering
 ```
 
-Re-run `npx skills add . -a <agent> -y` after pulling updates — installed copies live in git-ignored directories (`.agents/`, `.cursor/skills/`, …) and the canonical copies stay in `.claude/skills/`.
+Inside the repo, point the source at `./.claude/skills` explicitly — with a bare `.` the CLI skips the current project's own agent directories and finds nothing. Installed copies live in git-ignored locations (`.agents/`, `.cursor/skills/`, `skills-lock.json`, …); the canonical, editable copies stay in `.claude/skills/`.
 
 ## Usage
 

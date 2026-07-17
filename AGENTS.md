@@ -7,7 +7,21 @@ This file is the canonical, harness-agnostic instruction set. Claude Code loads 
 - **Tool catalog** (every retools / livetools / dx9tracer command, syntax, caveats): `.claude/references/tool-catalog.md`
 - **Tool dispatch** (which tool for which question; what runs inline vs delegated): `.claude/rules/tool-dispatch.md`
 - **Analysis workflow** (bootstrap ordering, Ghidra backend, index/query, parallel patterns): `.claude/rules/subagent-workflow.md`
-- **Skills** (`dx9-ffp-port`, `dynamic-analysis`): `.claude/skills/` — canonical copies. Non-Claude harnesses install them with `npx skills add` (see README).
+- **Skills** (`dx9-ffp-port`, `dynamic-analysis`): `.claude/skills/` — canonical copies. Non-Claude harnesses self-install them (see "Skill Setup" below).
+
+## Skill Setup (do this first on non-Claude harnesses)
+
+Claude Code reads `.claude/skills/` natively — skip this section. Every other harness: check whether the `dx9-ffp-port` and `dynamic-analysis` skills are available to you. If not, install them into your own skills directory before starting work:
+
+```bash
+npx skills add ./.claude/skills -a <your-agent> -y   # e.g. -a cursor, -a copilot, -a kiro-cli
+```
+
+Omit `-a` to let the CLI auto-detect your harness. The source path must be `./.claude/skills` — a bare `.` finds nothing (the CLI skips the current project's agent directories).
+
+If `npx` is unavailable or your harness isn't supported by the CLI, copy manually: each `.claude/skills/<name>/` folder goes verbatim into your harness's skills directory (Cursor: `.cursor/skills/`, Copilot: `.github/skills/`, Kiro: `.kiro/skills/`, `.agents/skills/` for agents following that convention).
+
+Installed copies land in git-ignored paths (`.agents/`, `.cursor/skills/`, `.github/skills/`, `.kiro/skills/`, `skills-lock.json`) — never commit them, and never edit them: the canonical copies in `.claude/skills/` are the only ones that get edited. Re-install after pulling changes that touch `.claude/skills/`.
 
 ## Read-Only Templates
 

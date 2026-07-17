@@ -14,7 +14,7 @@ Before first pyghidra use, run `python verify_install.py` — if pyghidra shows 
 
 When analyzing a binary for the first time (no existing or sparsely populated `patches/<project>/kb.h`), **always bootstrap before other static analysis**:
 
-1. Spawn `static-analyzer`: `bootstrap.py <binary> --project <Name>` — seeds kb.h with RTTI, CRT/library IDs, compiler info, propagated labels. **2-5 minutes.** After bootstrap, ALL `decompiler.py` calls must use `--types patches/<project>/kb.h`.
+1. Spawn `static-analyzer`: `bootstrap.py <binary> --project patches/<Name>` (`--project` is the output directory path — include the `patches/` prefix or kb.h lands outside the project tree) — seeds kb.h with RTTI, CRT/library IDs, compiler info, propagated labels. **2-5 minutes.** After bootstrap, ALL `decompiler.py` calls must use `--types patches/<project>/kb.h`.
 2. **In parallel**, spawn second `static-analyzer`: `pyghidra_backend.py analyze <binary> --project patches/<Name>` — full Ghidra analysis, reusable project. **5-15 minutes.** After this, use `--project patches/<project>` so `--backend auto` prefers Ghidra.
 3. Other static analysis can run in parallel but output is richer after bootstrap.
 
@@ -70,7 +70,7 @@ r2ghidra: better `__thiscall` recovery, low-level D3D, no JVM/project dependency
 ## Examples
 
 **"Analyze game.exe for the first time"**
-1. Background: `bootstrap.py game.exe --project MyGame`
+1. Background: `bootstrap.py game.exe --project patches/MyGame`
 2. Background: `pyghidra_backend.py analyze game.exe --project patches/MyGame`
 3. Tell user, run `sigdb.py fingerprint` inline while waiting
 4. When both return, all subsequent decompilations use `--types kb.h --project patches/MyGame`
