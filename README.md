@@ -48,16 +48,24 @@ python -m livetools gamectl --exe game.exe macro --macro-file patches/MyGame/mac
 
 ## How it works
 
-The project ships with agent instructions tailored to each supported environment:
+Agent instructions are **single-sourced** — edit once, every harness picks it up:
 
-| Tool | Instructions |
-|------|-------------|
-| Cursor | `.cursor/rules/` |
-| Copilot | `.github/copilot-instructions.md` |
-| Claude Code | `.claude/CLAUDE.md` |
-| Kiro | `.kiro/steering/` + `.kiro/powers/` |
+- **`AGENTS.md`** (repo root) — canonical instructions: project conventions, engineering standards, and pointers to the tool catalog. Read natively by Cursor, Kiro, Codex, and most agents. VS Code Copilot loads it via the shipped `.vscode/settings.json` (`chat.useAgentsMdFile`); Claude Code imports it from `.claude/CLAUDE.md`.
+- **`.claude/`** — the maintained tree for everything deeper: skills (`.claude/skills/`), tool catalog (`.claude/references/`), workflow rules (`.claude/rules/`), and subagent definitions (`.claude/agents/`). These files are plain Markdown any agent can read by path.
 
-Each teaches the agent the full tool catalog — which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.
+Claude Code picks up the skills automatically. For any other harness, install them with the [skills CLI](https://github.com/vercel-labs/skills):
+
+```bash
+# Working inside this repo (pick your agent):
+npx skills add . -a cursor -y
+npx skills add . -a copilot -y
+npx skills add . -a kiro-cli -y
+
+# Consuming from elsewhere:
+npx skills add Ekozmaster/Vibe-Reverse-Engineering
+```
+
+Re-run `npx skills add . -a <agent> -y` after pulling updates — installed copies live in git-ignored directories (`.agents/`, `.cursor/skills/`, …) and the canonical copies stay in `.claude/skills/`.
 
 ## Usage
 

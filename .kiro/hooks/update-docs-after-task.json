@@ -1,7 +1,7 @@
 {
   "name": "Update Docs After Task",
   "version": "1.0.0",
-  "description": "After each spec task completes: update tool-catalog.md and any relevant steering files to reflect what was implemented.",
+  "description": "After each spec task completes: update the canonical tool catalog and any relevant instruction files to reflect what was implemented.",
   "triggerType": "Post Task Execution",
-  "agentPrompt": "A spec task just completed. Update documentation:\n\n1. Update `.kiro/steering/tool-catalog.md` — add, change, or remove any tool entries that reflect what was implemented in this task. If a command's behaviour changed, the catalog entry must change too.\n\n2. If the task involved the FFP porting workflow, update `.kiro/steering/dx9-ffp-port.md` with any new findings (register layouts, pitfalls, game-specific notes).\n\n3. If the task introduced a new game-specific macro file or patches folder, note the pattern in the relevant steering file."
+  "agentPrompt": "A spec task just completed. Update documentation:\n\n1. Update `.claude/references/tool-catalog.md` — add, change, or remove any tool entries that reflect what was implemented in this task. If a command's behaviour changed, the catalog entry must change too.\n\n2. If the task involved the FFP porting workflow, update `.claude/skills/dx9-ffp-port/SKILL.md` with any new findings (register layouts, pitfalls, game-specific notes).\n\n3. If the task introduced a new game-specific macro file or patches folder, note the pattern in AGENTS.md if it is a repo-wide convention."
 }
