@@ -60,8 +60,10 @@ def parse_kb(text_or_path: str | Path) -> Kb:
             if isinstance(text_or_path, Path) else text_or_path)
     kb = Kb()
     for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("//"):
+        # Inline comments never reach entries: signatures/names/types feed
+        # backend command strings (r2, Ghidra) where stray text is unsafe.
+        line = raw.split("//", 1)[0].strip()
+        if not line:
             continue
 
         if line.startswith("@ "):

@@ -79,6 +79,38 @@ class TestParseKb:
         assert isinstance(kb.functions, list)
 
 
+class TestInlineComments:
+    def test_function_inline_comment_stripped(self):
+        from kb import parse_kb
+        kb = parse_kb(
+            "@ 0x4CE130 void RenderScene_WorldGeom(void)"
+            "            // iterate visible cells -> RenderCell (2nd render path)"
+        )
+        f = kb.functions[0]
+        assert f.signature == "void RenderScene_WorldGeom(void)"
+        assert f.name == "RenderScene_WorldGeom"
+
+    def test_function_comment_after_semicolon_stripped(self):
+        from kb import parse_kb
+        kb = parse_kb("@ 0x401000 void Foo(void); // does stuff -> g_bar")
+        assert kb.functions[0].signature == "void Foo(void)"
+
+    def test_global_inline_comment_stripped(self):
+        from kb import parse_kb
+        kb = parse_kb(
+            "$ 0x007A84D8 void* PTR_texResolveById"
+            "   // fn ptr: (uint16 texture_id)->texhandle; render poly +0x20"
+        )
+        g = kb.globals[0]
+        assert g.name == "PTR_texResolveById"
+        assert g.type == "void*"
+
+    def test_typedef_inline_comment_stripped(self):
+        from kb import parse_kb
+        kb = parse_kb("struct Foo { int x; }; // !=0 => skip cell (cleared each load)")
+        assert kb.typedefs == ["struct Foo { int x; };"]
+
+
 class TestParseKbInputHandling:
     def test_content_that_names_a_file_is_parsed_as_content(self, tmp_path, monkeypatch):
         """A one-line kb string is parsed as content even if it happens to match
