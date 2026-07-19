@@ -95,11 +95,12 @@ def parse_kb(text_or_path: str | Path) -> Kb:
 
 
 def read_existing_addresses(path: str | Path) -> set[int]:
-    """Return the addresses of ``@`` function entries in a kb.h file.
+    """Return the addresses of ``@`` function and ``$`` global entries in a kb.h file.
 
-    Matches the dedup semantics bootstrap relied on (function entries only).
+    Used by bootstrap to skip addresses that already have an entry.
     Returns an empty set if the file does not exist.
     """
     if not os.path.isfile(path):
         return set()
-    return {f.address for f in parse_kb(Path(path)).functions}
+    kb = parse_kb(Path(path))
+    return {f.address for f in kb.functions} | {g.address for g in kb.globals}

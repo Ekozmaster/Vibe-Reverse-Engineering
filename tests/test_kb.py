@@ -133,12 +133,12 @@ class TestParseKbInputHandling:
 
 
 class TestReadExistingAddresses:
-    def test_collects_function_addresses(self, tmp_path):
+    def test_collects_function_and_global_addresses(self, tmp_path):
         from kb import read_existing_addresses
         p = tmp_path / "kb.h"
         p.write_text("@ 0x401000 void Foo(void);\n$ 0x7C5548 int g_x\n")
         addrs = read_existing_addresses(p)
-        assert addrs == {0x401000}
+        assert addrs == {0x401000, 0x7C5548}
 
     def test_missing_file_empty_set(self, tmp_path):
         from kb import read_existing_addresses
