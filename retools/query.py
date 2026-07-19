@@ -22,18 +22,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from index import GameIndex
 
 
-def run_query(conn: sqlite3.Connection, sql: str) -> dict:
-    """Execute *sql* on a read-only connection, returning an envelope result."""
+DEFAULT_LIMIT = 1000
+
+
+def run_query(conn: sqlite3.Connection, sql: str, limit: int = DEFAULT_LIMIT) -> dict:
+    """Execute *sql* on a read-only connection, returning an envelope result.
+
+    At most *limit* rows are returned (0 = unlimited); ``truncated`` in the
+    envelope tells the caller more rows existed. Tables like xrefs hold
+    millions of rows, so an uncapped ``SELECT *`` must not flood the caller.
+    """
     t0 = time.perf_counter()
     try:
         cur = conn.execute(sql)
-        rows = cur.fetchall()
+        rows = cur.fetchmany(limit + 1) if limit > 0 else cur.fetchall()
+        truncated = limit > 0 and len(rows) > limit
+        if truncated:
+            rows = rows[:limit]
         columns = [d[0] for d in cur.description] if cur.description else []
         elapsed = (time.perf_counter() - t0) * 1000.0
         return {
             "columns": columns,
             "rows": [list(r) for r in rows],
             "row_count": len(rows),
+            "truncated": truncated,
             "elapsed_ms": round(elapsed, 3),
             "error": None,
         }
@@ -43,6 +55,7 @@ def run_query(conn: sqlite3.Connection, sql: str) -> dict:
             "columns": [],
             "rows": [],
             "row_count": 0,
+            "truncated": False,
             "elapsed_ms": round(elapsed, 3),
             "error": str(e),
         }
@@ -64,6 +77,9 @@ def _format_text(res: dict) -> str:
     for row in str_rows:
         lines.append("  ".join(c.ljust(widths[i]) for i, c in enumerate(row)))
     lines.append(f"({res['row_count']} rows, {res['elapsed_ms']} ms)")
+    if res["truncated"]:
+        lines.append(f"[truncated at {res['row_count']} rows -- add a LIMIT clause "
+                     "or pass --limit 0 for everything]")
     return "\n".join(lines)
 
 
@@ -73,6 +89,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("sql", nargs="?", default="", help="SQL query (SELECT ...)")
     p.add_argument("--db", default=None, help="Explicit index.db path")
     p.add_argument("--json", action="store_true", help="Emit the idasql JSON envelope")
+    p.add_argument("--limit", type=int, default=DEFAULT_LIMIT,
+                   help=f"Max rows returned (default {DEFAULT_LIMIT}, 0 = unlimited)")
     p.add_argument("--list-tables", action="store_true", help="List tables/views and exit")
     p.add_argument("--schema", metavar="TABLE", help="Print PRAGMA table_info for TABLE and exit")
     args = p.parse_args(argv)
@@ -93,7 +111,7 @@ def main(argv: list[str] | None = None) -> None:
                 raise SystemExit(1)
             sql = args.sql
 
-        res = run_query(conn, sql)
+        res = run_query(conn, sql, limit=args.limit)
     finally:
         conn.close()
 

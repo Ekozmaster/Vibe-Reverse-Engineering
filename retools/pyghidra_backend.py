@@ -130,7 +130,7 @@ def analyze(binary: str, project_dir: str) -> str:
 # daemon routing
 # ---------------------------------------------------------------------------
 
-def _route_daemon(project_dir: str, cmd: dict):
+def _route_daemon(project_dir: str, cmd: dict, timeout: int = 120):
     """Return the daemon response if a live daemon serves *project_dir*, else None.
 
     *project_dir* is the caller's own Ghidra project directory
@@ -142,8 +142,9 @@ def _route_daemon(project_dir: str, cmd: dict):
     Failure handling is deliberately split: a missing client module, a corrupt
     state file, or a daemon that is not reachable soft-fails to None (cold
     path, nothing ran). But once the command has been sent, a ``socket.timeout``
-    may mean the daemon is still executing it, so that error propagates rather
-    than triggering a cold re-run that would double-execute a mutating command.
+    may mean the daemon is still executing it, so it becomes an error response
+    rather than triggering a cold re-run that would double-execute a mutating
+    command.
     """
     if os.environ.get("RETOOLS_GHIDRA_COLD") == "1":
         return None
@@ -165,9 +166,12 @@ def _route_daemon(project_dir: str, cmd: dict):
         if cmd.get(k) is not None:
             cmd[k] = str(Path(cmd[k]).resolve())
     try:
-        resp = ghidra_client.send_command(project_dir, cmd, timeout=120)
+        resp = ghidra_client.send_command(project_dir, cmd, timeout=timeout)
     except socket.timeout:
-        raise
+        return {"ok": False, "error": (
+            f"daemon did not reply within {timeout}s and may still be executing "
+            f"this command; check `status` or stop the daemon before retrying "
+            f"(no cold fallback: it could double-execute)")}
     except OSError:
         return None  # daemon vanished before doing the work -> safe cold path
     if resp.get("wrong_project"):
@@ -353,7 +357,10 @@ def export(project_dir: str, binary: str, db_path: str) -> str:
     if not is_analyzed(project_dir, binary_path.name):
         return f"[error] no analyzed project for {binary_path.name} in {project_dir}"
 
-    routed = _route_daemon(project_dir, {"cmd": "export", "binary": binary, "db": db_path})
+    # Export walks every function/xref/block; give it a far longer budget than
+    # the interactive default before declaring the daemon unresponsive.
+    routed = _route_daemon(project_dir, {"cmd": "export", "binary": binary, "db": db_path},
+                           timeout=600)
     if routed is not None:
         if not routed.get("ok"):
             return f"[error] {routed.get('error')}"
@@ -403,7 +410,11 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
     listing = program.getListing()
     symtab = program.getSymbolTable()
 
-    counts = {"functions": 0, "labels": 0, "globals": 0, "typedefs": 0}
+    counts = {"functions": 0, "labels": 0, "globals": 0, "typedefs": 0, "skipped": 0}
+
+    def _skip(kind: str, entry: str, exc: Exception) -> None:
+        counts["skipped"] += 1
+        print(f"[kb-apply] skipped {kind} {entry!r}: {exc}", file=sys.stderr)
 
     sig_parser = None
     if apply_prototypes:
@@ -420,11 +431,15 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
             try:
                 symtab.createLabel(addr, fn.name, SourceType.USER_DEFINED)
                 counts["labels"] += 1
-            except Exception:
-                pass  # name may be invalid; others still apply
+            except Exception as exc:
+                _skip("label", fn.name, exc)  # name may be invalid; others still apply
             continue
-        func.setName(fn.name, SourceType.USER_DEFINED)
-        counts["functions"] += 1
+        try:
+            func.setName(fn.name, SourceType.USER_DEFINED)
+            counts["functions"] += 1
+        except Exception as exc:
+            _skip("function", fn.name, exc)  # e.g. duplicate name; others still apply
+            continue
         if apply_prototypes and sig_parser is not None:
             from ghidra.app.cmd.function import ApplyFunctionSignatureCmd
             try:
@@ -432,16 +447,16 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
                 if definition is not None:
                     cmd = ApplyFunctionSignatureCmd(addr, definition, SourceType.USER_DEFINED)
                     cmd.applyTo(program, _monitor)
-            except Exception:
-                pass  # prototype text may be unparseable; name is already applied
+            except Exception as exc:
+                _skip("prototype", fn.signature, exc)  # name is already applied
 
     for g in kb.globals:
         addr = space.getAddress(g.address)
         try:
             symtab.createLabel(addr, g.name, SourceType.USER_DEFINED)
             counts["globals"] += 1
-        except Exception:
-            pass  # global name may be invalid; others still apply
+        except Exception as exc:
+            _skip("global", g.name, exc)  # name may be invalid; others still apply
 
     if apply_types:
         from ghidra.app.util.cparser.C import CParser
@@ -451,8 +466,8 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
             try:
                 parser.parse(td if td.endswith(";") else td + ";")
                 counts["typedefs"] += 1
-            except Exception:
-                pass  # non-type bare lines are skipped
+            except Exception as exc:
+                _skip("typedef", td, exc)  # non-type bare lines are skipped
 
     return counts
 
@@ -467,10 +482,15 @@ def _kb_apply_txn(program, kb) -> dict:
     it from leaving the ``with`` block, the daemon by closing the program.
     """
     txn = program.startTransaction("kb_apply")
+    committed = False
     try:
-        return _kb_apply_program(program, kb)
+        counts = _kb_apply_program(program, kb)
+        committed = True
+        return counts
     finally:
-        program.endTransaction(txn, True)
+        # Roll back on failure -- committing a partial apply would leave the
+        # project silently divergent from kb.h after the caller saw an error.
+        program.endTransaction(txn, committed)
 
 
 def kb_apply(project_dir: str, binary: str, kb_path: str) -> str:
@@ -481,7 +501,8 @@ def kb_apply(project_dir: str, binary: str, kb_path: str) -> str:
     if not is_analyzed(project_dir, binary_path.name):
         return f"[error] no analyzed project for {binary_path.name} in {project_dir}"
 
-    routed = _route_daemon(project_dir, {"cmd": "kb_apply", "binary": binary, "kb": kb_path})
+    routed = _route_daemon(project_dir, {"cmd": "kb_apply", "binary": binary, "kb": kb_path},
+                           timeout=600)
     if routed is not None:
         if not routed.get("ok"):
             return f"[error] {routed.get('error')}"
@@ -516,34 +537,41 @@ def main():
         prog="pyghidra_backend",
         description="Pyghidra headless Ghidra backend",
     )
-    parser.add_argument("--cold", action="store_true",
-                         help="Force cold in-process start, bypassing any live daemon")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # Shared by every subcommand so the documented trailing position
+    # (`... export bin --project P --cold`) parses.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--cold", action="store_true",
+                        help="Force cold in-process start, bypassing any live daemon")
+
     # --- analyze ---
-    p_analyze = sub.add_parser("analyze", help="Run Ghidra auto-analysis on a binary")
+    p_analyze = sub.add_parser("analyze", parents=[common],
+                               help="Run Ghidra auto-analysis on a binary")
     p_analyze.add_argument("binary", help="Path to PE binary")
     p_analyze.add_argument("--project", required=True, help="Project directory")
 
     # --- decompile ---
-    p_decompile = sub.add_parser("decompile", help="Decompile a function")
+    p_decompile = sub.add_parser("decompile", parents=[common], help="Decompile a function")
     p_decompile.add_argument("binary", help="Path to PE binary")
     p_decompile.add_argument("va", help="Virtual address (hex)")
     p_decompile.add_argument("--project", required=True, help="Project directory")
 
     # --- status ---
-    p_status = sub.add_parser("status", help="Check analysis status")
+    p_status = sub.add_parser("status", parents=[common], help="Check analysis status")
     p_status.add_argument("binary", help="Path to PE binary")
     p_status.add_argument("--project", required=True, help="Project directory")
 
     # --- export ---
-    p_export = sub.add_parser("export", help="Export analyzed facts into index.db")
+    p_export = sub.add_parser("export", parents=[common],
+                              help="Export analyzed facts into index.db")
     p_export.add_argument("binary", help="Path to PE binary")
     p_export.add_argument("--project", required=True, help="Project directory")
     p_export.add_argument("--db", default=None, help="index.db path (default <project>/index.db)")
 
     # --- kb-apply ---
-    p_kb = sub.add_parser("kb-apply", help="Apply kb.h names/types into the Ghidra project")
+    p_kb = sub.add_parser("kb-apply", parents=[common],
+                          help="Apply kb.h names/types into the Ghidra project")
     p_kb.add_argument("binary", help="Path to PE binary")
     p_kb.add_argument("--project", required=True, help="Project directory")
     p_kb.add_argument("--kb", required=True, help="Path to kb.h")

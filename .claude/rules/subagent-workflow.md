@@ -4,7 +4,7 @@ description: Subagent delegation rules — when to spawn static-analyzer vs run 
 
 # Subagent Workflow
 
-Main agent: **live tools**, **dx9tracer capture**, **user interaction**, **synthesis**. Heavy static analysis and web research → subagents.
+Main agent: **live tools**, **dx9tracer capture**, **user interaction**, **synthesis**. Heavy static analysis → subagents.
 
 ## Pre-flight: Ensure Ghidra Backend
 
@@ -27,7 +27,6 @@ CLAUDE.md lists allowlisted fast commands (run directly) and the general delegat
 
 | Task | Where | Notes |
 |------|-------|-------|
-| Web research (docs, API refs, specs) | `web-researcher` subagent | |
 | dx9tracer offline analysis | `static-analyzer` subagent | |
 | Subsequent Ghidra decompile | `static-analyzer` subagent | Fast: JVM ~3s + decompile <1s, sub-second with a warm `ghidra_server.py` daemon |
 | sigdb scan / build | `static-analyzer` subagent | scan 1-3 min, build 1-5 min |

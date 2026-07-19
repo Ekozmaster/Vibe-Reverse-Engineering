@@ -87,12 +87,14 @@ class GhidraDaemon:
             except Exception:
                 pass
             self._decomp = None
-        if self._ctx is not None:
-            try:
-                self._ctx.__exit__(None, None, None)
-            except Exception:
-                pass
+        ctx = self._ctx
         self._ctx = self._flat_api = self._program = None
+        if ctx is not None:
+            # Propagate a failed close: pyghidra runs project.save(program) on
+            # __exit__, so swallowing here would report kb-apply success while
+            # every applied change was discarded. References are cleared first
+            # so the daemon stays consistent even when the close raises.
+            ctx.__exit__(None, None, None)
 
     # -- commands ------------------------------------------------------------
 
@@ -223,7 +225,10 @@ class GhidraDaemon:
             pass  # client already gone; nothing to deliver
 
     def _cleanup(self):
-        self._close_program()
+        try:
+            self._close_program()
+        except Exception as exc:
+            print(f"[ghidra daemon] program close failed during shutdown: {exc}")
         state_path(self.project_dir).unlink(missing_ok=True)
         print("[ghidra daemon] stopped")
 

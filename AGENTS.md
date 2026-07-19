@@ -8,6 +8,7 @@ This file is the canonical, harness-agnostic instruction set. Claude Code loads 
 - **Tool dispatch** (which tool for which question; what runs inline vs delegated): `.claude/rules/tool-dispatch.md`
 - **Analysis workflow** (bootstrap ordering, Ghidra backend, index/query, parallel patterns): `.claude/rules/subagent-workflow.md`
 - **Skills** (`dx9-ffp-port`, `dynamic-analysis`): `.claude/skills/` — canonical copies. Non-Claude harnesses self-install them (see "Skill Setup" below).
+- **Custom agents** (`static-analyzer`): `.claude/agents/` — canonical definitions. `.cursor/agents/`, `.github/agents/`, and `.kiro/agents/` hold thin harness-native mirrors that defer to the canonical files, so only the `.claude/agents/` copies get edited.
 
 ## Skill Setup (do this first on non-Claude harnesses)
 

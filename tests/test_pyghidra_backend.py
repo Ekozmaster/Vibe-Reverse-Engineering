@@ -531,9 +531,10 @@ class TestRouteDaemonSafety:
         )
         assert _route_daemon(str(Path("patches") / "G" / "ghidra"), {"cmd": "decompile"}) is None
 
-    def test_timeout_propagates_not_silent_cold_retry(self, monkeypatch):
+    def test_timeout_errors_not_silent_cold_retry(self, monkeypatch):
         """A timeout on a live daemon may have already run the command; falling
-        through to a cold re-run would double-execute, so it must raise."""
+        through to a cold re-run would double-execute, so it must return an
+        error response (not None, which would trigger the cold path)."""
         import socket
         from pyghidra_backend import _route_daemon
         import ghidra_client
@@ -544,8 +545,10 @@ class TestRouteDaemonSafety:
             raise socket.timeout("timed out")
 
         monkeypatch.setattr(ghidra_client, "send_command", _timeout)
-        with pytest.raises(Exception):
-            _route_daemon(str(Path("patches") / "G" / "ghidra"), {"cmd": "export"})
+        routed = _route_daemon(str(Path("patches") / "G" / "ghidra"), {"cmd": "export"})
+        assert routed is not None
+        assert routed["ok"] is False
+        assert "did not reply" in routed["error"]
 
     def test_injects_game_identity(self, monkeypatch):
         """_route_daemon tags the command with the game derived from project_dir

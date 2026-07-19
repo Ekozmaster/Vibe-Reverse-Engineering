@@ -109,7 +109,8 @@ def _callees_from_index(db_path: str, func_ea: int) -> list[tuple[int, str]] | N
         try:
             has_xrefs = conn.execute("SELECT 1 FROM xrefs LIMIT 1").fetchone() is not None
             known = conn.execute(
-                "SELECT 1 FROM funcs WHERE address = ? LIMIT 1", (func_ea,)
+                "SELECT 1 FROM funcs WHERE address = ? AND source = 'ghidra' LIMIT 1",
+                (func_ea,),
             ).fetchone() is not None
             if not has_xrefs or not known:
                 return None
@@ -120,8 +121,8 @@ def _callees_from_index(db_path: str, func_ea: int) -> list[tuple[int, str]] | N
                 "GROUP BY x.to_ea ORDER BY x.to_ea",
                 (func_ea,),
             ).fetchall()
-        except sqlite3.OperationalError:
-            return None  # half-initialised or foreign schema -> scan instead
+        except sqlite3.DatabaseError:
+            return None  # half-initialised, foreign-schema'd, or corrupt -> scan instead
     finally:
         conn.close()
     return [(int(a), n) for a, n in rows]
