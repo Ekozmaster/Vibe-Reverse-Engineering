@@ -104,23 +104,20 @@ def _write_kb_entries(kb_path: str, entries: list[str], known: set[int]) -> int:
     written = 0
     with open(kb_path, "a") as f:
         for entry in entries:
-            # Extract address from "@ 0xADDR ..." lines
+            # Extract addresses from "@ 0xADDR ..." lines
+            addrs = []
             for line in entry.splitlines():
                 if line.startswith("@ 0x"):
                     parts = line.split()
                     try:
-                        addr = int(parts[1], 16)
+                        addrs.append(int(parts[1], 16))
                     except (ValueError, IndexError):
                         continue
-                    if addr in known:
-                        break
-            else:
-                # No address line found or no duplicate -- write
-                f.write(entry + "\n\n")
-                written += 1
+            if any(addr in known for addr in addrs):
                 continue
-            # Duplicate found -- skip this entry
-            continue
+            f.write(entry + "\n\n")
+            written += 1
+            known.update(addrs)
     return written
 
 
