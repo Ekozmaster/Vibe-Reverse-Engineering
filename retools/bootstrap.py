@@ -96,22 +96,54 @@ def _is_packed(pe: pefile.PE) -> bool:
 # KB file I/O
 # ---------------------------------------------------------------------------
 
-def _read_existing_addresses(kb_path: str) -> set[int]:
-    """Parse existing kb.h and return the set of known addresses."""
-    addresses: set[int] = set()
-    if not os.path.isfile(kb_path):
-        return addresses
-    with open(kb_path) as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("@ 0x"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    try:
-                        addresses.add(int(parts[1], 16))
-                    except ValueError:
-                        pass
-    return addresses
+def _entry_addresses(entry: str) -> list[int]:
+    """Extract addresses from an entry's "@ 0xADDR" / "$ 0xADDR" lines."""
+    addrs = []
+    for line in entry.splitlines():
+        if line.startswith(("@ 0x", "$ 0x")):
+            try:
+                addrs.append(int(line.split()[1], 16))
+            except (ValueError, IndexError):
+                continue
+    return addrs
+
+
+# Bare "@ 0xADDR name;" / "$ 0xADDR name" lines as bootstrap emits them.
+# Full signatures (spaces, parens) intentionally don't match.
+_BARE_NAME_LINE = re.compile(r"^([@$] 0x([0-9A-Fa-f]+) )([A-Za-z_]\w*)(;?)$")
+
+
+def _uniquify_entry_names(
+    entries: list[str], taken: set[str] | None = None,
+) -> list[str]:
+    """Suffix duplicate entry names with their own address.
+
+    Generated labels (thunk targets, sigdb placeholders, classifier labels)
+    can legitimately repeat across addresses, but r2 function renames fail
+    silently on name collisions, so every written name must be unique.
+
+    Args:
+        entries: KB entry strings (comment + entry lines).
+        taken: Names already present in the KB file on disk.
+
+    Returns:
+        Entries with colliding bare names rewritten to ``name_ADDR``.
+    """
+    used = set(taken) if taken else set()
+    out = []
+    for entry in entries:
+        lines = []
+        for line in entry.splitlines():
+            m = _BARE_NAME_LINE.match(line)
+            if m:
+                prefix, addr, name, semi = m.groups()
+                if name in used:
+                    name = f"{name}_{addr}"
+                used.add(name)
+                line = f"{prefix}{name}{semi}"
+            lines.append(line)
+        out.append("\n".join(lines))
+    return out
 
 
 def _write_kb_entries(kb_path: str, entries: list[str], known: set[int]) -> int:
@@ -122,23 +154,12 @@ def _write_kb_entries(kb_path: str, entries: list[str], known: set[int]) -> int:
     written = 0
     with open(kb_path, "a") as f:
         for entry in entries:
-            # Extract address from "@ 0xADDR ..." lines
-            for line in entry.splitlines():
-                if line.startswith("@ 0x"):
-                    parts = line.split()
-                    try:
-                        addr = int(parts[1], 16)
-                    except (ValueError, IndexError):
-                        continue
-                    if addr in known:
-                        break
-            else:
-                # No address line found or no duplicate -- write
-                f.write(entry + "\n\n")
-                written += 1
+            addrs = _entry_addresses(entry)
+            if any(addr in known for addr in addrs):
                 continue
-            # Duplicate found -- skip this entry
-            continue
+            f.write(entry + "\n\n")
+            written += 1
+            known.update(addrs)
     return written
 
 
@@ -244,37 +265,6 @@ def _analyze_imports(b: Binary) -> list:
         return []
 
 
-def _seed_strings(b: Binary) -> tuple[int, list[str]]:
-    """Seed KB with error/diagnostic string references.
-
-    Args:
-        b: Loaded Binary instance.
-
-    Returns:
-        (string count, list of KB entry strings).
-    """
-    error_keywords = [
-        "error", "fail", "assert", "fatal", "exception",
-        "invalid", "corrupt", "abort", "panic", "warning",
-    ]
-    try:
-        from search import find_strings
-        strings = find_strings(b, filter_keywords=error_keywords, min_len=6)
-    except (ImportError, ValueError):
-        return 0, []
-
-    kb_entries = []
-    for sref in strings:
-        if sref.va is None:
-            continue
-        safe_str = sref.value[:80].replace("*/", "* /")
-        comment = f'// [string] "{safe_str}"'
-        label = re.sub(r"[^A-Za-z0-9_]", "_", sref.value[:40]).strip("_")
-        if label:
-            kb_entries.append(f"{comment}\n@ 0x{sref.va:X} str_{label};")
-    return len(strings), kb_entries
-
-
 def _propagate_labels(
     b: Binary,
     func_table: list[int],
@@ -334,6 +324,85 @@ def _propagate_labels(
     return kb_entries
 
 
+def _seed_index(b: Binary, db_path: str, strings: list | None = None) -> None:
+    """Populate index.db from already-computed pefile data (source='bootstrap').
+
+    Never raises out to the caller; the index is a convenience, not a
+    prerequisite for a successful bootstrap. *strings* reuses the caller's
+    single ``find_strings`` sweep; when None it sweeps once itself.
+    """
+    from index import GameIndex
+
+    if strings is None:
+        from search import find_strings
+        strings = find_strings(b, min_len=4)
+
+    gi = GameIndex(db_path)
+    try:
+        # segments
+        seg_rows = []
+        for s in b.pe.sections:
+            name = s.Name.rstrip(b"\x00").decode("ascii", errors="ignore")
+            start = b.base + s.VirtualAddress
+            seg_rows.append({
+                "start_ea": start,
+                "end_ea": start + s.Misc_VirtualSize,
+                "name": name,
+                "class": None,
+                "perm": int(s.Characteristics),
+            })
+        gi.replace("segments", seg_rows, source="bootstrap")
+
+        # imports
+        imp_rows = []
+        if hasattr(b.pe, "DIRECTORY_ENTRY_IMPORT"):
+            for entry in b.pe.DIRECTORY_ENTRY_IMPORT:
+                module = entry.dll.decode("ascii", errors="ignore")
+                for imp in entry.imports:
+                    nm = (imp.name.decode("ascii", errors="ignore")
+                          if imp.name else f"ordinal_{imp.ordinal}")
+                    imp_rows.append({
+                        "address": imp.address,
+                        "name": nm,
+                        "module": module,
+                        "ordinal": imp.ordinal,
+                    })
+        gi.replace("imports", imp_rows, source="bootstrap")
+
+        # entries (exports)
+        exp_rows = []
+        if hasattr(b.pe, "DIRECTORY_ENTRY_EXPORT"):
+            for exp in b.pe.DIRECTORY_ENTRY_EXPORT.symbols:
+                if not exp.address:
+                    continue
+                exp_rows.append({
+                    "ordinal": exp.ordinal,
+                    "address": b.base + exp.address,
+                    "name": exp.name.decode("ascii", errors="ignore") if exp.name else None,
+                })
+        gi.replace("entries", exp_rows, source="bootstrap")
+
+        # strings
+        str_rows = []
+        for sref in strings:
+            if sref.va is None:
+                continue
+            str_rows.append({
+                "address": sref.va,
+                "length": len(sref.value),
+                "type": "ascii",
+                "encoding": "ascii",
+                "content": sref.value,
+            })
+        gi.replace("strings", str_rows, source="bootstrap")
+
+        # provisional funcs + names from the entry-point table
+        func_rows = [{"address": va, "name": None} for va in b.func_table]
+        gi.replace("funcs", func_rows, source="bootstrap")
+    finally:
+        gi.close()
+
+
 # ---------------------------------------------------------------------------
 # bootstrap -- orchestrator
 # ---------------------------------------------------------------------------
@@ -388,7 +457,14 @@ def bootstrap(
         return {"packed": True, "functions_identified": 0}
 
     b = Binary(binary_path)
-    known_addresses = _read_existing_addresses(kb_path)
+    from kb import parse_kb, read_existing_addresses
+    known_addresses = read_existing_addresses(kb_path)
+    if os.path.isfile(kb_path):
+        existing = parse_kb(Path(kb_path))
+        known_kb_names = ({f.name for f in existing.functions}
+                          | {g.name for g in existing.globals})
+    else:
+        known_kb_names = set()
     stats: dict = {
         "packed": False,
         "compiler": "unknown",
@@ -396,7 +472,7 @@ def bootstrap(
         "sigdb_matches": 0,
         "rtti_classes": 0,
         "imports": 0,
-        "strings_seeded": 0,
+        "strings_indexed": 0,
         "propagated": 0,
         "functions_identified": 0,
     }
@@ -414,20 +490,21 @@ def bootstrap(
     imports = _analyze_imports(b)
     stats["imports"] = len(imports)
 
-    string_count, string_entries = _seed_strings(b)
-    stats["strings_seeded"] = string_count
+    # Strings go to index.db only: decompilers auto-resolve directly
+    # referenced string literals, so kb.h labels for them are noise.
+    try:
+        from search import find_strings
+        all_strings = find_strings(b, min_len=4)
+    except (ImportError, ValueError):
+        all_strings = []
+    stats["strings_indexed"] = len(all_strings)
 
-    all_entries = sig_entries + rtti_entries + string_entries
+    all_entries = sig_entries + rtti_entries
 
     # Build address set from earlier pipeline entries (done once)
     kb_entry_addresses: set[int] = set()
     for entry in all_entries:
-        for line in entry.splitlines():
-            if line.startswith("@ 0x"):
-                try:
-                    kb_entry_addresses.add(int(line.split()[1], 16))
-                except (ValueError, IndexError):
-                    pass
+        kb_entry_addresses.update(_entry_addresses(entry))
 
     # Build name map for propagation
     known_names: dict[int, str] = {va: m.name for va, m in sig_results.items()}
@@ -444,9 +521,10 @@ def bootstrap(
     all_entries.extend(prop_entries)
 
     stats["functions_identified"] = (
-        stats["sigdb_matches"] + stats["rtti_classes"]
-        + stats["strings_seeded"] + stats["propagated"]
+        stats["sigdb_matches"] + stats["rtti_classes"] + stats["propagated"]
     )
+
+    all_entries = _uniquify_entry_names(all_entries, taken=known_kb_names)
 
     # -- Write kb.h --------------------------------------------------------
     if not os.path.isfile(kb_path):
@@ -465,7 +543,7 @@ def bootstrap(
         f"Signature DB matches: {stats['sigdb_matches']}",
         f"RTTI classes found: {stats['rtti_classes']}",
         f"Imports cataloged: {stats['imports']}",
-        f"Error strings seeded: {stats['strings_seeded']}",
+        f"Strings indexed: {stats['strings_indexed']}",
         f"Propagated labels: {stats['propagated']}",
         f"Functions identified: {stats['functions_identified']}",
         f"KB entries written: {written}",
@@ -479,6 +557,12 @@ def bootstrap(
 
     report_lines.append("")
     Path(report_path).write_text("\n".join(report_lines))
+
+    # -- Seed the per-game index (best-effort; never breaks bootstrap) ------
+    try:
+        _seed_index(b, os.path.join(project_dir, "index.db"), all_strings)
+    except Exception as e:  # index is a convenience, not a prerequisite
+        print(f"index seeding skipped: {e}", file=sys.stderr)
 
     return stats
 

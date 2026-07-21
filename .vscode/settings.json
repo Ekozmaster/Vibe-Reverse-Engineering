@@ -1,0 +1,4 @@
+{
+    "chat.useAgentsMdFile": true,
+    "chat.useNestedAgentsMdFiles": true
+}

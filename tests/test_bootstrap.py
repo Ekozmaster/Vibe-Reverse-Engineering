@@ -120,6 +120,98 @@ class TestClassifyFunction:
 
 
 # ---------------------------------------------------------------------------
+# strings stay out of kb.h
+# ---------------------------------------------------------------------------
+
+class TestStringsNotSeededToKb:
+    def test_kb_has_no_string_entries(self, tmp_path):
+        """Strings belong in index.db, not kb.h: decompilers auto-resolve
+        directly-referenced string literals, so kb string labels are noise."""
+        from bootstrap import bootstrap
+        pe_path = _make_minimal_pe(str(tmp_path))
+        # Embed an error string in the section data so a sweep finds it.
+        data = Path(pe_path).read_bytes()
+        marker = b"FATAL ERROR: gamesys is corrupt\x00"
+        data = data[:0x300] + marker + data[0x300 + len(marker):]
+        Path(pe_path).write_bytes(data)
+        project_dir = str(tmp_path / "project")
+
+        bootstrap(pe_path, project_dir)
+
+        content = Path(os.path.join(project_dir, "kb.h")).read_text()
+        assert "str_" not in content
+
+        import sqlite3
+        con = sqlite3.connect(os.path.join(project_dir, "index.db"))
+        rows = con.execute(
+            "SELECT content FROM strings WHERE content LIKE '%FATAL ERROR%'"
+        ).fetchall()
+        con.close()
+        assert rows, "string must still be indexed in index.db"
+
+
+class TestUniquifyEntryNames:
+    def test_duplicate_names_get_address_suffix(self):
+        from bootstrap import _uniquify_entry_names
+        entries = [
+            "// [propagated: _thunk_sub_6B2CA8, 0.80]\n@ 0x402018 _thunk_sub_6B2CA8;",
+            "// [propagated: _thunk_sub_6B2CA8, 0.80]\n@ 0x402440 _thunk_sub_6B2CA8;",
+        ]
+        result = _uniquify_entry_names(entries)
+        assert result[0].splitlines()[1] == "@ 0x402018 _thunk_sub_6B2CA8;"
+        assert result[1].splitlines()[1] == "@ 0x402440 _thunk_sub_6B2CA8_402440;"
+
+    def test_unique_names_untouched(self):
+        from bootstrap import _uniquify_entry_names
+        entries = [
+            "// [sigdb: byte, 0.85] crt\n@ 0x408F00 crt_strlen;",
+            "@ 0x717EA4 _cSomeClass_vtable;",
+        ]
+        assert _uniquify_entry_names(entries) == entries
+
+    def test_existing_kb_names_count_as_taken(self):
+        from bootstrap import _uniquify_entry_names
+        entries = ["@ 0x402018 _thunk_sub_6B2CA8;"]
+        result = _uniquify_entry_names(entries, taken={"_thunk_sub_6B2CA8"})
+        assert result[0] == "@ 0x402018 _thunk_sub_6B2CA8_402018;"
+
+    def test_signature_lines_left_alone(self):
+        """Only bare-name lines are rewritten; full signatures pass through."""
+        from bootstrap import _uniquify_entry_names
+        entries = [
+            "@ 0x401000 void __cdecl ProcessInput(int key);",
+            "@ 0x402000 void __cdecl ProcessInput(int key);",
+        ]
+        assert _uniquify_entry_names(entries) == entries
+
+
+class TestBootstrapUniquifiesNames:
+    def test_kb_function_names_unique(self, tmp_path):
+        """End to end: a bootstrap run must never write two @ entries with
+        the same name (r2 afn renames silently fail on collisions)."""
+        from bootstrap import bootstrap
+        from kb import parse_kb
+        pe_path = _make_minimal_pe(str(tmp_path))
+        project_dir = str(tmp_path / "project")
+        bootstrap(pe_path, project_dir)
+        kb = parse_kb(Path(project_dir) / "kb.h")
+        names = [f.name for f in kb.functions]
+        assert len(names) == len(set(names))
+
+
+class TestWriteKbEntriesGlobals:
+    def test_skips_known_global_addresses(self, tmp_path):
+        from bootstrap import _write_kb_entries
+        kb_path = str(tmp_path / "kb.h")
+        entry = '// [string] "some error"\n$ 0x6FAC3C str_some_error'
+        known: set = set()
+        assert _write_kb_entries(kb_path, [entry], known) == 1
+        assert _write_kb_entries(kb_path, [entry], known) == 0
+        content = Path(kb_path).read_text()
+        assert content.count("$ 0x6FAC3C") == 1
+
+
+# ---------------------------------------------------------------------------
 # bootstrap pipeline
 # ---------------------------------------------------------------------------
 
@@ -326,3 +418,51 @@ class TestCLI:
         from bootstrap import main
         with pytest.raises(SystemExit):
             main([])
+
+
+# ---------------------------------------------------------------------------
+# Index seeding
+# ---------------------------------------------------------------------------
+
+class TestStringSweepDedup:
+    def test_bootstrap_scans_strings_once(self, tmp_path):
+        """bootstrap must sweep the binary for strings a single time and reuse
+        the result for both the error-string KB seed and the index seed."""
+        import search
+        from bootstrap import bootstrap
+
+        pe_path = _make_minimal_pe(str(tmp_path))
+        project_dir = str(tmp_path / "project")
+
+        calls = {"n": 0}
+        orig = search.find_strings
+
+        def counting(b, **kw):
+            calls["n"] += 1
+            return orig(b, **kw)
+
+        with patch("search.find_strings", counting):
+            bootstrap(pe_path, project_dir)
+
+        assert calls["n"] == 1
+
+
+class TestSeedIndex:
+    def test_seed_index_populates_tables(self, sample_binary, tmp_path):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+        from bootstrap import _seed_index
+        from common import Binary
+        from index import GameIndex
+
+        db = str(tmp_path / "index.db")
+        b = Binary(sample_binary)
+        _seed_index(b, db)  # must not raise
+
+        gi = GameIndex(db)
+        counts = gi.counts()
+        gi.close()
+        # A real system DLL always has imports and segments.
+        assert counts["segments"] > 0
+        assert counts["imports"] > 0  # kernel32 imports from ntdll and others

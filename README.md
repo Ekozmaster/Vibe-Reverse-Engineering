@@ -28,6 +28,10 @@ pip install -r requirements.txt
 
 **Static analysis** (`retools/`) works directly on PE files on disk: disassembly, decompilation, cross-references, call graphs, vtable analysis, byte pattern search, and more.
 
+**Indexed queries** (`retools/index.py` + `retools/query.py`) cache analyzed facts (functions, names, cross-references, strings, imports) into a per-game SQLite file (`patches/<Game>/index.db`), so the agent can answer "who calls this" or "find all strings matching X" with a local SQL query instead of re-scanning the binary. Bootstrap and Ghidra analysis both feed it; Ghidra-sourced facts win over provisional ones.
+
+**Ghidra server** (`retools/ghidra_server.py`) keeps one Ghidra program warm per game project so repeat decompilations return in well under a second instead of paying Ghidra's analysis cost on every call.
+
 **Dynamic analysis** (`livetools/`) attaches to a running process via Frida: breakpoints, register/memory inspection, function tracing, instruction-level stepping, and live memory patching.
 
 **Game window automation** (`livetools/gamectl.py`) sends keystrokes and mouse clicks to a game window without Frida. Uses `SendInput` with `AttachThreadInput` focus management — works with DirectInput/RawInput games that ignore `PostMessage`. Target by process exe name:
@@ -44,16 +48,24 @@ python -m livetools gamectl --exe game.exe macro --macro-file patches/MyGame/mac
 
 ## How it works
 
-The project ships with agent instructions tailored to each supported environment:
+Agent instructions are **single-sourced** — edit once, every harness picks it up:
 
-| Tool | Instructions |
-|------|-------------|
-| Cursor | `.cursor/rules/` |
-| Copilot | `.github/copilot-instructions.md` |
-| Claude Code | `.claude/CLAUDE.md` |
-| Kiro | `.kiro/steering/` + `.kiro/powers/` |
+- **`AGENTS.md`** (repo root) — canonical instructions: project conventions, engineering standards, and pointers to the tool catalog. Read natively by Cursor, Kiro, Codex, and most agents. VS Code Copilot loads it via the shipped `.vscode/settings.json` (`chat.useAgentsMdFile`); Claude Code imports it from `.claude/CLAUDE.md`.
+- **`.claude/`** — the maintained tree for everything deeper: skills (`.claude/skills/`), tool catalog (`.claude/references/`), workflow rules (`.claude/rules/`), and subagent definitions (`.claude/agents/`). These files are plain Markdown any agent can read by path.
 
-Each teaches the agent the full tool catalog — which tool to reach for, when, and why. The agent picks the right tool automatically based on your question.
+Skills install themselves: Claude Code reads `.claude/skills/` natively, and AGENTS.md instructs every other agent to install the skills into its own skills directory on first use (via the [skills CLI](https://github.com/vercel-labs/skills) or a manual copy). Normally you don't need to do anything — open the repo and start working.
+
+To install manually instead, or to consume the skills from another project:
+
+```bash
+# Inside this repo (pick your agent):
+npx skills add ./.claude/skills -a cursor -y     # or -a copilot, -a kiro-cli, ...
+
+# From anywhere else:
+npx skills add Ekozmaster/Vibe-Reverse-Engineering
+```
+
+Inside the repo, point the source at `./.claude/skills` explicitly — with a bare `.` the CLI skips the current project's own agent directories and finds nothing. Installed copies live in git-ignored locations (`.agents/`, `.cursor/skills/`, `skills-lock.json`, …); the canonical, editable copies stay in `.claude/skills/`.
 
 ## Usage
 

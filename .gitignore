@@ -29,7 +29,8 @@ livetools/.daemon.log
 
 # IDE / Editor
 .vs/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 *.swp
 *.swo
 *~
@@ -67,3 +68,10 @@ docs/
 
 # Claude Code local (per-machine) settings
 .claude/settings.local.json
+
+# Skills installed locally via the skills CLI (canonical copies live in .claude/skills/)
+.agents/
+.cursor/skills/
+.github/skills/
+.kiro/skills/
+skills-lock.json
