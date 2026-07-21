@@ -139,6 +139,13 @@ def _route_daemon(project_dir: str, cmd: dict, timeout: int = 120):
     is tagged with the game name so the daemon can reject a stale state file
     that points at another project's daemon (returns None -> cold path).
 
+    ``RETOOLS_GHIDRA_COLD=1`` / ``--cold`` forces the cold path, but cold can
+    only bypass a daemon that is not holding this project: the Ghidra project
+    lock is exclusive, so if this project's own daemon is live a cold in-process
+    open would die with a raw ``LockException``. In that one case cold is
+    refused with an error response; with no live daemon it returns None as
+    before and the caller runs cold.
+
     Failure handling is deliberately split: a missing client module, a corrupt
     state file, or a daemon that is not reachable soft-fails to None (cold
     path, nothing ran). But once the command has been sent, a ``socket.timeout``
@@ -146,8 +153,6 @@ def _route_daemon(project_dir: str, cmd: dict, timeout: int = 120):
     rather than triggering a cold re-run that would double-execute a mutating
     command.
     """
-    if os.environ.get("RETOOLS_GHIDRA_COLD") == "1":
-        return None
     try:
         import ghidra_client
     except ImportError:
@@ -156,6 +161,20 @@ def _route_daemon(project_dir: str, cmd: dict, timeout: int = 120):
         alive = ghidra_client.is_daemon_alive(project_dir)
     except Exception:
         return None  # unreadable/corrupt state file -> no reachable daemon
+
+    if os.environ.get("RETOOLS_GHIDRA_COLD") == "1":
+        # Cold cannot open a project this project's own daemon already holds --
+        # the Ghidra project lock is exclusive, so an in-process open would die
+        # with a raw LockException. Refuse cleanly; with no live daemon there is
+        # no lock to fight, so fall through to the cold path.
+        if alive:
+            return {"ok": False, "error": (
+                "a warm Ghidra daemon holds this project's lock, so --cold "
+                "cannot open it in-process -- stop the daemon (send 'shutdown' "
+                "or Ctrl-C it) or drop --cold / RETOOLS_GHIDRA_COLD to route "
+                "through it")}
+        return None
+
     if not alive:
         return None
     game = Path(project_dir).parent.name  # patches/<game>/ghidra -> <game>
@@ -543,7 +562,8 @@ def main():
     # (`... export bin --project P --cold`) parses.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--cold", action="store_true",
-                        help="Force cold in-process start, bypassing any live daemon")
+                        help="Force a cold in-process run instead of routing to a live "
+                             "daemon (refused if this project's daemon holds the lock)")
 
     # --- analyze ---
     p_analyze = sub.add_parser("analyze", parents=[common],

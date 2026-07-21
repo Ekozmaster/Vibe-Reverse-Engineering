@@ -462,14 +462,34 @@ class TestRouteDaemon:
         result = _route_daemon("TestGame", {"cmd": "decompile", "binary": "b.exe", "va": 1})
         assert result == {"ok": True, "text": "ROUTED"}
 
-    def test_cold_env_returns_none(self, monkeypatch):
+    def test_cold_env_no_daemon_returns_none(self, monkeypatch):
         from pyghidra_backend import _route_daemon
         import ghidra_client
 
         monkeypatch.setenv("RETOOLS_GHIDRA_COLD", "1")
-        # Even a daemon that would answer "alive" must not be reached.
-        monkeypatch.setattr(ghidra_client, "is_daemon_alive", lambda project_dir: True)
+        monkeypatch.setattr(ghidra_client, "is_daemon_alive", lambda project_dir: False)
+        # No daemon owns the lock -> cold path proceeds (None), nothing sent.
         assert _route_daemon("TestGame", {"cmd": "decompile"}) is None
+
+    def test_cold_env_refuses_when_daemon_holds_lock(self, monkeypatch):
+        """--cold cannot open a project this project's own daemon already holds
+        (the Ghidra project lock is exclusive). It must refuse with a clean
+        error instead of falling through to a cold open that dies with a raw
+        LockException -- and must never contact the daemon in cold mode."""
+        from pyghidra_backend import _route_daemon
+        import ghidra_client
+
+        monkeypatch.setenv("RETOOLS_GHIDRA_COLD", "1")
+        monkeypatch.setattr(ghidra_client, "is_daemon_alive", lambda project_dir: True)
+
+        def _must_not_send(*args, **kwargs):
+            raise AssertionError("cold mode must not contact the daemon")
+
+        monkeypatch.setattr(ghidra_client, "send_command", _must_not_send)
+        routed = _route_daemon("TestGame", {"cmd": "decompile"})
+        assert routed is not None
+        assert routed["ok"] is False
+        assert "cold" in routed["error"].lower()
 
     def test_dead_daemon_returns_none(self, monkeypatch):
         from pyghidra_backend import _route_daemon
