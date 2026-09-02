@@ -82,3 +82,9 @@ Some processes (especially games) require their window to be focused for dynamic
 ## License
 
 [MIT](LICENSE)
+
+# Contributors
+- E-man (aka Ekozmaster, Project Lead)
+- Kim2091
+  - [Consider supporting!](https://ko-fi.com/kim20913944)
+- Night1099
