@@ -123,6 +123,9 @@ function verifyHook(addrStr, origFirstByte) {
 //   "[esp+0x4]:12:float32"  -> read 12 bytes at esp+4, decode as float32
 //   "*[esp+4]:64:float32"   -> double-deref: read ptr at esp+4, then 64 bytes
 //   "st0"                   -> FPU top (best-effort)
+//   "[entry.r8]:4:uint32"   -> leave specs only: the register's value at ENTRY,
+//                              memory read at LEAVE -- how an out-parameter is read,
+//                              since the register itself is clobbered by then
 
 var REG_NAMES_32 = ['eax','ebx','ecx','edx','esi','edi','ebp','esp','eip'];
 var REG_NAMES_64 = ['rax','rbx','rcx','rdx','rsi','rdi','rbp','rsp','rip',
@@ -150,7 +153,7 @@ function parseOneSpec(s) {
     var work = s;
     if (work.charAt(0) === '*') { deref = true; work = work.substring(1); }
 
-    var m = work.match(/^\[(\w+)(?:\s*\+\s*(0x[\da-fA-F]+|\d+))?\]\s*(?::(\d+))?(?::(\w+))?$/);
+    var m = work.match(/^\[((?:entry\.)?\w+)(?:\s*\+\s*(0x[\da-fA-F]+|\d+))?\]\s*(?::(\d+))?(?::(\w+))?$/);
     if (m) {
         var base = m[1].toLowerCase();
         var off = m[2] ? parseInt(m[2], m[2].indexOf('0x') === 0 ? 16 : 10) : 0;
@@ -162,23 +165,34 @@ function parseOneSpec(s) {
     return { kind: 'reg', name: lower, raw: s };
 }
 
-function evalReadSpecs(specs, ctx) {
+// entryRegs: the snapshotRegs() taken at entry, which "entry.<reg>" names resolve against.
+function evalReadSpecs(specs, ctx, entryRegs) {
     var results = [];
     for (var i = 0; i < specs.length; i++) {
-        results.push(evalOneSpec(specs[i], ctx));
+        results.push(evalOneSpec(specs[i], ctx, entryRegs));
     }
     return results;
 }
 
-function evalOneSpec(spec, ctx) {
+function specRegVal(ctx, name, entryRegs) {
+    if (name.indexOf('entry.') !== 0) return getRegVal(ctx, name);
+    if (!entryRegs) throw new Error(name + ' is only valid in a leave spec');
+    var reg = name.substring(6);
+    if (reg === 'pc') reg = is64 ? 'rip' : 'eip';
+    var hex = entryRegs[reg];
+    if (hex === undefined) throw new Error('no entry register ' + reg);
+    return ptr('0x' + hex);
+}
+
+function evalOneSpec(spec, ctx, entryRegs) {
     try {
         if (spec.kind === 'reg') {
-            return { spec: spec.raw, value: ptrToHex(getRegVal(ctx, spec.name)) };
+            return { spec: spec.raw, value: ptrToHex(specRegVal(ctx, spec.name, entryRegs)) };
         }
         if (spec.kind === 'st0') {
             return { spec: spec.raw, value: null };
         }
-        var baseVal = getRegVal(ctx, spec.base);
+        var baseVal = specRegVal(ctx, spec.base, entryRegs);
         var addr = baseVal.add(spec.offset);
 
         if (spec.kind === 'deref') {
@@ -357,7 +371,7 @@ function installTrace(addrStr, config) {
                     var leaveData = {
                         eax: ptrToHex(this.context.eax || this.context.rax || ptr(0)),
                         retval: ptrToHex(retval),
-                        reads: evalReadSpecs(leaveSpecs, this.context)
+                        reads: evalReadSpecs(leaveSpecs, this.context, this._traceEnter.regs)
                     };
 
                     var record = {

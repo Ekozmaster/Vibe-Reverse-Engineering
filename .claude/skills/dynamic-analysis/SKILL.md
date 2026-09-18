@@ -104,6 +104,7 @@ Semicolon-separated fields. Each field:
 | `register` | Register value as hex | `ecx`, `eax`, `ebp` |
 | `[reg+OFFSET]:SIZE:TYPE` | Read SIZE bytes from reg+OFFSET | `[esp+4]:12:float32` |
 | `*[reg+OFFSET]:SIZE:TYPE` | Double-deref: follow pointer first | `*[esp+4]:64:float32` |
+| `[entry.reg+OFFSET]:SIZE:TYPE` | Leave specs only: the register's value at ENTRY, memory read at LEAVE -- reads an out-parameter | `[entry.r8]:4:uint32` |
 | `st0` | FPU top-of-stack (best-effort) | `st0` |
 
 Types: `hex` (default), `float32`, `float64`, `uint32`, `int32`, `uint16`, `int16`, `uint8`, `int8`, `ascii`, `utf16`, `ptr`
@@ -481,5 +482,7 @@ python -m livetools analyze scene.jsonl --export-csv scene.csv
 **Do NOT chase the "real" device pointer.** When working with D3D9, do NOT: read a device pointer from a global, dereference its vtable, compute `d3d9.dll_base + slot_offset`, and hook that address. This hooks inside the DLL where arguments are not in the expected layout and proxy/wrapper DLLs break the vtable chain. Hook the game's CALL instruction instead (pattern #9).
 
 **Do NOT explain away zero data.** If a trace returns 0 samples, the answer is "I got no data and need to troubleshoot" — not "the game doesn't appear to use this code path." Follow the escalation in pattern #10.
+
+**Do NOT trace or collect a mid-function address.** Both install an exit hook, which replaces the return address at `[esp]`/`[rsp]` on entry -- mid-function that slot is a local, and overwriting it corrupts the stack. Hook the function entry and read out-parameters with `[entry.<reg>]` leave specs instead.
 
 **Do NOT pass DLL-internal addresses to trace/bp.** Addresses from a DLL's export table or vtable layout belong to the DLL's code. Hooking them gives you the wrong context. Always prefer hooking in the game's own .text section.

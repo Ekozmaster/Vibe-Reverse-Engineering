@@ -784,8 +784,12 @@ def build_parser() -> argparse.ArgumentParser:
             "  register:       ecx, eax, ebp, ...\n"
             "  memory:         [reg+OFFSET]:SIZE:TYPE\n"
             "  double-deref:   *[reg+OFFSET]:SIZE:TYPE\n"
+            "  out-parameter:  [entry.reg+OFFSET]:SIZE:TYPE  (--read-leave only:\n"
+            "                  the register's value at entry, memory read at exit)\n"
             "  Types: hex, float32, float64, uint32, int32, uint16, int16,\n"
             "         uint8, int8, ascii, utf16, ptr\n\n"
+            "Hook only a real function entry: the exit hook replaces the return\n"
+            "address at [esp]/[rsp] on entry, which mid-function is a local.\n\n"
             "Filter format:\n"
             "  [esp+8]==0x2  |  eax!=0  |  [ecx+0x54]:4:float32>0.5\n\n"
             "Examples:\n"
@@ -794,7 +798,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m livetools trace 0x402000 --count 5 "
             '--filter "[esp+8]==0x2" --read "[esp+c]:64:float32"\n'
             "  python -m livetools trace 0x403000 --count 20 "
-            '--read "ecx; [esp+4]:12:float32" --read-leave "eax"\n\n'
+            '--read "ecx; [esp+4]:12:float32" --read-leave "eax"\n'
+            "  python -m livetools trace 0x140404000 --count 5 "
+            '--read "rdx" --read-leave "rax; [entry.r8]:4:uint32"\n\n'
             "NOTE: Some games only execute rendering/logic when their window\n"
             "is focused. If trace times out with 0 samples, alt-tab to the\n"
             "game before running."
