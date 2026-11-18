@@ -34,12 +34,6 @@ SVSCF = 0x178    # SetVertexShaderConstantF
 SET_TRANSFORM = 0xB0
 CREATE_VS = 0x16C
 
-# D3DX constant table SetMatrix* offsets
-D3DX_SET_MATRIX = 0x4C
-D3DX_SET_MATRIX_ARRAY = 0x50
-D3DX_SET_MATRIX_TRANSPOSE = 0x58
-D3DX_SET_MATRIX_TRANSPOSE_ARRAY = 0x5C
-
 # Common matrix name patterns in CTAB
 MATRIX_NAME_HINTS = {
     'view': 'View',

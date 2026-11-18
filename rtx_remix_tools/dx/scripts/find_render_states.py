@@ -20,10 +20,58 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header,
     scan_vtable_calls, scan_vtable_mov, analyze_pushes,
-    D3DRS, decode_rs_value,
+    D3DRS, D3DRS_ID, decode_rs_value,
 )
 
 VTABLE_OFFSET = 0xE4  # SetRenderState
+
+# Display grouping for the per-state summary.
+_RS_CATEGORY_NAMES = {
+    "Depth/Stencil": (
+        "ZENABLE", "ZWRITEENABLE", "ZFUNC", "DEPTHBIAS", "SLOPESCALEDEPTHBIAS",
+        "STENCILENABLE", "STENCILFAIL", "STENCILZFAIL", "STENCILPASS",
+        "STENCILFUNC", "STENCILREF", "STENCILMASK", "STENCILWRITEMASK",
+        "TWOSIDEDSTENCILMODE", "CCW_STENCILFAIL", "CCW_STENCILZFAIL",
+        "CCW_STENCILPASS", "CCW_STENCILFUNC",
+    ),
+    "Alpha Blending": (
+        "ALPHATESTENABLE", "ALPHAREF", "ALPHAFUNC", "ALPHABLENDENABLE",
+        "SRCBLEND", "DESTBLEND", "BLENDOP", "BLENDFACTOR",
+        "SEPARATEALPHABLENDENABLE", "SRCBLENDALPHA", "DESTBLENDALPHA",
+        "BLENDOPALPHA",
+    ),
+    "Culling/Fill": ("FILLMODE", "SHADEMODE", "CULLMODE"),
+    "Fog": (
+        "FOGENABLE", "FOGCOLOR", "FOGTABLEMODE", "FOGSTART", "FOGEND",
+        "FOGDENSITY", "RANGEFOGENABLE", "FOGVERTEXMODE",
+    ),
+    "Lighting/Material": (
+        "LIGHTING", "AMBIENT", "SPECULARENABLE", "COLORVERTEX", "LOCALVIEWER",
+        "NORMALIZENORMALS", "DIFFUSEMATERIALSOURCE", "SPECULARMATERIALSOURCE",
+        "AMBIENTMATERIALSOURCE", "EMISSIVEMATERIALSOURCE",
+    ),
+    "Vertex Processing": (
+        "CLIPPING", "CLIPPLANEENABLE", "VERTEXBLEND",
+        "INDEXEDVERTEXBLENDENABLE", "TWEENFACTOR",
+    ),
+    "Texture Factor": ("TEXTUREFACTOR",),
+    "Points": (
+        "POINTSIZE", "POINTSIZE_MIN", "POINTSIZE_MAX", "POINTSPRITEENABLE",
+        "POINTSCALEENABLE", "POINTSCALE_A", "POINTSCALE_B", "POINTSCALE_C",
+    ),
+    "Color Write": (
+        "COLORWRITEENABLE", "COLORWRITEENABLE1", "COLORWRITEENABLE2",
+        "COLORWRITEENABLE3",
+    ),
+    "Misc": (
+        "LASTPIXEL", "DITHERENABLE", "MULTISAMPLEANTIALIAS", "MULTISAMPLEMASK",
+        "SCISSORTESTENABLE", "ANTIALIASEDLINEENABLE", "SRGBWRITEENABLE",
+    ),
+}
+RS_CATEGORIES = {
+    category: [D3DRS_ID[name] for name in names]
+    for category, names in _RS_CATEGORY_NAMES.items()
+}
 
 
 def main():
@@ -74,23 +122,8 @@ def main():
     # -- Per-state summary --
     print(f"\n=== Render State Summary ({len(state_usage)} states found) ===\n")
 
-    # Group by category for readability
-    categories = {
-        "Depth/Stencil": [7, 14, 23, 128, 129, 130, 131, 132, 133, 134, 135,
-                          205, 206, 207, 208, 209],
-        "Alpha Blending": [15, 24, 25, 27, 20, 21, 190, 230, 231, 232, 233],
-        "Culling/Fill": [8, 9, 22],
-        "Fog": [28, 34, 35, 36, 37, 38, 48, 158],
-        "Lighting/Material": [29, 155, 157, 159, 160, 161, 162, 163, 164, 165],
-        "Vertex Processing": [154, 168, 169, 186, 189],
-        "Texture Factor": [136],
-        "Points": [174, 175, 176, 177, 178, 179, 180, 181, 182, 185],
-        "Color Write": [187, 210, 211, 212],
-        "Misc": [19, 26, 183, 184, 191, 192, 194, 195, 196, 214, 215],
-    }
-
     categorized = set()
-    for cat_name, state_ids in categories.items():
+    for cat_name, state_ids in RS_CATEGORIES.items():
         found = [(sid, state_usage[sid]) for sid in state_ids if sid in state_usage]
         if not found:
             continue

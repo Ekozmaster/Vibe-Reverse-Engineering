@@ -311,6 +311,26 @@ D3D9_DEVICE_VTABLE = {
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# ID3DXConstantTable methods in vtable order (d3dx9shader.h)
+# ═══════════════════════════════════════════════════════════════════════
+
+# The interface derives from ID3DXBuffer, so its own methods start after
+# IUnknown's three and ID3DXBuffer's two. x86 vtable offset = index * 4.
+D3DX_CONSTANT_TABLE_METHODS = (
+    "QueryInterface", "AddRef", "Release",
+    "GetBufferPointer", "GetBufferSize",
+    "GetDesc", "GetConstantDesc", "GetSamplerIndex",
+    "GetConstant", "GetConstantByName", "GetConstantElement",
+    "SetDefaults", "SetValue",
+    "SetBool", "SetBoolArray", "SetInt", "SetIntArray",
+    "SetFloat", "SetFloatArray", "SetVector", "SetVectorArray",
+    "SetMatrix", "SetMatrixArray", "SetMatrixPointerArray",
+    "SetMatrixTranspose", "SetMatrixTransposeArray",
+    "SetMatrixTransposePointerArray",
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # D3DRENDERSTATETYPE
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -391,42 +411,60 @@ D3DVERTEXBLENDFLAGS = {
     0: "DISABLE", 1: "1WEIGHTS", 2: "2WEIGHTS", 3: "3WEIGHTS", 255: "TWEENING",
 }
 
+# Tables that refer to render states name them and resolve the id here, so a
+# state's id is written down in exactly one place.
+D3DRS_ID = {name: state_id for state_id, name in D3DRS.items()}
+
+_RS_VALUE_DECODERS_BY_NAME = {
+    "ZENABLE": D3DZBUFFERTYPE,
+    "FILLMODE": D3DFILLMODE,
+    "SHADEMODE": D3DSHADEMODE,
+    "SRCBLEND": D3DBLEND,
+    "DESTBLEND": D3DBLEND,
+    "CULLMODE": D3DCULL,
+    "ZFUNC": D3DCMPFUNC,
+    "ALPHAFUNC": D3DCMPFUNC,
+    "FOGTABLEMODE": D3DFOGMODE,
+    "STENCILFAIL": D3DSTENCILOP,
+    "STENCILZFAIL": D3DSTENCILOP,
+    "STENCILPASS": D3DSTENCILOP,
+    "STENCILFUNC": D3DCMPFUNC,
+    "FOGVERTEXMODE": D3DFOGMODE,
+    "DIFFUSEMATERIALSOURCE": D3DMATERIALCOLORSOURCE,
+    "SPECULARMATERIALSOURCE": D3DMATERIALCOLORSOURCE,
+    "AMBIENTMATERIALSOURCE": D3DMATERIALCOLORSOURCE,
+    "EMISSIVEMATERIALSOURCE": D3DMATERIALCOLORSOURCE,
+    "VERTEXBLEND": D3DVERTEXBLENDFLAGS,
+    "BLENDOP": D3DBLENDOP,
+    "CCW_STENCILFAIL": D3DSTENCILOP,
+    "CCW_STENCILZFAIL": D3DSTENCILOP,
+    "CCW_STENCILPASS": D3DSTENCILOP,
+    "CCW_STENCILFUNC": D3DCMPFUNC,
+    "SRCBLENDALPHA": D3DBLEND,
+    "DESTBLENDALPHA": D3DBLEND,
+    "BLENDOPALPHA": D3DBLENDOP,
+}
+
 # Map render state -> value decoder
 RS_VALUE_DECODERS = {
-    7: D3DZBUFFERTYPE,        # ZENABLE
-    8: D3DFILLMODE,           # FILLMODE
-    9: D3DSHADEMODE,          # SHADEMODE
-    20: D3DBLEND,             # SRCBLEND
-    21: D3DBLEND,             # DESTBLEND
-    22: D3DCULL,              # CULLMODE
-    23: D3DCMPFUNC,           # ZFUNC
-    25: D3DCMPFUNC,           # ALPHAFUNC
-    35: D3DFOGMODE,           # FOGTABLEMODE
-    129: D3DSTENCILOP,        # STENCILFAIL
-    130: D3DSTENCILOP,        # STENCILZFAIL
-    131: D3DSTENCILOP,        # STENCILPASS
-    132: D3DCMPFUNC,          # STENCILFUNC
-    158: D3DFOGMODE,          # FOGVERTEXMODE
-    162: D3DMATERIALCOLORSOURCE,  # DIFFUSEMATERIALSOURCE
-    163: D3DMATERIALCOLORSOURCE,  # SPECULARMATERIALSOURCE
-    164: D3DMATERIALCOLORSOURCE,  # AMBIENTMATERIALSOURCE
-    165: D3DMATERIALCOLORSOURCE,  # EMISSIVEMATERIALSOURCE
-    168: D3DVERTEXBLENDFLAGS, # VERTEXBLEND
-    190: D3DBLENDOP,          # BLENDOP
-    206: D3DSTENCILOP,        # CCW_STENCILFAIL
-    207: D3DSTENCILOP,        # CCW_STENCILZFAIL
-    208: D3DSTENCILOP,        # CCW_STENCILPASS
-    209: D3DCMPFUNC,          # CCW_STENCILFUNC
-    231: D3DBLEND,            # SRCBLENDALPHA
-    232: D3DBLEND,            # DESTBLENDALPHA
-    233: D3DBLENDOP,          # BLENDOPALPHA
+    D3DRS_ID[name]: decoder for name, decoder in _RS_VALUE_DECODERS_BY_NAME.items()
 }
 
 # Boolean render states (value is 0/1 = FALSE/TRUE)
-RS_BOOL_STATES = {
-    14, 15, 19, 26, 27, 28, 29, 48, 128, 154, 155, 159, 160, 161,
-    176, 177, 181, 186, 194, 196, 204, 205, 214, 230,
-}
+RS_BOOL_STATES = {D3DRS_ID[name] for name in (
+    "ZWRITEENABLE", "ALPHATESTENABLE", "LASTPIXEL", "DITHERENABLE",
+    "ALPHABLENDENABLE", "FOGENABLE", "SPECULARENABLE", "RANGEFOGENABLE",
+    "STENCILENABLE", "CLIPPING", "LIGHTING", "COLORVERTEX", "LOCALVIEWER",
+    "NORMALIZENORMALS", "POINTSPRITEENABLE", "POINTSCALEENABLE",
+    "MULTISAMPLEANTIALIAS", "INDEXEDVERTEXBLENDENABLE", "SCISSORTESTENABLE",
+    "ANTIALIASEDLINEENABLE", "ENABLEADAPTIVETESSELLATION",
+    "TWOSIDEDSTENCILMODE", "SRGBWRITEENABLE", "SEPARATEALPHABLENDENABLE",
+)}
+
+# Render states whose value is a D3DCOLOR
+RS_COLOR_STATES = {D3DRS_ID[name] for name in (
+    "FOGCOLOR", "TEXTUREFACTOR", "AMBIENT", "BLENDFACTOR",
+)}
 
 
 def decode_rs_value(state_id, value):
@@ -436,8 +474,7 @@ def decode_rs_value(state_id, value):
         return decoder.get(value, f"0x{value:X}")
     if state_id in RS_BOOL_STATES:
         return "TRUE" if value else "FALSE"
-    # FOGCOLOR, AMBIENT, TEXTUREFACTOR — decode as D3DCOLOR
-    if state_id in (34, 157, 136):
+    if state_id in RS_COLOR_STATES:
         return f"ARGB(0x{value:08X})"
     return str(value)
 

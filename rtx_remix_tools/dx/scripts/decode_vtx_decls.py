@@ -13,11 +13,7 @@ Examples:
     python decode_vtx_decls.py game.exe --scan
 """
 import argparse
-import sys
 import struct
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "retools"))
 
 from dx9_common import (
     load_binary, find_text_section, va_to_offset,

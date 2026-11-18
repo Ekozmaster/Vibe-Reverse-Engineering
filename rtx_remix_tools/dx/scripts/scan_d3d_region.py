@@ -16,9 +16,6 @@ Example:
 import argparse
 import sys
 import struct
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "retools"))
 
 from dx9_common import load_binary, va_to_offset, D3D9_DEVICE_VTABLE
 
