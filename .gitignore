@@ -53,7 +53,7 @@ tools/jdk-*/
 # Target binaries (not part of the toolkit)
 *.exe
 *.dll
-!graphics/directx/dx9/tracer/src/*.dll
+!graphics/directx/dx9/tracer/bin/*.dll
 !rtx_remix_tools/dx/remix-comp-proxy/assets/*.dll
 
 

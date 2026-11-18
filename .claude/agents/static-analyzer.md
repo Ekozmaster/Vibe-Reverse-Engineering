@@ -99,7 +99,7 @@ python -m retools.bootstrap binary.exe --project patches/MyGame
 python -m retools.sigdb scan binary.exe --db retools/data/signatures.db
 python -m retools.sigdb identify binary.exe 0x401000 --db retools/data/signatures.db
 python -m retools.sigdb fingerprint binary.exe
-python -m retools.context assemble binary.exe 0x401000 --project MyGame
+python -m retools.context assemble binary.exe 0x401000 --project patches/MyGame
 python retools/pyghidra_backend.py analyze binary.exe --project patches/MyGame
 python retools/pyghidra_backend.py status binary.exe --project patches/MyGame
 python retools/pyghidra_backend.py export binary.exe --project patches/MyGame
@@ -137,7 +137,7 @@ Update KB when you: identify a function's purpose, reconstruct a struct, identif
 ## What NOT to Do
 
 - Do NOT use `livetools` commands — those require a live process and are handled by the main agent
-- Do NOT use `graphics.directx.dx9.tracer` — capture and trigger are handled by the main agent
+- Do NOT run `graphics.directx.dx9.tracer trigger` — capturing is handled by the main agent. Offline `python -m graphics.directx.dx9.tracer analyze <JSONL> ...` is yours when the main agent delegates it
 - Do NOT edit source code files — only update KB files and write analysis notes to `patches/`
 
 ## Output

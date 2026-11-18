@@ -47,9 +47,11 @@ Supported `--as` types: `float32`, `float64`, `half`, `uint8`, `int8`, `uint16`,
 
 ### Control
 ```
-python -m livetools step [over|into|out]      # advance one instruction (returns snapshot)
+python -m livetools step [over|into|out]      # unreliable: can crash the target (see below)
 python -m livetools resume                    # unfreeze target
 ```
+
+**Do not rely on `step`.** A breakpoint replaces the first bytes at its address with a jump into Frida's trampoline, and `step` decodes those patched bytes to decide where to go next. Stepping from a breakpoint lands inside the trampoline (the snapshot shows an address outside every module) and the next step crashes the target. To follow execution through a function use `steptrace`, or set a second breakpoint further on and `resume` to it.
 
 ### Patch + Scan (anytime)
 ```
@@ -58,9 +60,9 @@ python -m livetools mem alloc <size>          # allocate rwx memory in target (f
 python -m livetools scan <pattern> --range START:SIZE
 ```
 
-### Memory Write Watchpoint
+### Memory Access Watch
 ```
-python -m livetools memwatch start <addr> [--size N] [--max-hits N]   # catch who writes (IP + backtrace per hit)
+python -m livetools memwatch start <addr> [--size N] [--max-hits N]   # first access (read or write) to each page of the range
 python -m livetools memwatch read             # show captured hits
 python -m livetools memwatch stop
 ```
@@ -73,7 +75,7 @@ python -m livetools dipcnt callers [N]        # sample N DIP calls, histogram re
 python -m livetools dipcnt off
 ```
 
-### Game Window Input (no Frida, no focus steal)
+### Game Window Input (no Frida; brings the game window to the foreground)
 ```
 python -m livetools gamectl --exe <game.exe> info
 python -m livetools gamectl --exe <game.exe> key RETURN
@@ -113,15 +115,19 @@ Example read spec:
 "ecx; [esp+4]:12:float32; *[ecx+0x10]:64:hex"
 ```
 
+Offsets are decimal unless written with `0x`: `[esp+0xc]` is offset 12, `[esp+10]` is offset 10, and `[esp+c]` is not a valid spec. Negative offsets (`[ebp-8]`) are not supported. A spec that does not parse is reported as a null value, not as an error, so check the first record for nulls. `st0` always reads as null.
+
 ## Filter Spec Format
 
 Simple comparison on a readable field. Evaluated in-agent; non-matching calls are silently skipped.
 
 ```
-[esp+8]==0x2
+[esp+8]:4:uint32==0x2
 eax!=0
 [ecx+0x54]:4:float32>0.5
 ```
+
+Give memory operands a size and type. An untyped `[esp+8]==0x2` compares the raw bytes as one big-endian number and never matches. A filter that does not parse (for example a single `=`) is ignored and every call is recorded.
 
 ---
 
@@ -136,7 +142,7 @@ Hooks a function's entry and exit **without freezing** the target. Reads specifi
 python -m livetools trace 0x401000 --count 10 --read "ecx; [esp+4]:12:float32"
 
 # Filter: only record when stack arg == 2
-python -m livetools trace 0x402000 --count 5 --filter "[esp+8]==0x2" --read "[esp+c]:64:float32"
+python -m livetools trace 0x402000 --count 5 --filter "[esp+8]:4:uint32==0x2" --read "[esp+0xc]:64:float32"
 
 # Read different things on enter vs leave
 python -m livetools trace 0x403000 --count 20 --read "ecx; [esp+4]:12:float32" --read-leave "eax"
@@ -194,8 +200,8 @@ python -m livetools collect 0x401000 0x402000 \
 
 # Collect with per-address read specs
 python -m livetools collect 0x401000 0x402000 \
-  --read@0x401000="ecx; [esp+4]:12:float32" \
-  --read@0x402000="ecx; [esp+4]:28:hex" \
+  --read@ 0x401000="ecx; [esp+4]:12:float32" \
+  --read@ 0x402000="ecx; [esp+4]:28:hex" \
   --duration 15 --output multi.jsonl
 ```
 
@@ -212,9 +218,15 @@ python -m livetools modules --filter kernel
 
 Returns name, base address, size, and full path for every loaded module. Essential for finding DLL bases for vtable hooks.
 
-### memwatch -- Hardware memory write watchpoint
+### memwatch -- First access to a memory range
 
-Uses Frida's MemoryAccessMonitor to catch writes to an address range, capturing the writing instruction pointer and a backtrace per hit. The runtime complement to static `datarefs.py` — catches writes through pointers computed at runtime.
+Uses Frida's MemoryAccessMonitor, which works on whole memory pages and reports only the **first** access to each page, of **any** kind. It is not a write watchpoint:
+
+- The hit can be a read, a write or an execute; each hit line says which.
+- The hit can be for any address on the same 4 KiB page as the range, not only the bytes you asked for.
+- A range inside one page produces at most one hit, however often it is accessed afterwards.
+
+Use it to learn that something touches a page and from which instruction (`from`), then confirm what that instruction does with `disasm`. To find who writes a specific variable, combine static `datarefs.py` with a `trace` on the candidate functions. The backtrace lines are not reliable.
 
 ```bash
 python -m livetools memwatch start 0x7A0000 --size 48 --max-hits 20
@@ -222,7 +234,7 @@ python -m livetools memwatch read
 python -m livetools memwatch stop
 ```
 
-One active watchpoint at a time. Auto-stops after `--max-hits` (default 20).
+One active watch at a time. Stops after `--max-hits` (default 20), which a range inside a single page never reaches.
 
 ### dipcnt -- D3D9 DrawIndexedPrimitive counter
 
@@ -239,7 +251,7 @@ python -m livetools dipcnt off
 
 ### gamectl -- Send input to the game window
 
-Posts WM_KEYDOWN/WM_KEYUP/clicks directly to the target window handle — no Frida, no focus stealing, works with the game in the background. Use to navigate menus or trigger in-game actions during long traces.
+Brings the game window to the foreground (`SetForegroundWindow`) and then injects real keyboard and mouse input with `SendInput`; `click` also moves the mouse cursor. No Frida is involved. It takes focus away from whatever the user is doing, and if the game window cannot be focused the keys are still sent and land in whichever window is in front. Tell the user before using it, and check `focused=` in the output. Use to navigate menus or trigger in-game actions during long traces.
 
 ```bash
 python -m livetools gamectl --exe game.exe info                      # show hwnd, title, pid
@@ -273,10 +285,10 @@ python -m livetools analyze trace.jsonl --summary
 python -m livetools analyze trace.jsonl --group-by addr
 
 # What % of calls return each value?
-python -m livetools analyze trace.jsonl --filter "addr==00401000" --group-by "leave.eax"
+python -m livetools analyze trace.jsonl --filter "addr==0x00401000" --group-by "leave.eax"
 
 # Cross-tab: caller vs return value
-python -m livetools analyze trace.jsonl --filter "addr==00401000" --cross-tab caller leave.eax
+python -m livetools analyze trace.jsonl --filter "addr==0x00401000" --cross-tab caller leave.eax
 
 # Per-interval call counts
 python -m livetools analyze trace.jsonl --group-by interval --top 5
@@ -288,10 +300,10 @@ python -m livetools analyze trace.jsonl --interval 47
 python -m livetools analyze trace.jsonl --compare-intervals 10 50
 
 # Float distribution histogram
-python -m livetools analyze trace.jsonl --filter "addr==00401000" --histogram "enter.reads.0.value.0"
+python -m livetools analyze trace.jsonl --filter "addr==0x00401000" --histogram "enter.reads.0.value.0"
 
 # Export for external tools
-python -m livetools analyze trace.jsonl --filter "addr==00401000" --export-csv output.csv
+python -m livetools analyze trace.jsonl --filter "addr==0x00401000" --export-csv output.csv
 ```
 
 Field path syntax: dot-separated with array indices.
@@ -406,16 +418,20 @@ After a snapshot shows ECX=008800A0 and you suspect a float at offset +0x54:
 python -m livetools mem read 0x008800F4 4 --as float32
 ```
 
-### Recipe 7: Step through a function
+### Recipe 7: Inspect state at two points in a function
 
 ```
 python -m livetools bp add <function_entry>
-python -m livetools watch --timeout 60
-python -m livetools step over
-python -m livetools step over
+python -m livetools bp add <later_addr_in_function>
+python -m livetools watch --timeout 60          # frozen at the entry
+python -m livetools regs
+python -m livetools resume
+python -m livetools watch --timeout 60          # frozen at the later address
 python -m livetools mem read <addr> 32
 python -m livetools resume
 ```
+
+Keep the two breakpoints apart by at least the hook size (5 bytes on x86, 14 on x64), which is how many bytes a breakpoint overwrites. For the instruction-by-instruction path between them use `steptrace <function_entry>`.
 
 ### Recipe 8: Patch a byte and verify
 
@@ -470,9 +486,9 @@ python -m livetools analyze scene.jsonl --export-csv scene.csv
 
 8. **Composable pipeline.** `trace` captures raw records. `collect` streams them to disk. `analyze` aggregates offline. Chain them for any investigation.
 
-9. **Hook the game's CALL instruction, not the DLL function.** To trace a D3D9 method (or any API call), find the `call [reg+offset]` or `call <addr>` instruction *in the game's code* via `xrefs.py` or `vtable.py calls`. Hook THAT address. Do NOT compute the target address inside d3d9.dll and hook there — the arguments are arranged at the caller, and the DLL entry point is shared across all callers.
+9. **Trace and collect at function entries only, never at a CALL instruction.** `trace` and `collect` treat the stack slot at the hooked address as a return address and overwrite it while the hook is installed. At a function entry that is correct. At a `call` instruction that slot is the first stack argument (the `this`/device pointer for a COM call): the target runs with a corrupted argument for as long as the trace lasts, and the trace reports 0 samples. To trace a D3D9 method, hook the entry of the method the game actually calls, read from the device vtable at runtime with three pointer reads (x86; each prints `As ptr: [-> 0x...]`): `mem read <dev_global> 4 --as ptr` gives the device object, where `<dev_global>` is the address of the game's global `IDirect3DDevice9*` variable (the same address `dipcnt on` takes); `mem read <device> 4 --as ptr` gives its vtable; `mem read <vtable + slot*4> 4 --as ptr` gives the entry. At an entry `[esp+4]` is `this` and `[esp+8]` the first declared argument. Each record's `caller` is the return address, so group or filter by `caller` to isolate one call site. Breakpoints (`bp add`) may sit on any instruction.
 
-10. **Zero hits means something is wrong — diagnose, don't give up.** If trace/collect returns 0 samples: (a) Ask the user: is the game window focused and actively rendering? (b) Verify the address: `disasm <addr>` in livetools — confirm real code exists there. (c) Try a known-hot address: `dipcnt callers 10` finds confirmed active call sites; trace one to prove the hook pipeline works. (d) Only after all three pass should you reconsider whether the original address is actually called during gameplay.
+10. **Zero hits means something is wrong — diagnose, don't give up.** If trace/collect returns 0 samples: (a) Ask the user: is the game window focused and actively rendering? (b) Verify the address: `disasm <addr>` in livetools — confirm real code exists there. (c) Try a known-hot address: `dipcnt callers 10` lists return addresses of confirmed active call sites; trace the entry of the function containing one of them (not the return address itself) to prove the hook pipeline works. (d) Only after all three pass should you reconsider whether the original address is actually called during gameplay.
 
 ---
 

@@ -5,7 +5,9 @@ description: Use when porting a game for RTX Remix or to the fixed-function pipe
 
 # DX9 FFP Proxy -- Game Porting
 
-Port a DX9 shader-based game to fixed-function pipeline (FFP) for RTX Remix compatibility. Remix requires FFP geometry to inject path-traced lighting and replaceable assets.
+Port a DX9 shader-based game to fixed-function pipeline (FFP) for RTX Remix compatibility. Remix requires FFP geometry to inject path-traced lighting and replaceable assets: its native path reads transforms from `SetTransform`, object-space vertices in formats it can decode, and the albedo from the texture stages. Remix's vertex capture of shader draws is an experimental fallback, not an alternative to converting: it still needs the fixed-function view and projection, cannot skin, and gives Remix no per-object transform, so asset replacement generally does not work on captured draws.
+
+**Before changing draw routing, transforms, texture stages or skinning, and before changing proxy code to fix how something looks in Remix, read [references/remix-runtime-contract.md](references/remix-runtime-contract.md).** It states, with Remix source citations, which draws Remix path traces, how it picks the camera and the albedo texture, what it cannot do, and which symptoms are fixed in `rtx.conf` (texture categories such as UI and sky) instead of in the proxy.
 
 **NEVER MODIFY TEMPLATE CODE.** The following directories are read-only templates:
 - `rtx_remix_tools/dx/remix-comp-proxy/` — remix-comp-proxy framework template
@@ -21,6 +23,8 @@ To create a game patch, **copy** the template to `patches/<GameName>/` and edit 
 4. Set `D3DRS_VERTEXBLEND` to the appropriate weight count (e.g. `D3DVBF_3WEIGHTS`)
 5. Let the FFP hardware pipeline do the blending
 
+Remix does the blending itself from this state: it needs the vertex shader cleared and reads at most 4 bones per vertex and palette slots `WORLDMATRIX(0..255)`. The game keeps submitting the same bind-pose vertex buffer, so the geometry Remix identifies does not change from frame to frame. The template's bone upload stops at 48 bones (`skinning.cpp`).
+
 CPU-side vertex skinning (manually multiplying vertices by bone matrices) is a **last resort only**. It is extremely expensive, tanks frame rate, and should only be considered when FFP indexed vertex blending is not feasible. Always prefer the hardware path above.
 
 ---
@@ -33,12 +37,12 @@ Each game folder under `patches/<GameName>/` is a self-contained remix-comp-prox
 2. Parses `SetVertexDeclaration` via `ffp_state::on_set_vertex_declaration` to detect BLENDWEIGHT+BLENDINDICES (skinned), POSITIONT (screen-space), NORMAL presence, and per-element byte offsets
 3. Routes `DrawIndexedPrimitive` via `renderer::on_draw_indexed_prim`:
    - No NORMAL -> HUD/UI pass-through
-   - Skinned + skinning module enabled -> `skinning::draw_skinned_dip()`
+   - Skinned -> pass-through with shaders. The template ships with skinning unwired: `skinning::draw_skinned_dip()` has no caller until you add one (see Skinning below)
    - Rigid 3D (has NORMAL) -> NULLs shaders, applies FFP transforms
 4. Routes `DrawPrimitive` via `renderer::on_draw_primitive`: world-space (has decl, no POSITIONT, not skinned) -> FFP; otherwise pass-through
 5. Applies captured matrices via `ffp_state::apply_transforms` -> `SetTransform`
 6. Sets up texture stages and lighting for FFP rendering (stages 1-7 disabled to prevent stale auxiliary textures reaching Remix)
-7. Loads the real d3d9 chain (RTX Remix `d3d9_remix.dll` or system d3d9) via d3d9_proxy
+7. Loads the real d3d9 chain (RTX Remix `d3d9_remix.dll` or system d3d9) via d3d9_proxy. `d3d9_remix.dll` is not a file Remix ships: it is Remix's own `d3d9.dll` (the 32-bit bridge client) renamed, with Remix's `.trex/` folder kept beside it
 
 ## Codebase File Map
 
@@ -114,6 +118,8 @@ This is the **most critical** step. Determine which VS constant registers hold V
 
 **Remix REQUIRES separate World, View, and Projection matrices.** A concatenated WorldViewProj (WVP) or ViewProj (VP) matrix will NOT work -- Remix needs individual matrices to apply its own camera and per-object transforms. If the game uploads a pre-multiplied WVP, the proxy must intercept the individual W, V, P matrices *before* the game concatenates them. This is the #1 source of broken Remix ports.
 
+Remix has a compatibility option for a combined WorldView matrix (`rtx.fusedWorldViewMode`). It is a last resort for when World and View cannot be recovered separately, not a reason to skip that reverse engineering: in fused mode Remix treats camera space as world space, so no object keeps a stable world position. With the projection folded in there is no fallback at all: Remix finds no camera and renders no path-traced frame. See "Transforms and camera" in [references/remix-runtime-contract.md](references/remix-runtime-contract.md).
+
 **Start with the matrix register finder:**
 ```bash
 python rtx_remix_tools/dx/scripts/find_matrix_registers.py "<game.exe>"
@@ -127,10 +133,14 @@ python -m retools.decompiler <game.exe> <call_site_addr> --types patches/<projec
 
 **Dynamic approach:** Trace `SetVertexShaderConstantF` live:
 ```bash
-python -m livetools trace <call_addr> --count 50 \
-    --read "[esp+8]:4:uint32; [esp+10]:4:uint32; *[esp+c]:64:float32"
+python -m livetools trace <func_entry_addr> --count 50 \
+    --read "[esp+8]:4:uint32; [esp+0x10]:4:uint32; *[esp+0xc]:64:float32"
 ```
 Captures: startRegister, Vector4fCount, and the first 4 vec4 constants of actual float data.
+
+- `<func_entry_addr>` must be the **entry** of `SetVertexShaderConstantF` itself, not the address of a `call` instruction. Read it from the device vtable at runtime with three pointer reads (x86; each prints `As ptr: [-> 0x...]`): `python -m livetools mem read <dev_global> 4 --as ptr` gives the device object, where `<dev_global>` is the address of the game's global `IDirect3DDevice9*` variable (the same address `dipcnt on` takes); `mem read <device> 4 --as ptr` gives its vtable; `mem read <vtable + 0x178> 4 --as ptr` (slot 94) gives the entry. A trace hook placed on a `call` instruction overwrites the first stack argument (the device pointer) for as long as the trace runs and records nothing.
+- The offsets are the stdcall layout at function entry: `[esp+4]` device, `[esp+8]` StartRegister, `[esp+0xc]` pConstantData, `[esp+0x10]` Vector4fCount. Offsets are decimal unless written with `0x`.
+- Each record's `caller` is the return address, which tells you which call site made the upload.
 
 **DX9 Tracer approach:** Capture a frame and analyze:
 ```bash
@@ -165,13 +175,18 @@ The game folder is now fully self-contained and can be distributed as a standalo
 From the game folder:
 ```bash
 cd patches/<GameName>
-build.bat release --name <GameName>
+./build.bat release --name <GameName>
 ```
 
-The build produces `d3d9.dll` in `patches/<GameName>/build/bin/release/`. Deploy:
-- `d3d9.dll` to the game directory (the game loads this as its d3d9 proxy)
-- `remix-comp-proxy.ini` to the game directory
-- `d3d9_remix.dll` to the game directory if using Remix
+Use `./build.bat`: it runs from both Git Bash and PowerShell, while a bare `build.bat` is not found in either.
+
+The link step needs `d3dx9.lib` in `deps/dxsdk/Lib/x86/`. The template does not ship that file, so a fresh copy fails with `LNK1181: cannot open input file 'd3dx9.lib'` until you put an x86 `d3dx9.lib` import library into that folder. It belongs to Microsoft's legacy DirectX SDK, not to the Windows SDK or Visual Studio. The build is x86 only and expects Visual Studio 2022.
+
+The build produces `d3d9.dll` in `patches/<GameName>/build/bin/release/`. Deploy to the game directory:
+- `d3d9.dll` (the game loads this as its d3d9 proxy)
+- `remix-comp-proxy.ini`
+- For Remix: the RTX Remix runtime for x86 games. Rename its `d3d9.dll` (the bridge client) to `d3d9_remix.dll` and copy it together with its `.trex/` folder; the bridge finds `.trex/` next to itself. `[Remix] DLLName` in the INI names the renamed file.
+- `assets/.trex/bridge.conf` into the game's `.trex/` folder only if the port uses the Remix API (its one active line is `exposeRemixApi = True`). Current Remix runtimes reject the API version the template vendors; see "Remix API from the proxy" in the reference
 
 ### Step 5: Diagnose with Log and ImGui
 
@@ -273,14 +288,16 @@ ffp.is_enabled() AND ffp.view_proj_valid()?
 +-- NO  -> passthrough with shaders
 +-- YES
     +-- ffp.cur_decl_is_skinned()?
-    |   +-- YES + skinning module -> skinning::draw_skinned_dip()
-    |   +-- YES + no skinning     -> passthrough with shaders
+    |   +-- YES -> passthrough with shaders (template default)
+    |   GAME-SPECIFIC: call skinning::get()->draw_skinned_dip() here to enable skinning
     +-- !ffp.cur_decl_has_normal()?
     |   +-- passthrough (HUD/UI)
     |   GAME-SPECIFIC: remove this filter if world geometry lacks NORMAL
     +-- else (rigid 3D mesh)
         +-- ffp.engage() + draw + restore
 ```
+
+**Passthrough does not hide a draw from Remix.** Remix's experimental vertex capture is on by default (`rtx.useVertexCapture`) and picks up passed-through vertex-shader draws, using whatever fixed-function view and projection are current. That is a hazard to manage, not a way to skip converting world geometry. A passed-through HUD stays out of the scene only if it uses pre-transformed vertices or its texture is tagged in `rtx.uiTextures` (Remix's orthographic-UI rule applies only to draws without a vertex shader). Remix also does not need vertex normals, so "no NORMAL" is only this proxy's guess at what is UI.
 
 **Common per-game changes:**
 - World geometry omits NORMAL -> remove or change `!ffp.cur_decl_has_normal()` filter
@@ -300,16 +317,18 @@ AND !ffp.cur_decl_has_pos_t() AND !ffp.cur_decl_is_skinned()?
 
 ## Common Pitfalls
 
-- **Concatenated WVP/VP instead of separate matrices**: This is the **#1 Remix porting mistake**. Remix requires separate World, View, and Projection matrices passed via `SetTransform`. If the game uploads a pre-multiplied WorldViewProj or ViewProj to a single register range, the proxy gets a combined matrix it can't decompose. **Fix**: find where the game multiplies W*V*P (or V*P) and hook that function to capture the individual matrices *before* concatenation. Use `find_matrix_registers.py` to detect this -- if CTAB shows "WorldViewProj" or only one matrix register is uploaded per draw, you have this problem.
+- **Check the Remix side before changing proxy code.** Once geometry reaches Remix, a dark scene, a HUD smeared into the world, missing sky or world geometry that disappears after the UI draws are usually fixed by tagging textures in Remix (`Alt+X` -> Developer Settings Menu -> `Game Setup`, saved to `rtx.conf`), not by editing the proxy's lighting or routing. `rtx-remix/logs/remix-dxvk.log` names why draws were skipped in lines starting `[RTX-Compatibility-Info]`. The symptom table in [references/remix-runtime-contract.md](references/remix-runtime-contract.md) says which side to check first.
+- **Concatenated WVP/VP instead of separate matrices**: This is the **#1 Remix porting mistake**. Remix requires separate World, View, and Projection matrices passed via `SetTransform`. If the game uploads a pre-multiplied WorldViewProj or ViewProj to a single register range, the proxy gets a combined matrix it can't decompose. **Fix**: find where the game multiplies W*V*P (or V*P) and hook that function to capture the individual matrices *before* concatenation. Use `find_matrix_registers.py` to detect this -- if CTAB shows "WorldViewProj" or only one matrix register is uploaded per draw, you have this problem. `rtx.fusedWorldViewMode` only covers a combined WorldView and is a last resort, not the fix.
 - **Matrices look wrong**: D3D9 FFP `SetTransform` expects row-major. `ffp_state::apply_transforms` transposes column-major VS constants. If the game stores matrices row-major in VS constants (uncommon), remove the transpose in `ffp_state::apply_transforms`.
 - **Everything is white/black**: Albedo texture is on stage 1+, not stage 0. Set `AlbedoStage` in `remix-comp-proxy.ini`, or trace `SetTexture` calls to find the correct stage.
 - **Some objects render, others don't**: Check whether missing geometry has NORMAL in its vertex decl. Check `ffp.view_proj_valid()` is true at draw time. DrawPrimitive routes on decl presence + no POSITIONT + not skinned.
-- **Skinned meshes invisible**: Set `[Skinning] Enabled=1` in `remix-comp-proxy.ini`. Check log for skinning errors. Verify `bone_start_reg` and `num_bones` are non-zero in the log.
+- **Skinned meshes not converted**: The template passes skinned draws through with their shaders. Converting them takes two steps: set `[Skinning] Enabled=1` in `remix-comp-proxy.ini`, and in the game copy's `renderer.cpp` replace the passthrough at the `GAME-SPECIFIC: wire up skinning::get()->draw_skinned_dip()` comment with that call. Then verify `boneStart=` and `numBones=` are non-zero in `rtx_comp/diagnostics.log`.
 - **Bones mixed up between NPCs**: Stale WORLDMATRIX slots from a previous object. The game may need a game-specific reset hook at a per-object boundary -- see Skinning Stability below.
-- **Game crashes on startup**: Set `[Remix] Enabled=0` in `remix-comp-proxy.ini` to test without Remix. Check `WINDOW_CLASS_NAME` in `comp/main.cpp`.
+- **Game crashes on startup**: Set `[Remix] Enabled=0` in `remix-comp-proxy.ini` to test without Remix.
+- **Proxy loads but does nothing (two beeps after a wait of 30 seconds or more)**: `WINDOW_CLASS_NAME` in `comp/main.cpp` matched no window, so the modules never loaded. `rtx_comp/console.log` in the game directory lists the class name of every visible window the proxy saw (`> HWND: ... Class: ...`) and ends with `Could not find '...' Window. Not loading RTX Compatibility Mod.` Copy the game window's class name from that file.
 - **Geometry at origin / piled up**: World matrix register mapping wrong. Re-examine VS constant writes via `livetools trace` or DX9 tracer `--const-provenance`.
 - **World geometry shifts after skinned draws**: `WORLDMATRIX(0)` clobbered by bone[0]. The proxy tracks `world_dirty_` for re-application. If still broken, check for bone register overlap with world matrix range in `ffp_state.hpp`.
-- **ImGui overlay not appearing**: Press F4. Check that `WINDOW_CLASS_NAME` is correct and the window was found (console output). Check for DirectInput hook conflicts.
+- **ImGui overlay not appearing**: Press F4. Check that `WINDOW_CLASS_NAME` is correct and the window was found (`rtx_comp/console.log`). Check for DirectInput hook conflicts.
 
 ### Skinning Stability: Finding Game-Specific Hook Points
 

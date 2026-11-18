@@ -23,9 +23,9 @@ These are fast (<5s) and allowed inline:
 - "Get full context before reasoning about a function" → `python -m retools.context assemble $B $VA --project $P`
 - "Clean up decompiler output with known names" → pipe through `python -m retools.context postprocess`
 - "Read a typed value from the PE file" → `python -m retools.readmem $B $VA $TYPE`
-- "What constant flows into this register?" → `python -m retools.dataflow $B $VA --constants`
-- "Trace where this value comes from" → `python -m retools.dataflow $B $VA --slice TARGET_VA:REG`
-- "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json`
+- "What constant flows into this register?" (x86 binaries only) → `python -m retools.dataflow $B $VA --constants`
+- "Trace where this value comes from" (x86 binaries only) → `python -m retools.dataflow $B $VA --slice TARGET_VA:REG`
+- "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json --vcvarsall <path to vcvarsall.bat>`
 - "Does a Ghidra project exist for this binary?" → `python retools/pyghidra_backend.py status $B --project $P`
 - "What's in this game's index?" → `python -m retools.index status <Game> [--db PATH]`
 - "Query facts already indexed (funcs, names, xrefs, strings, imports, callers/callees)" → `python -m retools.query <Game> "SQL" [--db PATH] [--json] [--list-tables] [--schema TABLE]`
@@ -62,7 +62,7 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 - "Is this function reached at runtime?" → `livetools trace` or `collect`
 - "What are the actual register values?" → `livetools trace --read` or `bp` + `regs`
 - "How many draw calls happen?" → `livetools dipcnt`
-- "Who writes to this memory address?" → `livetools memwatch`
+- "Does anything touch this memory page, and from where?" → `livetools memwatch` (first access per page, read or write; not a write watchpoint)
 - "Send keys/clicks to the game window?" → `livetools gamectl`
 
 ### DX analysis scripts (main agent, fast first-pass)
@@ -109,13 +109,13 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 | `pyghidra_backend.py export $B --project $P [--db]` | Seed funcs/names/xrefs/blocks from an analyzed Ghidra program into index.db (`source='ghidra'`, overwrites provisional bootstrap rows at the same address) | `pyghidra_backend.py export game.exe --project patches/MyGame` |
 | `pyghidra_backend.py kb-apply $B --project $P --kb $KB` | Push kb.h names/prototypes/globals/typedefs into the Ghidra project. Idempotent — safe to re-run | `pyghidra_backend.py kb-apply game.exe --project patches/MyGame --kb patches/MyGame/kb.h` |
 | `index.py status $GAME [--db]` | Per-table row counts + schema_version for `patches/<game>/index.db` | `python -m retools.index status MyGame` |
-| `query.py $GAME "SQL" [--db] [--json] [--list-tables] [--schema TABLE]` | Read-only SQL over index.db. Views: `callers`, `callees`, `grep`. Addresses render as hex via `printf('0x%x', address)`. Connection is opened read-only — cannot mutate | `python -m retools.query MyGame "SELECT * FROM grep WHERE name LIKE '%Ground%'"` |
+| `query.py $GAME "SQL" [--db] [--json] [--list-tables] [--schema TABLE]` | Read-only SQL over index.db. Views: `callers`, `callees`, `grep`. Addresses are stored and printed as decimal integers; select `printf('0x%x', address)` to get hex. Connection is opened read-only, so it cannot change index.db. It is not free of side effects: `ATTACH DATABASE` and `VACUUM INTO` can still create other files | `python -m retools.query MyGame "SELECT * FROM grep WHERE name LIKE '%Ground%'"` |
 | `ghidra_server.py $GAME [--idle SECS]` | Run a per-project Ghidra daemon (port 27043; livetools owns 27042) holding one warm program so repeat `decompile`/`export`/`kb-apply` calls are sub-second instead of paying JVM+analysis startup each time. Tracks itself in `patches/<game>/ghidra/.state.json` (pid/port/project/binary), deleted on shutdown once the Ghidra program is closed | `python -m retools.ghidra_server MyGame --idle 600` |
 | `funcinfo.py $B $VA` | Find function start/end, rets, calling convention, callees. Prefer `retools.query` on `funcs`/`blocks` when index.db exists | `funcinfo.py binary.exe 0x401000` |
 | `cfg.py $B $VA` | Control flow graph (basic blocks + edges, text or mermaid). Resolves MSVC switch/jump tables automatically. `--switch-details` shows table info | `cfg.py binary.exe 0x401000 --format mermaid` |
 | `callgraph.py $B $VA` | Caller/callee tree (multi-level, --up/--down N). `--indirect` adds vtable/fptr calls to --down trees | `callgraph.py binary.exe 0x401000 --down 2 --indirect` |
 | `xrefs.py $B $VA` | Find all calls/jumps TO an address. `--indirect` also scans for `call [reg+offset]`, `call [reg]`, `call [addr]`. Prefer `retools.query "SELECT * FROM callers WHERE callee_addr=..."` when index.db exists | `xrefs.py binary.exe 0x401000 --indirect` |
-| `dataflow.py $B $VA` | Forward constant propagation (`--constants`) or backward register slice (`--slice VA:REG`) within a function | `dataflow.py binary.exe 0x401000 --constants` |
+| `dataflow.py $B $VA` | Forward constant propagation (`--constants`) or backward register slice (`--slice VA:REG`) within a function. **x86 only**: a 64-bit binary is refused with an error | `dataflow.py binary.exe 0x401000 --constants` |
 | `datarefs.py $B $VA` | Find instructions that reference a global address (mem deref + `--imm` for push/mov constants). Prefer `retools.query` against `xrefs`/`names` when index.db exists | `datarefs.py binary.exe 0x7A0000 --imm` |
 | `structrefs.py $B $OFF` | Find all `[reg+offset]` accesses (struct field usage) | `structrefs.py binary.exe 0x54 --base esi` |
 | `structrefs.py $B --aggregate` | Reconstruct C struct from all field accesses in a function | `structrefs.py binary.exe --aggregate --fn 0x401000 --base esi` |
@@ -136,7 +136,7 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 | `sigdb.py scan $B` | Bulk signature scan against DB | `sigdb.py scan game.exe` |
 | `sigdb.py identify $B $VA` | Single function signature lookup (multi-tier) | `sigdb.py identify game.exe 0x401200` |
 | `sigdb.py fingerprint $B` | Identify compiler version (Rich header + markers + imports) | `sigdb.py fingerprint game.exe` |
-| `context.py assemble $B $VA --project $P` | Gather full analysis context for a function. Includes forward constant propagation by default (`--no-dataflow` to skip) | `context.py assemble game.exe 0x401500 --project Warband` |
+| `context.py assemble $B $VA --project $P` | Gather full analysis context for a function. Includes forward constant propagation by default (`--no-dataflow` to skip) | `context.py assemble game.exe 0x401500 --project patches/Warband` |
 | `context.py postprocess $B $VA --project $P` | Mechanically rename/annotate decompiler output (pipe) | `decompiler.py ... \| context.py postprocess ...` |
 | `sigdb.py build $MANIFEST` | Build/extend signature DB from manifest | `sigdb.py build sources.json` |
 | `sigdb.py pull` | Download signature DB from HuggingFace | `sigdb.py pull` or `sigdb.py pull --sources` |
@@ -178,7 +178,7 @@ Main-agent only (requires a live process; static-analyzer subagents must not use
 
 A proxy DLL that intercepts all 119 `IDirect3DDevice9` methods, capturing every call with arguments, backtraces, pointer-followed data (matrices, constants, shader bytecodes), and in-process shader disassembly (via the game's own d3dx9 DLL). Outputs JSONL for offline analysis.
 
-**Architecture**: Python codegen (`d3d9_methods.py`) → C proxy DLL (`src/`) or C++ remix-comp-proxy dispatch (`tracer_dispatch.inc`) → JSONL → Python analyzer (`analyze.py`). The standalone proxy chains to the real d3d9 (or another wrapper) and adds near-zero overhead when not capturing. The remix-comp-proxy integrated tracer records from within the dinput8.dll hook.
+**Architecture**: Python codegen (`d3d9_methods.py`) → C proxy DLL (`src/`) or C++ remix-comp-proxy dispatch (`tracer_dispatch.inc`) → JSONL → Python analyzer (`analyze.py`). The standalone proxy chains to the real d3d9 (or another wrapper) and adds near-zero overhead when not capturing. The remix-comp-proxy integrated tracer records from the proxy's own `IDirect3DDevice9` wrapper (`src/comp/modules/d3d9ex.cpp`) and writes to `captures/dxtrace_<timestamp>.jsonl` under the game directory.
 
 ### Setup and Capture
 
@@ -292,7 +292,7 @@ Minidumps vary in how much data they capture depending on `MiniDumpWriteDump` fl
 
 ### `funcinfo.py` -- call-target heuristic
 
-`find_start()` locates function boundaries by building a table of all `CALL`/`JMP` targets. This misses functions only reachable via indirect calls (vtable dispatch, callbacks, function pointers). If `funcinfo.py` returns a clearly wrong function start, use `disasm.py` and look for padding/prologues manually.
+`find_start()` locates function boundaries by building a table of all `CALL`/`JMP` targets. This misses functions only reachable via indirect calls (vtable dispatch, callbacks, function pointers), and a `JMP` target inside a function is taken for a function start. `funcinfo.py` prints a `[warning]` line when the address you asked about is not inside the range it reports; treat that range as a different function. If `funcinfo.py` returns a clearly wrong function start, use `disasm.py` and look for padding/prologues manually.
 
 ### `datarefs.py` / `search.py strings --xrefs` -- addressing modes
 
@@ -316,4 +316,4 @@ Requires Ghidra 11.x+ installed and `GHIDRA_INSTALL_DIR` environment variable se
 
 **DLLs and ASLR-enabled executables**: runtime base may differ. Run `python -m livetools modules --filter <name>` and compare against the PE's preferred base. If they differ: `runtime_addr = runtime_base + (static_addr - preferred_base)`.
 
-**Hook the game's CALL, not the DLL entry.** To trace a D3D9/API method, hook the `call [reg+offset]` instruction *in the game's .exe* (found via `xrefs.py` or `vtable.py calls`), NOT the function entry point inside the DLL. The game's call site has arguments on the stack in known positions; the DLL entry point may be wrapped by proxies and is shared across all callers.
+**Trace function entries, never a CALL instruction.** `livetools trace` and `collect` overwrite the stack slot at the hooked address as if it were a return address. Pointed at a `call [reg+offset]` instruction they corrupt the first stack argument (the device pointer) while the trace runs and record nothing. To trace a D3D9/API method, hook the entry of the method the game calls (read it from the object's vtable at runtime with `livetools mem read`) and use each record's `caller` (the return address) to tell call sites apart. Breakpoints (`livetools bp`) may sit on any instruction. Details: pattern 9 in the `/dynamic-analysis` skill.

@@ -14,7 +14,7 @@ No reverse engineering experience required -- just good prompting. Although some
 - Python 3.10+
 - Visual Studio 2022+ with C++ Desktop workload (only needed to build ASI patches)
 
-Radare2 (used by the decompiler) is bundled in `tools/` for Windows -- no separate install needed.
+Radare2 (used by the decompiler) is bundled in `tools/` for Windows -- no separate install needed. It is stored with [Git LFS](https://git-lfs.com), so install Git LFS before cloning, or run `git lfs pull` afterwards; without it the files under `tools/` are small pointer stubs and the decompiler cannot start.
 
 ### Python setup
 
@@ -22,7 +22,10 @@ Radare2 (used by the decompiler) is bundled in `tools/` for Windows -- no separa
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
+python verify_install.py
 ```
+
+`verify_install.py` checks the Git LFS files, the Python packages and radare2, and reports what is missing. Add `--setup` to download the optional Ghidra decompiler backend (JDK 21 + Ghidra, about 600 MB). The signature database is fetched separately with `python -m retools.sigdb pull`.
 
 ## Tools
 
@@ -44,7 +47,7 @@ python -m livetools gamectl --exe game.exe macro --macro-file patches/MyGame/mac
 
 **D3D9 frame tracer** (`graphics/directx/dx9/tracer/`) captures every `IDirect3DDevice9` call with arguments, backtraces, shader bytecodes, and matrix data. Outputs JSONL for offline analysis.
 
-**RTX Remix FFP template** (`rtx_remix_tools/dx/dx9_ffp_template/`) is a D3D9 proxy DLL that converts shader-based games to fixed-function pipeline for RTX Remix compatibility.
+**RTX Remix FFP template** (`rtx_remix_tools/dx/remix-comp-proxy/`) is a D3D9 proxy DLL that converts shader-based games to fixed-function pipeline for RTX Remix compatibility.
 
 ## How it works
 
