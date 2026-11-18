@@ -22,6 +22,7 @@ Examples:
 """
 
 import argparse
+import itertools
 import struct
 import sys
 from pathlib import Path
@@ -109,33 +110,40 @@ def _resolve_switch(
     return targets
 
 
-def _find_func_end(insns):
-    """Detect function boundary: stop after ret + NOP padding or int3."""
+_MAX_FUNCTION_INSNS = 5000
+
+
+def _decode_function(b: Binary, start: int, max_size: int) -> list:
+    """Decode the function at *start* up to its end.
+
+    The end is a ``ret`` followed by NOP padding or ``int3``. Decoding stops
+    there, so the rest of the *max_size* window is never disassembled.
+    """
+    insns: list = []
     last_ret = None
     nop_run = 0
-    for i, insn in enumerate(insns):
+    window = b.iter_disasm(start, max_bytes=max_size)
+    for insn in itertools.islice(window, _MAX_FUNCTION_INSNS):
+        insns.append(insn)
         if insn.mnemonic in ("ret", "retn"):
-            last_ret = i
+            last_ret = len(insns) - 1
             nop_run = 0
         elif last_ret is not None:
             if insn.mnemonic == "nop":
                 nop_run += 1
                 if nop_run >= 2:
-                    return last_ret + 1
+                    return insns[:last_ret + 1]
             elif insn.mnemonic == "int3":
-                return last_ret + 1
+                return insns[:last_ret + 1]
             else:
                 last_ret = None
                 nop_run = 0
-    return len(insns)
+    return insns
 
 
 def build_cfg(b: Binary, start: int, max_size: int = 0x4000):
     """Return (blocks, edges) where blocks maps block_va -> [insns]."""
-    raw_insns = b.disasm(start, count=5000, max_bytes=max_size)
-    if not raw_insns:
-        return {}, []
-    insns = raw_insns[:_find_func_end(raw_insns)]
+    insns = _decode_function(b, start, max_size)
     if not insns:
         return {}, []
 

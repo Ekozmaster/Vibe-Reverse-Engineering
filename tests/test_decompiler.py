@@ -109,3 +109,70 @@ class TestLoadTypesOrdering:
 
         assert td_idx < tl_idx
         assert td_idx < afs_idx
+
+
+class _ScriptedR2:
+    """Stands in for an r2pipe session: answers decompile commands from a table."""
+
+    def __init__(self, outputs: dict):
+        self._outputs = outputs
+        self.cmds = []
+
+    def cmd(self, c):
+        self.cmds.append(c)
+        for prefix, output in self._outputs.items():
+            if c.startswith(prefix + " "):
+                return output
+        return ""
+
+    def quit(self):
+        pass
+
+
+def _decompile_with(outputs: dict, **kwargs) -> str:
+    import decompiler
+    session = _ScriptedR2(outputs)
+    with (
+        patch("decompiler._find_r2_bin", return_value="r2"),
+        patch("decompiler._ensure_r2_in_path"),
+        patch("decompiler._find_sleigh_home", return_value=None),
+        patch("decompiler.r2pipe.open", return_value=session),
+    ):
+        return decompiler.decompile("fake.exe", 0x401000, **kwargs)
+
+
+class TestAutoBackendOutputSelection:
+    def test_output_mentioning_install_is_kept(self):
+        code = "uint sym.MsiInstallProductW(int64_t arg1) { return 0; }"
+        assert _decompile_with({"pdg": code}, backend="auto") == code
+
+    def test_missing_plugin_hint_falls_back_to_next_backend(self):
+        hint = "You need to install the plugin with r2pm -ci r2ghidra"
+        fallback = "void fcn_00401000(void) { }"
+        assert _decompile_with({"pdg": hint, "pdc": fallback}, backend="auto") == fallback
+
+    def test_error_when_no_backend_is_installed(self):
+        hint = "You need to install the plugin with r2pm -ci r2ghidra"
+        result = _decompile_with({"pdg": hint}, backend="auto")
+        assert result.startswith("[error]")
+
+
+class TestAutoBackendGhidraProjectLookup:
+    def test_binary_name_with_dots_is_looked_up_by_file_name(self, tmp_path):
+        """A project for `sl.common.dll` lives under ghidra/sl.common/, which
+        is_analyzed derives from the file name it is given."""
+        mock_backend = MagicMock()
+        mock_backend.is_analyzed.return_value = True
+        mock_backend.decompile.return_value = "void func() {}"
+
+        with patch.dict(sys.modules, {"retools.pyghidra_backend": mock_backend}):
+            from importlib import reload
+            import decompiler
+            reload(decompiler)
+            result = decompiler.decompile(
+                str(tmp_path / "sl.common.dll"), 0x180001000,
+                backend="auto", project_dir=str(tmp_path))
+
+        assert result == "void func() {}"
+        mock_backend.is_analyzed.assert_called_once_with(
+            str(tmp_path / "ghidra"), "sl.common.dll")

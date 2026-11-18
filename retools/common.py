@@ -12,6 +12,26 @@ from capstone import CS_ARCH_X86, CS_MODE_32, CS_MODE_64, Cs
 from capstone import x86_const as x86
 
 
+def sweep_code(code: bytes, va: int, is_64: bool):
+    """Linear-sweep *code*, yielding every instruction that decodes.
+
+    Bytes that are not instructions (jump tables and other data embedded in
+    code) are stepped over one at a time. Without that, decoding ends at the
+    first such byte and the rest of the buffer is never looked at.
+
+    Args:
+        code: Raw bytes of an executable region.
+        va: Virtual address of the first byte.
+        is_64: Decode as x64 instead of x86.
+    """
+    cs = Cs(CS_ARCH_X86, CS_MODE_64 if is_64 else CS_MODE_32)
+    cs.detail = True
+    cs.skipdata = True
+    for insn in cs.disasm(code, va):
+        if insn.id:  # id 0 marks a skipped data byte, which has no operands
+            yield insn
+
+
 @dataclass(frozen=True, slots=True)
 class MemOp:
     """A decoded memory operand from an x86 instruction."""
@@ -30,8 +50,16 @@ class Binary:
         path: Filesystem path to a PE (.exe / .dll) file.
     """
 
+    # The only data directories any tool reads. Parsing every directory
+    # (relocations above all) costs seconds on a large binary.
+    _PARSED_DIRECTORIES = [
+        pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
+        pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
+    ]
+
     def __init__(self, path: str):
-        self.pe = pefile.PE(path, fast_load=False)
+        self.pe = pefile.PE(path, fast_load=True)
+        self.pe.parse_data_directories(directories=self._PARSED_DIRECTORIES)
         self.raw = Path(path).read_bytes()
         self.base: int = self.pe.OPTIONAL_HEADER.ImageBase
         self.is_64: bool = self.pe.OPTIONAL_HEADER.Magic == 0x20B
@@ -66,9 +94,25 @@ class Binary:
     # ── Raw memory access ────────────────────────────────────────────
 
     def read_va(self, va: int, size: int) -> bytes:
-        """Read *size* bytes starting at virtual address *va*."""
-        off = self.va_to_offset(va)
-        return self.raw[off : off + size] if off is not None else b""
+        """Read up to *size* bytes starting at virtual address *va*.
+
+        A section's memory can be larger than what the file stores for it;
+        the loader zero-fills the rest, so that part reads as zeros here
+        too. The read ends at the section's last byte.
+        """
+        rva = va - self.base
+        for s in self.pe.sections:
+            offset = rva - s.VirtualAddress
+            if not 0 <= offset < s.Misc_VirtualSize:
+                continue
+            stored = s.SizeOfRawData - offset
+            start = s.PointerToRawData + offset
+            if stored >= size:
+                return self.raw[start : start + size]
+            data = self.raw[start : start + stored] if stored > 0 else b""
+            zero_filled = min(size, s.Misc_VirtualSize - offset) - len(data)
+            return data + bytes(max(zero_filled, 0))
+        return b""
 
     def read_struct(self, va: int, fmt: str) -> tuple:
         """Unpack a struct format at *va* (little-endian assumed in *fmt*)."""
@@ -87,7 +131,31 @@ class Binary:
 
     def disasm(self, va: int, count: int = 30, max_bytes: int = 0x800) -> list:
         """Disassemble up to *count* instructions starting at *va*."""
-        return list(self._cs.disasm(self.read_va(va, max_bytes), va))[:count]
+        if count <= 0:
+            return []
+        return list(self._cs.disasm(self.read_va(va, max_bytes), va, count))
+
+    def iter_disasm(self, va: int, max_bytes: int = 0x800):
+        """Lazily decode instructions starting at *va*.
+
+        Instructions are decoded as the iterator is consumed, so a caller
+        that stops at a function's end does not pay for the rest of the
+        *max_bytes* window.
+        """
+        return self._cs.disasm(self.read_va(va, max_bytes), va)
+
+    def sweep(self, ranges: list[tuple[int, int, int]] | None = None):
+        """Yield every instruction of a linear sweep over executable code.
+
+        The sweep continues past data embedded in code (see ``sweep_code``),
+        so a whole-binary scan covers each section to its end.
+
+        Args:
+            ranges: (va_start, raw_offset, raw_size) regions to sweep. All
+                executable sections when omitted.
+        """
+        for start_va, raw_off, raw_size in (self.exec_ranges() if ranges is None else ranges):
+            yield from sweep_code(self.raw[raw_off : raw_off + raw_size], start_va, self.is_64)
 
     def exec_ranges(self) -> list[tuple[int, int, int]]:
         """Return (va_start, raw_offset, raw_size) for each executable section."""

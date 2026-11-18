@@ -37,8 +37,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
 
-CHUNK = 0x10000
-
 
 @dataclass(frozen=True, slots=True)
 class StringRef:
@@ -105,34 +103,27 @@ def _match_insn(mnemonic: str, op_str: str, pattern: str) -> bool:
         return False
     if len(parts) < 2:
         return True
-    return fnmatch.fnmatch(op_str.replace(" ", ""), parts[1].replace(" ", ""))
+    # Operands use square brackets for memory references; to fnmatch an
+    # unescaped "[" would open a character class.
+    op_pat = parts[1].replace(" ", "").replace("[", "[[]")
+    return fnmatch.fnmatch(op_str.replace(" ", ""), op_pat)
 
 
 def _scan_insn_pattern(b: Binary, pattern: str):
     """Yield (va, mnemonic, op_str) for instructions matching *pattern*."""
-    for sec_va, sec_off, sec_size in b.exec_ranges():
-        for chunk_start in range(0, sec_size, CHUNK):
-            chunk_end = min(chunk_start + CHUNK + 32, sec_size)
-            code = b.raw[sec_off + chunk_start : sec_off + chunk_end]
-            va = sec_va + chunk_start
-            for insn in b._cs.disasm(code, va):
-                if _match_insn(insn.mnemonic, insn.op_str, pattern):
-                    yield insn.address, insn.mnemonic, insn.op_str
+    for insn in b.sweep():
+        if _match_insn(insn.mnemonic, insn.op_str, pattern):
+            yield insn.address, insn.mnemonic, insn.op_str
 
 
 def _find_xrefs_for_va(b: Binary, target_va: int) -> list[tuple[int, str, str]]:
     """Find code locations referencing *target_va* (push/mov imm or lea rip+disp)."""
     hits = []
-    for sec_va, sec_off, sec_size in b.exec_ranges():
-        for chunk_start in range(0, sec_size, CHUNK):
-            chunk_end = min(chunk_start + CHUNK + 32, sec_size)
-            code = b.raw[sec_off + chunk_start : sec_off + chunk_end]
-            va = sec_va + chunk_start
-            for insn in b._cs.disasm(code, va):
-                if target_va in b.abs_imm_refs(insn):
-                    hits.append((insn.address, insn.mnemonic, insn.op_str))
-                elif target_va in b.rip_rel_refs(insn):
-                    hits.append((insn.address, insn.mnemonic, insn.op_str))
+    for insn in b.sweep():
+        if target_va in b.abs_imm_refs(insn):
+            hits.append((insn.address, insn.mnemonic, insn.op_str))
+        elif target_va in b.rip_rel_refs(insn):
+            hits.append((insn.address, insn.mnemonic, insn.op_str))
     return hits
 
 
@@ -178,9 +169,12 @@ def cmd_exports(b: Binary, args):
         name = exp.name.decode("ascii", errors="ignore") if exp.name else ""
         if filters and not any(f.lower() in name.lower() for f in filters):
             continue
-        rva = exp.address
-        ordinal = exp.ordinal
-        print(f"  {ordinal:5d}  0x{rva:0{w}X}  {name}")
+        va = b.base + exp.address
+        forwarded = (
+            f"  -> {exp.forwarder.decode('ascii', errors='ignore')}"
+            if exp.forwarder else ""
+        )
+        print(f"  {exp.ordinal:5d}  0x{va:0{w}X}  {name}{forwarded}")
 
 
 def cmd_insn(b: Binary, args):

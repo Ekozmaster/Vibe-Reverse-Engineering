@@ -39,8 +39,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
 
-CHUNK = 0x10000
-
 
 def _access_for(b, insn, addr_lo, addr_hi):
     """Determine read/write access for operands matching the target range."""
@@ -59,30 +57,25 @@ def scan(b: Binary, addr: int, size: int, access_filter: str | None,
          include_imm: bool = False):
     """Yield (va, mnemonic, op_str, access) for matching instructions."""
     addr_hi = addr + size
-    for sec_va, sec_off, sec_size in b.exec_ranges():
-        for chunk_start in range(0, sec_size, CHUNK):
-            chunk_end = min(chunk_start + CHUNK + 32, sec_size)
-            code = b.raw[sec_off + chunk_start : sec_off + chunk_end]
-            va = sec_va + chunk_start
-            for insn in b._cs.disasm(code, va):
-                mem_hit = any(addr <= r < addr_hi for r in b.abs_mem_refs(insn))
-                rip_hit = any(addr <= r < addr_hi for r in b.rip_rel_refs(insn))
-                imm_hit = include_imm and any(
-                    addr <= r < addr_hi for r in b.abs_imm_refs(insn)
-                )
-                if not mem_hit and not rip_hit and not imm_hit:
+    for insn in b.sweep():
+        mem_hit = any(addr <= r < addr_hi for r in b.abs_mem_refs(insn))
+        rip_hit = any(addr <= r < addr_hi for r in b.rip_rel_refs(insn))
+        imm_hit = include_imm and any(
+            addr <= r < addr_hi for r in b.abs_imm_refs(insn)
+        )
+        if not mem_hit and not rip_hit and not imm_hit:
+            continue
+        if rip_hit and not mem_hit:
+            mem_hit = True
+        if mem_hit:
+            acc = _access_for(b, insn, addr, addr_hi)
+            if access_filter and acc != access_filter:
+                if not imm_hit:
                     continue
-                if rip_hit and not mem_hit:
-                    mem_hit = True
-                if mem_hit:
-                    acc = _access_for(b, insn, addr, addr_hi)
-                    if access_filter and acc != access_filter:
-                        if not imm_hit:
-                            continue
-                        acc = "imm"
-                else:
-                    acc = "imm"
-                yield insn.address, insn.mnemonic, insn.op_str, acc
+                acc = "imm"
+        else:
+            acc = "imm"
+        yield insn.address, insn.mnemonic, insn.op_str, acc
 
 
 def scan_indirect(b: Binary, target: int, max_offset: int = 4096,
@@ -117,26 +110,21 @@ def scan_indirect(b: Binary, target: int, max_offset: int = 4096,
     candidates = []
     n_insns = 0
 
-    for sec_va, sec_off, sec_size in b.exec_ranges():
-        for chunk_start in range(0, sec_size, CHUNK):
-            chunk_end = min(chunk_start + CHUNK + 32, sec_size)
-            code = b.raw[sec_off + chunk_start : sec_off + chunk_end]
-            va = sec_va + chunk_start
-            for insn in b._cs.disasm(code, va):
-                n_insns += 1
-                for val in b.abs_imm_refs(insn):
-                    if target_lo <= val <= target:
-                        candidates.append((
-                            insn.address, val, "imm",
-                            insn.mnemonic, insn.op_str,
-                        ))
-                for ref in b.abs_mem_refs(insn):
-                    ptr = b.read_ptr(ref)
-                    if ptr is not None and target_lo <= ptr <= target:
-                        candidates.append((
-                            insn.address, ptr, f"ptr@0x{ref:X}",
-                            insn.mnemonic, insn.op_str,
-                        ))
+    for insn in b.sweep():
+        n_insns += 1
+        for val in b.abs_imm_refs(insn):
+            if target_lo <= val <= target:
+                candidates.append((
+                    insn.address, val, "imm",
+                    insn.mnemonic, insn.op_str,
+                ))
+        for ref in b.abs_mem_refs(insn):
+            ptr = b.read_ptr(ref)
+            if ptr is not None and target_lo <= ptr <= target:
+                candidates.append((
+                    insn.address, ptr, f"ptr@0x{ref:X}",
+                    insn.mnemonic, insn.op_str,
+                ))
 
     print(f"Phase 1: scanned {n_insns:,} instructions, "
           f"found {len(candidates)} base candidates", file=sys.stderr)

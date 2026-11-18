@@ -509,6 +509,9 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
 
     b = Binary(args.binary)
+    if b.is_64:
+        sys.exit("[error] dataflow tracks x86 registers only and this is a 64-bit "
+                 "binary. Use the decompiler for x64 constant and value-origin questions.")
     func_va = int(args.va, 16)
     start = b.find_func_start(func_va) or func_va
     w = 16 if b.is_64 else 8

@@ -19,11 +19,14 @@ Examples:
 """
 
 import argparse
+import itertools
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
+
+_MAX_FUNCTION_INSNS = 5000
 
 def find_start(b: Binary, va: int, **_kw) -> int | None:
     """Find the function entry point containing *va*.
@@ -37,13 +40,13 @@ def find_start(b: Binary, va: int, **_kw) -> int | None:
 
 def analyze(b: Binary, start: int, max_size: int):
     """Return (rets, callees, end_va) for the function at *start*."""
-    insns = b.disasm(start, count=5000, max_bytes=max_size)
     rets: list[tuple[int, int]] = []
     calls: list[tuple[int, int | str]] = []
     end_va = start
     nop_run = 0
 
-    for insn in insns:
+    window = b.iter_disasm(start, max_bytes=max_size)
+    for insn in itertools.islice(window, _MAX_FUNCTION_INSNS):
         if insn.mnemonic in ("ret", "retn"):
             cleanup = int(insn.op_str, 0) if insn.op_str else 0
             rets.append((insn.address, cleanup))
@@ -81,7 +84,12 @@ def main():
     rets, calls, end_va = analyze(b, start, args.max_size)
     w = 16 if b.is_64 else 8
 
-    print(f"Function: 0x{start:0{w}X} .. 0x{end_va:0{w}X}  ({end_va - start} bytes)\n")
+    print(f"Function: 0x{start:0{w}X} .. 0x{end_va:0{w}X}  ({end_va - start} bytes)")
+    if not start <= va < max(end_va, start + 1):
+        print(f"[warning] 0x{va:0{w}X} is not inside this range. Function starts are "
+              f"known only from direct call/jmp targets and exports, so this is the "
+              f"nearest known start before the address, not its function.")
+    print()
 
     print(f"Returns ({len(rets)}):")
     for addr, cleanup in rets:

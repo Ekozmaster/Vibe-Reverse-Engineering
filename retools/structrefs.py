@@ -38,8 +38,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
 
-CHUNK = 0x10000
-
 
 @dataclass
 class FieldAccess:
@@ -86,21 +84,16 @@ def scan(b: Binary, offset: int, base_filter: str | None,
     else:
         ranges = b.exec_ranges()
 
-    for sec_va, sec_off, sec_size in ranges:
-        for chunk_start in range(0, sec_size, CHUNK):
-            chunk_end = min(chunk_start + CHUNK + 32, sec_size)
-            code = b.raw[sec_off + chunk_start : sec_off + chunk_end]
-            va = sec_va + chunk_start
-            for insn in b._cs.disasm(code, va):
-                for mop in b.mem_operands(insn):
-                    if mop.disp != offset:
-                        continue
-                    if not mop.base or mop.index:
-                        continue
-                    if base_filter and mop.base != base_filter:
-                        continue
-                    yield (insn.address, mop.base, mop.access,
-                           insn.mnemonic, insn.op_str)
+    for insn in b.sweep(ranges):
+        for mop in b.mem_operands(insn):
+            if mop.disp != offset:
+                continue
+            if not mop.base or mop.index:
+                continue
+            if base_filter and mop.base != base_filter:
+                continue
+            yield (insn.address, mop.base, mop.access,
+                   insn.mnemonic, insn.op_str)
 
 
 _CODE_REL_REGS = frozenset(("rip", "eip"))
@@ -110,23 +103,18 @@ def scan_all_fields(b: Binary, base_filter: str | None,
                     fn_start: int, fn_size: int):
     """Yield (disp, va, base_reg, access, mnemonic, op_str, mem_size)."""
     ranges = [(fn_start, b.va_to_offset(fn_start) or 0, fn_size)]
-    for sec_va, sec_off, sec_size in ranges:
-        for chunk_start in range(0, sec_size, CHUNK):
-            chunk_end = min(chunk_start + CHUNK + 32, sec_size)
-            code = b.raw[sec_off + chunk_start : sec_off + chunk_end]
-            va = sec_va + chunk_start
-            for insn in b._cs.disasm(code, va):
-                for mop in b.mem_operands(insn):
-                    if not mop.base or mop.index:
-                        continue
-                    if mop.base in _CODE_REL_REGS:
-                        continue
-                    if mop.disp < 0:
-                        continue
-                    if base_filter and mop.base != base_filter:
-                        continue
-                    yield (mop.disp, insn.address, mop.base, mop.access,
-                           insn.mnemonic, insn.op_str, mop.size)
+    for insn in b.sweep(ranges):
+        for mop in b.mem_operands(insn):
+            if not mop.base or mop.index:
+                continue
+            if mop.base in _CODE_REL_REGS:
+                continue
+            if mop.disp < 0:
+                continue
+            if base_filter and mop.base != base_filter:
+                continue
+            yield (mop.disp, insn.address, mop.base, mop.access,
+                   insn.mnemonic, insn.op_str, mop.size)
 
 
 def _aggregate(b: Binary, base_filter: str | None,

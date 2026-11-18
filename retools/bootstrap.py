@@ -225,6 +225,27 @@ def _scan_signatures(
     return sig_results, kb_entries
 
 
+# MSVC RTTI type-name prefixes: class, struct, union, enum.
+_RTTI_TYPE_PREFIXES = (".?AV", ".?AU", ".?AT", ".?AW4")
+
+
+def rtti_class_identifier(mangled: str) -> str:
+    """C identifier for an MSVC RTTI type name such as ``.?AVActor@@``.
+
+    Args:
+        mangled: Type name as stored in the RTTI type descriptor.
+
+    Returns:
+        The name without its type prefix and ``@@`` terminator, with every
+        character that cannot appear in an identifier replaced by ``_``.
+    """
+    for prefix in _RTTI_TYPE_PREFIXES:
+        if mangled.startswith(prefix):
+            mangled = mangled[len(prefix):]
+            break
+    return re.sub(r"[^A-Za-z0-9_]", "_", mangled.rstrip("@"))
+
+
 def _scan_rtti(pe: pefile.PE) -> tuple[int, list[str]]:
     """Discover C++ classes via MSVC RTTI structures.
 
@@ -243,7 +264,7 @@ def _scan_rtti(pe: pefile.PE) -> tuple[int, list[str]]:
     kb_entries = []
     for cls in rtti_classes:
         hierarchy_str = " -> ".join(cls.hierarchy) if cls.hierarchy else cls.name
-        clean_name = re.sub(r"[^A-Za-z0-9_]", "_", cls.name.lstrip(".?AV").rstrip("@@"))
+        clean_name = rtti_class_identifier(cls.name)
         comment = f"// [rtti] {cls.name}\n// hierarchy: {hierarchy_str}"
         kb_entries.append(f"{comment}\n@ 0x{cls.vtable_va:X} {clean_name}_vtable;")
     return len(rtti_classes), kb_entries

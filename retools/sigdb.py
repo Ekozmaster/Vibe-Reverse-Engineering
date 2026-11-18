@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import itertools
 import json
 import sqlite3
 import struct
@@ -179,15 +180,18 @@ def extract_byte_sig(b: Binary, va: int) -> tuple[bytes, bytes, int, int] | None
 
 
 def _estimate_func_size(b: Binary, va: int) -> int:
-    """Estimate function size by scanning for ret + padding."""
-    insns = b.disasm(va, count=500, max_bytes=0x4000)
-    if not insns:
-        return 0
+    """Estimate function size by scanning for ret + padding.
+
+    Instructions are decoded one at a time, so the scan costs about the
+    function's own length, not the whole 16 KB window.
+    """
     last_ret_end = 0
+    decoded_end = 0
     nop_run = 0
-    for insn in insns:
+    for insn in itertools.islice(b.iter_disasm(va, max_bytes=0x4000), 500):
+        decoded_end = insn.address + insn.size - va
         if insn.mnemonic in ("ret", "retn"):
-            last_ret_end = insn.address + insn.size - va
+            last_ret_end = decoded_end
             nop_run = 0
         elif last_ret_end > 0:
             if insn.mnemonic == "nop":
@@ -198,7 +202,7 @@ def _estimate_func_size(b: Binary, va: int) -> int:
                 return last_ret_end
             else:
                 nop_run = 0
-    return last_ret_end if last_ret_end > 0 else (insns[-1].address + insns[-1].size - va)
+    return last_ret_end if last_ret_end > 0 else decoded_end
 
 
 def extract_structural_sig(b: Binary, va: int) -> dict | None:

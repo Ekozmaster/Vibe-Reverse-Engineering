@@ -61,6 +61,10 @@ _BACKEND_CMDS = {
     "pdd": "pdd",    # r2dec (JS-based)
 }
 
+# What radare2 prints in place of code when a decompiler plugin is absent
+# ("You need to install the plugin with r2pm -ci r2ghidra").
+_MISSING_PLUGIN_HINT = "You need to install the plugin"
+
 
 def _find_r2_bin() -> str | None:
     """Locate the radare2 binary, preferring the project-local portable install."""
@@ -146,9 +150,8 @@ def decompile(binary: str, va: int, *, backend: str = "auto",
 
     if backend == "auto" and project_dir:
         from retools.pyghidra_backend import is_analyzed, decompile as ghidra_decompile
-        bin_name = Path(binary).stem
         ghidra_dir = str(Path(project_dir) / "ghidra")
-        if is_analyzed(ghidra_dir, bin_name):
+        if is_analyzed(ghidra_dir, Path(binary).name):
             result = ghidra_decompile(ghidra_dir, binary, va)
             if not result.startswith("[error]"):
                 return result
@@ -182,7 +185,7 @@ def decompile(binary: str, va: int, *, backend: str = "auto",
         if backend == "auto":
             for try_be in ("pdg", "pdc"):
                 out = r2.cmd(f"{_BACKEND_CMDS[try_be]} @ {va:#x}").strip()
-                if out and "install" not in out.lower():
+                if out and _MISSING_PLUGIN_HINT not in out:
                     return out
             return f"[error] No decompiler backend produced output at {va:#x}"
 

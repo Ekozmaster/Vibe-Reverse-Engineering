@@ -8,6 +8,8 @@ from capstone import CS_ARCH_X86, CS_MODE_32, Cs
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
 
+from pe_fakes import binary_over
+
 
 class TestValueTypes:
     def test_const(self):
@@ -131,23 +133,10 @@ class TestPropagateCfg:
     def test_linear_function(self):
         """Single-block function should produce same result as propagate_forward."""
         from dataflow import propagate_cfg, Const
-        from common import Binary
-        from unittest.mock import MagicMock
 
         # mov eax, 5; ret
         code = b"\xB8\x05\x00\x00\x00\xC3"
-        cs = Cs(CS_ARCH_X86, CS_MODE_32)
-        cs.detail = True
-
-        b = MagicMock(spec=Binary)
-        b.is_64 = False
-        b.ptr_size = 4
-        b.base = 0x400000
-        b.read_va.return_value = code
-        b.disasm.return_value = list(cs.disasm(code, 0x401000))
-        b.in_exec.return_value = True
-        b.exec_ranges.return_value = [(0x401000, 0, len(code))]
-        b.find_func_start.return_value = 0x401000
+        b = binary_over(code)
 
         result = propagate_cfg(b, 0x401000)
         assert 0x401000 in result
@@ -157,8 +146,6 @@ class TestPropagateCfg:
     def test_branch_merges_to_unknown(self):
         """At a merge point after a branch, conflicting values become Unknown."""
         from dataflow import propagate_cfg, Const, Unknown
-        from common import Binary
-        from unittest.mock import MagicMock
 
         # Block 0 (0x401000): mov eax,5; cmp ecx,0; je block2
         # Block 1 (0x40100A): mov eax,10  (fall-through)
@@ -170,19 +157,7 @@ class TestPropagateCfg:
             b"\xB8\x0A\x00\x00\x00"  # mov eax, 10
             b"\xC3"                   # ret
         )
-        cs = Cs(CS_ARCH_X86, CS_MODE_32)
-        cs.detail = True
-        all_insns = list(cs.disasm(code, 0x401000))
-
-        b = MagicMock(spec=Binary)
-        b.is_64 = False
-        b.ptr_size = 4
-        b.base = 0x400000
-        b.disasm.return_value = all_insns
-        b.read_va.return_value = b""
-        b.in_exec.return_value = True
-        b.exec_ranges.return_value = [(0x401000, 0, len(code))]
-        b.find_func_start.return_value = 0x401000
+        b = binary_over(code)
 
         result = propagate_cfg(b, 0x401000)
 
@@ -254,8 +229,6 @@ class TestBackwardSliceCfg:
     def test_cross_block_slice(self):
         """Slice should follow predecessor edges to find contributions in earlier blocks."""
         from dataflow import backward_slice_cfg
-        from common import Binary
-        from unittest.mock import MagicMock
 
         # Block 0 (0x401000): mov eax, 5; jmp block1
         # Block 1 (0x401007): add eax, 3; ret
@@ -266,19 +239,7 @@ class TestBackwardSliceCfg:
             b"\x83\xC0\x03"          # add eax, 3
             b"\xC3"                   # ret
         )
-        cs = Cs(CS_ARCH_X86, CS_MODE_32)
-        cs.detail = True
-        all_insns = list(cs.disasm(code, 0x401000))
-
-        b = MagicMock(spec=Binary)
-        b.is_64 = False
-        b.ptr_size = 4
-        b.base = 0x400000
-        b.disasm.return_value = all_insns
-        b.read_va.return_value = b""
-        b.in_exec.return_value = True
-        b.exec_ranges.return_value = [(0x401000, 0, len(code))]
-        b.find_func_start.return_value = 0x401000
+        b = binary_over(code)
 
         result = backward_slice_cfg(b, 0x401000, 0x401007, "eax")
         vas = [entry[0] for entry in result]
@@ -288,8 +249,6 @@ class TestBackwardSliceCfg:
     def test_branch_both_paths(self):
         """Slice through a merge point should find contributions from both predecessors."""
         from dataflow import backward_slice_cfg
-        from common import Binary
-        from unittest.mock import MagicMock
 
         # Block 0 (0x401000): mov eax, 5; cmp ecx, 0; je block2
         # Block 1 (0x40100A): mov eax, 10  (fall-through into block2)
@@ -302,19 +261,7 @@ class TestBackwardSliceCfg:
             b"\xB8\x0A\x00\x00\x00"  # mov eax, 10
             b"\xC3"                   # ret
         )
-        cs = Cs(CS_ARCH_X86, CS_MODE_32)
-        cs.detail = True
-        all_insns = list(cs.disasm(code, 0x401000))
-
-        b = MagicMock(spec=Binary)
-        b.is_64 = False
-        b.ptr_size = 4
-        b.base = 0x400000
-        b.disasm.return_value = all_insns
-        b.read_va.return_value = b""
-        b.in_exec.return_value = True
-        b.exec_ranges.return_value = [(0x401000, 0, len(code))]
-        b.find_func_start.return_value = 0x401000
+        b = binary_over(code)
 
         result = backward_slice_cfg(b, 0x401000, 0x40100F, "eax")
         vas = [entry[0] for entry in result]
