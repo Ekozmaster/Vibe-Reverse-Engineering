@@ -603,32 +603,32 @@ function installBp(addrStr) {
         return { ok: true, id: breakpoints[addrStr].id, msg: 'already set' };
     }
     var id = nextBpId++;
-    var listener = Interceptor.attach(ptr(addrStr), {
-        onEnter: function () {
-            var bp = breakpoints[addrStr];
-            if (bp) bp.hitCount++;
-            if (frozen) return;
-            frozen = true;
-            frozenRawCtx = this.context;
-            frozenThreadId = this.threadId;
-            frozenAddr = addrStr;
-            frozenBpId = bp ? bp.id : 0;
-            frozenCtx = snapshotRegs(this.context);
-            send({
-                type: 'bp_hit', addr: addrStr,
-                bpId: frozenBpId,
-                hitCount: bp ? bp.hitCount : 1,
-                regs: frozenCtx
-            });
-            recv('resume', function () {
-                frozen = false;
-                frozenCtx = null;
-                frozenRawCtx = null;
-                frozenThreadId = null;
-                frozenAddr = null;
-                frozenBpId = null;
-            }).wait();
-        }
+    // Probe form (plain function): a breakpoint can sit on any instruction, and the
+    // callbacks-object form rewrites the stack top as if it were a return address.
+    var listener = Interceptor.attach(ptr(addrStr), function () {
+        var bp = breakpoints[addrStr];
+        if (bp) bp.hitCount++;
+        if (frozen) return;
+        frozen = true;
+        frozenRawCtx = this.context;
+        frozenThreadId = this.threadId;
+        frozenAddr = addrStr;
+        frozenBpId = bp ? bp.id : 0;
+        frozenCtx = snapshotRegs(this.context);
+        send({
+            type: 'bp_hit', addr: addrStr,
+            bpId: frozenBpId,
+            hitCount: bp ? bp.hitCount : 1,
+            regs: frozenCtx
+        });
+        recv('resume', function () {
+            frozen = false;
+            frozenCtx = null;
+            frozenRawCtx = null;
+            frozenThreadId = null;
+            frozenAddr = null;
+            frozenBpId = null;
+        }).wait();
     });
     breakpoints[addrStr] = { id: id, listener: listener, hitCount: 0 };
     return { ok: true, id: id };

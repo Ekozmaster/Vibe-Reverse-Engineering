@@ -585,7 +585,7 @@ def cmd_memwatch(args: argparse.Namespace) -> None:
         })
         print(client.format_status_line(resp))
         if resp.get("ok"):
-            print(f"Memory write watchpoint active: {resp.get('watching')} ({resp.get('size')} bytes)")
+            print(f"Memory access watch active: {resp.get('watching')} ({resp.get('size')} bytes)")
             print(f"  Will capture up to {resp.get('maxHits')} hits, then auto-stop.")
             print("  Use 'python -m livetools memwatch read' to check hits.")
         else:
@@ -602,9 +602,9 @@ def cmd_memwatch(args: argparse.Namespace) -> None:
         print(client.format_status_line(resp))
         if resp.get("ok"):
             hits = resp.get("hits", [])
-            print(f"  {len(hits)} write hit(s):")
+            print(f"  {len(hits)} hit(s) (first access to each watched page, read or write):")
             for i, h in enumerate(hits):
-                print(f"\n  [{i}] Write to {h.get('addr', '?')} from {h.get('from', '?')}")
+                print(f"\n  [{i}] {h.get('operation', 'access')} of {h.get('addr', '?')} from {h.get('from', '?')}")
                 bt = h.get("backtrace", [])
                 if bt:
                     for j, frame in enumerate(bt):
@@ -959,11 +959,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- memwatch --
     sp = sub.add_parser("memwatch",
-        help="Hardware memory write watchpoint (catch who writes to an address)",
+        help="Report the first access (read or write) to the memory pages holding an address range",
         description=(
-            "Set a memory write watchpoint on a specific address range.\n"
-            "Uses Frida's MemoryAccessMonitor to detect writes, capturing\n"
-            "the instruction pointer and backtrace for each hit.\n\n"
+            "Watch the memory pages that contain an address range.\n"
+            "Uses Frida's MemoryAccessMonitor, which reports only the first\n"
+            "access to each page, of any kind (read, write or execute), and\n"
+            "for any address on the page. It is not a write watchpoint.\n\n"
             "Examples:\n"
             "  python -m livetools memwatch start 0x7A0000 --size 48\n"
             "  python -m livetools memwatch read\n"
@@ -971,13 +972,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     mw_sub = sp.add_subparsers(dest="action")
-    mw_start = mw_sub.add_parser("start", help="Start watching an address for writes")
+    mw_start = mw_sub.add_parser("start", help="Start watching the pages holding an address range")
     mw_start.add_argument("addr", help="Address to watch (hex, e.g. 0x7A0000)")
     mw_start.add_argument("--size", type=int, default=4,
         help="Number of bytes to watch (default: 4)")
     mw_start.add_argument("--max-hits", type=int, default=20,
         help="Auto-stop after N hits (default: 20)")
-    mw_sub.add_parser("stop", help="Stop the active watchpoint")
+    mw_sub.add_parser("stop", help="Stop the active watch")
     mw_sub.add_parser("read", help="Read captured hits")
 
     # -- analyze --
@@ -1035,10 +1036,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- gamectl --
     sp = sub.add_parser("gamectl",
-        help="Send keystrokes/mouse clicks directly to a game window (no Frida, no focus needed)",
+        help="Bring a game window to the foreground and send it keystrokes/mouse clicks (no Frida)",
         description=(
-            "Posts WM_KEYDOWN/WM_KEYUP directly to the target window handle.\n"
-            "No focus stealing — works even when the game is in the background.\n\n"
+            "Brings the target window to the foreground, then injects real\n"
+            "keyboard and mouse input with SendInput (click also moves the cursor).\n"
+            "If the window cannot be focused the input is still sent and goes to\n"
+            "whichever window is in front; check focused= in the output.\n\n"
             "Window lookup (pick one):\n"
             "  --exe game.exe      find window by process exe name (recommended)\n"
             "  --window <hint>     find window by title substring\n\n"
