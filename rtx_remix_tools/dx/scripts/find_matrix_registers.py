@@ -497,7 +497,7 @@ def _phase5_suggested_layout(matrix_regs, ctab_matrices):
     else:
         print(f"\n  Could not determine register layout from static analysis alone.")
         print(f"\n  Recommended next steps:")
-        print(f"    1. livetools trace on SVSCF call sites with --read to see actual values")
+        print(f"    1. livetools trace --probe on SVSCF call sites with --read to see actual values")
         print(f"    2. dx9tracer capture + --const-provenance + --shader-map")
         print(f"    3. Decompile the matrix upload functions found above")
         print(f"\n  Remember: Remix requires SEPARATE World, View, and Projection.")

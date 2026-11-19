@@ -86,9 +86,9 @@ python -m livetools gamectl --exe <game.exe> macro <name> --macro-file patches/<
 
 ### Non-blocking Tracing
 ```
-python -m livetools trace <addr> [--count N] [--read SPEC] [--read-leave SPEC] [--filter EXPR] [--timeout T] [--output FILE]
+python -m livetools trace <addr> [--probe] [--count N] [--read SPEC] [--read-leave SPEC] [--filter EXPR] [--timeout T] [--output FILE]
 python -m livetools steptrace <addr> [--max-insn N] [--call-depth D] [--detail LEVEL] [--timeout T] [--output FILE]
-python -m livetools collect <addr> [addr2 ...] [--duration N] [--read SPEC] [--fence ADDR] [--label ADDR=NAME] [--output FILE]
+python -m livetools collect <addr> [addr2 ...] [--probe] [--duration N] [--read SPEC] [--fence ADDR] [--label ADDR=NAME] [--output FILE]
 python -m livetools modules [--filter PATTERN]
 python -m livetools analyze <file.jsonl> [--summary] [--group-by FIELD] [--filter EXPR] [--cross-tab F1 F2] [--histogram FIELD] [--export-csv FILE]
 ```
@@ -163,9 +163,31 @@ Output format:
   LEAVE  eax=00000001  retval=00000001
 ```
 
+`<addr>` must be a **function entry**. The hook traps the function's return through the slot on top of the stack, which holds a return address only at an entry. A `call` instruction is refused with an error that says so. The check looks at that one instruction only: a function whose first instruction is a `call` is refused as well (use `--probe` on it), and any other address inside a function is not detected, so there the hook overwrites that stack slot for as long as the trace runs.
+
+**`--probe` records at an instruction instead.** It hooks the instruction itself and leaves the stack alone, so `<addr>` may be any instruction. Use it on the call sites that `xrefs.py`, `vtable.py calls` and the DX scripts report:
+
+```bash
+# Arguments of one call site. At a call instruction the arguments are already
+# pushed: [esp] is the first stack argument, [esp+4] the second (x86).
+python -m livetools trace 0x4012AB --probe --count 20 --read "[esp]:4:uint32; [esp+4]:8:uint32"
+```
+
+```
+=== TRACE 0x004012AB === 20 samples
+
+#1
+  PROBE  eax=00000000 ... esp=0576FA98 [esp]:4:uint32=[1] [esp+4]:8:uint32=[2, 3]
+```
+
+A probe record holds the registers and the `--read` data at that instruction. It has no `caller` and no return value, and `--read-leave` is rejected. `--filter` and `--count` work as for a function hook.
+
+- The hook replaces at least 5 bytes at the address (up to 14 on x64). When the instruction there is shorter, the instructions after it are moved as well, and the target crashes if other code jumps to one of them.
+- While a probe, a fence or a breakpoint sits on a `call` instruction, the function it calls sees a return address inside Frida's trampoline. A function-hook trace of that callee then reports a `caller` outside every module.
+
 ### steptrace -- Instruction-level execution recording via Stalker
 
-Records every instruction executed from function entry through return. Uses Frida Stalker for real-time instruction tracing.
+Records every instruction executed from function entry through return. Uses Frida Stalker for real-time instruction tracing. `<addr>` must be a function entry; a `call` instruction is refused.
 
 ```bash
 # Full trace, follow 1 level of subcalls
@@ -203,9 +225,15 @@ python -m livetools collect 0x401000 0x402000 \
   --read@ 0x401000="ecx; [esp+4]:12:float32" \
   --read@ 0x402000="ecx; [esp+4]:28:hex" \
   --duration 15 --output multi.jsonl
+
+# Collect at call sites: --probe hooks every address as an instruction probe
+python -m livetools collect 0x4012AB 0x4015C0 --probe \
+  --duration 15 --read "[esp]:4:uint32" --output sites.jsonl
 ```
 
-The **fence** concept: Hook a boundary function (e.g. DX Present) that increments an interval counter. Every trace record includes the current interval ID. Enables per-frame analysis, per-N-calls partitioning, and cross-function correlation.
+The addresses are function entries, as for `trace`. If one of them is a `call` instruction the whole command is refused before anything is hooked. With `--probe` every address is an instruction probe instead (see `trace`), and the records have no `caller` and no `leave`.
+
+The **fence** concept: `--fence ADDR` counts an interval each time ADDR is reached, for example the game's call to DX Present or the entry of a per-frame function. A fence is a probe, so ADDR may be any instruction. Every trace record includes the current interval ID. Enables per-frame analysis, per-N-calls partitioning, and cross-function correlation.
 
 Output: JSONL in `patches/<exe_name>/traces/` by default (gitignored).
 
@@ -322,6 +350,8 @@ Each line in a JSONL file is a self-contained JSON object:
 ```json
 {"ts": 1710000000000, "interval": 47, "addr": "0x00401000", "label": "FuncA", "caller": "00405ABC", "enter": {"regs": {"ecx": "10B457CC", ...}, "reads": [{"spec": "[esp+4]:12:float32", "value": [-622.44, -278.34, 50.00]}]}, "leave": {"eax": "00000001", "retval": "00000001", "reads": []}}
 ```
+
+A record from `--probe` has no `caller` and no `leave`; its registers and reads are under `enter` as well.
 
 ---
 
@@ -486,7 +516,11 @@ python -m livetools analyze scene.jsonl --export-csv scene.csv
 
 8. **Composable pipeline.** `trace` captures raw records. `collect` streams them to disk. `analyze` aggregates offline. Chain them for any investigation.
 
-9. **Trace and collect at function entries only, never at a CALL instruction.** `trace` and `collect` treat the stack slot at the hooked address as a return address and overwrite it while the hook is installed. At a function entry that is correct. At a `call` instruction that slot is the first stack argument (the `this`/device pointer for a COM call): the target runs with a corrupted argument for as long as the trace lasts, and the trace reports 0 samples. To trace a D3D9 method, hook the entry of the method the game actually calls, read from the device vtable at runtime with three pointer reads (x86; each prints `As ptr: [-> 0x...]`): `mem read <dev_global> 4 --as ptr` gives the device object, where `<dev_global>` is the address of the game's global `IDirect3DDevice9*` variable (the same address `dipcnt on` takes); `mem read <device> 4 --as ptr` gives its vtable; `mem read <vtable + slot*4> 4 --as ptr` gives the entry. At an entry `[esp+4]` is `this` and `[esp+8]` the first declared argument. Each record's `caller` is the return address, so group or filter by `caller` to isolate one call site. Breakpoints (`bp add`) may sit on any instruction.
+9. **A function hook goes on a function entry; a call site takes `--probe`.** `trace` and `collect` hook a function: given its entry they record the arguments, the return value and the `caller` of every call. They trap the return through the top stack slot, so they refuse a `call` instruction, where that slot is the first stack argument (the `this`/device pointer for a COM call). There are two ways to watch a D3D9 method or any other call:
+   - **One call site:** `trace <call_site> --probe` on the `call [reg+offset]` or `call <addr>` instruction in the game's code, found with `xrefs.py`, `vtable.py calls` or the DX scripts. At a call instruction the arguments are already pushed: `[esp]` is `this` and `[esp+4]` the first declared argument (x86). A probe records no return value.
+   - **Every caller:** hook the entry of the method the game actually calls, read from the device vtable at runtime with three pointer reads (x86; each prints `As ptr: [-> 0x...]`): `mem read <dev_global> 4 --as ptr` gives the device object, where `<dev_global>` is the address of the game's global `IDirect3DDevice9*` variable (the same address `dipcnt on` takes); `mem read <device> 4 --as ptr` gives its vtable; `mem read <vtable + slot*4> 4 --as ptr` gives the entry. At an entry `[esp+4]` is `this` and `[esp+8]` the first declared argument. Each record's `caller` is the return address, so group or filter by `caller` to isolate one call site.
+
+   Breakpoints (`bp add`) and the `collect --fence` address may sit on any instruction.
 
 10. **Zero hits means something is wrong — diagnose, don't give up.** If trace/collect returns 0 samples: (a) Ask the user: is the game window focused and actively rendering? (b) Verify the address: `disasm <addr>` in livetools — confirm real code exists there. (c) Try a known-hot address: `dipcnt callers 10` lists return addresses of confirmed active call sites; trace the entry of the function containing one of them (not the return address itself) to prove the hook pipeline works. (d) Only after all three pass should you reconsider whether the original address is actually called during gameplay.
 
@@ -494,8 +528,8 @@ python -m livetools analyze scene.jsonl --export-csv scene.csv
 
 ## Anti-Patterns
 
-**Do NOT chase the "real" device pointer.** When working with D3D9, do NOT: read a device pointer from a global, dereference its vtable, compute `d3d9.dll_base + slot_offset`, and hook that address. This hooks inside the DLL where arguments are not in the expected layout and proxy/wrapper DLLs break the vtable chain. Hook the game's CALL instruction instead (pattern #9).
+**Do NOT put a function hook on an address inside a function.** `trace`, `collect` and `steptrace` refuse a `call` instruction, but nothing detects any other mid-function address: there the return hook overwrites a stack slot for as long as it is installed. For anything that is not a function entry use `--probe` or a breakpoint (pattern #9).
+
+**Do NOT compute a D3D9 method address from `d3d9.dll`.** `d3d9.dll base + a method offset` is the system implementation. With a proxy or wrapper d3d9.dll in the chain (RTX Remix, a tracer, an overlay) the game holds the wrapper's device, so a hook inside system d3d9.dll does not see the calls as the game made them. Probe the game's call site, or read the method pointer from the live device's vtable (pattern #9).
 
 **Do NOT explain away zero data.** If a trace returns 0 samples, the answer is "I got no data and need to troubleshoot" — not "the game doesn't appear to use this code path." Follow the escalation in pattern #10.
-
-**Do NOT pass DLL-internal addresses to trace/bp.** Addresses from a DLL's export table or vtable layout belong to the DLL's code. Hooking them gives you the wrong context. Always prefer hooking in the game's own .text section.

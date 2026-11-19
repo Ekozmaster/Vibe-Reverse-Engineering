@@ -25,6 +25,22 @@ STATE_FILE = Path(__file__).parent / ".state.json"
 AGENT_JS = Path(__file__).parent / "agent.js"
 WORKSPACE = Path(__file__).resolve().parent.parent
 
+_FUNCTION_HOOK_ON_A_CALL = (
+    "{addr} is a call instruction ({insn}), not a function entry. {command} hooks a "
+    "function's entry and its return, and finds the return through the top stack slot. "
+    "At a call instruction that slot is not a return address (on x86 it is the first "
+    "stack argument): the hook would overwrite it and record nothing. {remedy}"
+)
+_REMEDY = {
+    "trace": "Add --probe to record at this instruction, or pass the entry of the function it calls.",
+    "collect": "Add --probe to record at the given instructions, or pass the entry of the function it calls.",
+    "steptrace": "Pass the entry of the function it calls.",
+}
+_PROBE_SEES_NO_RETURN = (
+    "--read-leave cannot be combined with --probe: a probe records at its instruction "
+    "and never sees a return."
+)
+
 
 class Daemon:
     def __init__(self, target: str, *, spawn: bool = False):
@@ -409,16 +425,45 @@ class Daemon:
         self._running = False
         return {**self._base_resp(), "ok": True, "msg": "detaching"}
 
+    # ── hook placement ─────────────────────────────────────────────────────
+
+    def _function_hook_refusal(self, addrs: list[str], command: str) -> str | None:
+        """Why *command* must not hook *addrs* as functions, or None if it may.
+
+        A function hook traps the return through the slot on top of the stack
+        at the hooked address, which holds a return address only at a function
+        entry. A ``call`` instruction is the one kind of non-entry address that
+        its own bytes give away.
+        """
+        for addr in addrs:
+            first = self.api.disasm_at(addr, 1)[0]
+            if first["mnemonic"] == "call":
+                return _FUNCTION_HOOK_ON_A_CALL.format(
+                    addr=addr, insn=first["str"], command=command, remedy=_REMEDY[command])
+        return None
+
+    def _trace_hook_refusal(self, cmd: dict, addrs: list[str]) -> str | None:
+        """Why the hooks a trace or collect command asks for must not be installed."""
+        if not cmd.get("probe"):
+            return self._function_hook_refusal(addrs, cmd["cmd"])
+        if cmd.get("readLeave"):
+            return _PROBE_SEES_NO_RETURN
+        return None
+
     # ── NEW: trace ─────────────────────────────────────────────────────────
 
     def _cmd_trace(self, cmd: dict) -> dict:
         addr = cmd["addr"]
+        refusal = self._trace_hook_refusal(cmd, [addr])
+        if refusal:
+            return {**self._base_resp(), "ok": False, "error": refusal}
         config = {
             "readEnter": cmd.get("read", ""),
             "readLeave": cmd.get("readLeave", ""),
             "filter": cmd.get("filter", ""),
             "count": cmd.get("count", 10),
             "label": cmd.get("label", ""),
+            "probe": bool(cmd.get("probe")),
         }
         result = self.api.install_trace(addr, config)
         if not result.get("ok"):
@@ -472,6 +517,9 @@ class Daemon:
         addrs = cmd.get("addrs", [])
         if not addrs:
             return {**self._base_resp(), "ok": False, "error": "no addresses given"}
+        refusal = self._trace_hook_refusal(cmd, addrs)
+        if refusal:
+            return {**self._base_resp(), "ok": False, "error": refusal}
 
         duration = cmd.get("duration", 10)
         max_records = cmd.get("maxRecords", 0)
@@ -498,6 +546,7 @@ class Daemon:
                 "filter": cmd.get("filter", ""),
                 "count": max_records if max_records > 0 else 0,
                 "label": labels.get(addr, ""),
+                "probe": bool(cmd.get("probe")),
             }
             result = self.api.install_trace(addr, config)
             if result.get("ok"):
@@ -567,6 +616,9 @@ class Daemon:
 
     def _cmd_steptrace(self, cmd: dict) -> dict:
         addr = cmd["addr"]
+        refusal = self._function_hook_refusal([addr], "steptrace")
+        if refusal:
+            return {**self._base_resp(), "ok": False, "error": refusal}
         config = {
             "maxInsn": cmd.get("maxInsn", 1000),
             "callDepth": cmd.get("callDepth", 0),

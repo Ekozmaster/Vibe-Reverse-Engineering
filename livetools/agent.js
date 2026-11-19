@@ -301,6 +301,15 @@ function evalFilter(filter, ctx) {
 }
 
 // ── non-blocking trace system ─────────────────────────────────────────────
+//
+// A trace hooks its address in one of two forms:
+//
+//   function hook  Interceptor.attach(target, {onEnter, onLeave}). Frida traps
+//                  the return by replacing the slot on top of the stack, which
+//                  holds a return address only at a function entry.
+//   probe          Interceptor.attach(target, fn). The stack is left alone, so
+//                  the address may be any instruction; there is no return to
+//                  observe, and a record holds the enter data only.
 
 var traces = {};
 var nextTraceId = 1;
@@ -326,64 +335,91 @@ function installTrace(addrStr, config) {
             prologue: prologue };
     }
 
-    var origFirstByte = ptr(addrStr).readU8();
-    var listener;
-    try {
-        listener = Interceptor.attach(ptr(addrStr), {
-            onEnter: function (args) {
-                try {
-                    if (maxCount > 0 && collected >= maxCount) return;
-                    if (!evalFilter(filter, this.context)) {
-                        this._traceSkip = true;
-                        return;
-                    }
-                    this._traceSkip = false;
-                    var regs = snapshotRegs(this.context);
-                    var reads = evalReadSpecs(enterSpecs, this.context);
-                    this._traceEnter = { regs: regs, reads: reads };
-                    this._traceCaller = ptrToHex(this.returnAddress);
-                    this._traceTs = Date.now();
-                } catch (e) {
-                    send({ type: 'trace_error', traceId: id, phase: 'enter', error: e.message, stack: e.stack || '' });
-                    this._traceSkip = true;
-                }
-            },
-            onLeave: function (retval) {
-                try {
-                    if (this._traceSkip) return;
-                    if (!this._traceEnter) return;
-                    if (maxCount > 0 && collected >= maxCount) return;
+    function isFull() {
+        return maxCount > 0 && collected >= maxCount;
+    }
 
-                    var leaveData = {
+    function keep(record) {
+        buffer.push(record);
+        collected++;
+        if (buffer.length >= BATCH_SIZE || isFull()) {
+            _flushTraceBuf(id, buffer.splice(0));
+        }
+        if (isFull()) {
+            _autoDetachTrace(id);
+        }
+    }
+
+    function reportError(phase, e) {
+        send({ type: 'trace_error', traceId: id, phase: phase, error: e.message, stack: e.stack || '' });
+    }
+
+    var functionHook = {
+        onEnter: function (args) {
+            try {
+                if (isFull()) return;
+                if (!evalFilter(filter, this.context)) {
+                    this._traceSkip = true;
+                    return;
+                }
+                this._traceSkip = false;
+                var regs = snapshotRegs(this.context);
+                var reads = evalReadSpecs(enterSpecs, this.context);
+                this._traceEnter = { regs: regs, reads: reads };
+                this._traceCaller = ptrToHex(this.returnAddress);
+                this._traceTs = Date.now();
+            } catch (e) {
+                reportError('enter', e);
+                this._traceSkip = true;
+            }
+        },
+        onLeave: function (retval) {
+            try {
+                if (this._traceSkip) return;
+                if (!this._traceEnter) return;
+                if (isFull()) return;
+
+                keep({
+                    addr: addrStr,
+                    label: label,
+                    caller: this._traceCaller,
+                    interval: fenceCounter,
+                    ts: this._traceTs,
+                    enter: this._traceEnter,
+                    leave: {
                         eax: ptrToHex(this.context.eax || this.context.rax || ptr(0)),
                         retval: ptrToHex(retval),
                         reads: evalReadSpecs(leaveSpecs, this.context)
-                    };
-
-                    var record = {
-                        addr: addrStr,
-                        label: label,
-                        caller: this._traceCaller,
-                        interval: fenceCounter,
-                        ts: this._traceTs,
-                        enter: this._traceEnter,
-                        leave: leaveData
-                    };
-
-                    buffer.push(record);
-                    collected++;
-
-                    if (buffer.length >= BATCH_SIZE || (maxCount > 0 && collected >= maxCount)) {
-                        _flushTraceBuf(id, buffer.splice(0));
                     }
-                    if (maxCount > 0 && collected >= maxCount) {
-                        _autoDetachTrace(id);
-                    }
-                } catch (e) {
-                    send({ type: 'trace_error', traceId: id, phase: 'leave', error: e.message, stack: e.stack || '' });
-                }
+                });
+            } catch (e) {
+                reportError('leave', e);
             }
-        });
+        }
+    };
+
+    var probe = function () {
+        try {
+            if (isFull() || !evalFilter(filter, this.context)) return;
+            keep({
+                addr: addrStr,
+                label: label,
+                interval: fenceCounter,
+                ts: Date.now(),
+                enter: {
+                    regs: snapshotRegs(this.context),
+                    reads: evalReadSpecs(enterSpecs, this.context)
+                }
+            });
+        } catch (e) {
+            reportError('probe', e);
+        }
+    };
+
+    var origFirstByte = ptr(addrStr).readU8();
+    var listener;
+    try {
+        listener = Interceptor.attach(ptr(addrStr), config.probe ? probe : functionHook);
     } catch (e) {
         return { ok: false, error: 'Interceptor.attach failed at ' + addrStr + ': ' + e.message, prologue: prologue };
     }
@@ -440,9 +476,8 @@ function flushTraces(traceId) {
 function installFence(addrStr) {
     if (fenceListener) removeFence();
     fenceCounter = 0;
-    fenceListener = Interceptor.attach(ptr(addrStr), {
-        onEnter: function () { fenceCounter++; }
-    });
+    // A probe: a fence only counts hits, so it may sit on any instruction.
+    fenceListener = Interceptor.attach(ptr(addrStr), function () { fenceCounter++; });
     return { ok: true };
 }
 

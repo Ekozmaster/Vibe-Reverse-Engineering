@@ -394,6 +394,7 @@ def cmd_trace(args: argparse.Namespace) -> None:
         "readLeave": args.read_leave or "",
         "filter": args.filter or "",
         "timeout": args.timeout,
+        "probe": args.probe,
     }
     if args.output:
         cmd["output"] = args.output
@@ -457,6 +458,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
         "read": args.read or "",
         "readSpecs": read_specs,
         "labels": labels,
+        "probe": args.probe,
     }
     if args.output:
         cmd["output"] = args.output
@@ -778,8 +780,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("trace",
         help="Non-blocking function enter/leave tracing with data capture",
         description=(
-            "Hook a function's entry and exit without freezing the target.\n"
+            "Hook a function's entry and return without freezing the target.\n"
             "Reads specified data at each call, returns structured results.\n\n"
+            "ADDR must be a function entry: the return is trapped through the\n"
+            "top stack slot, which holds a return address only there. A call\n"
+            "instruction is refused. To record at a call site or any other\n"
+            "instruction add --probe, which records the registers and --read\n"
+            "data each time the instruction is reached. A probe has no caller,\n"
+            "no return value and no --read-leave.\n\n"
             "Read spec format (semicolon-separated):\n"
             "  register:       ecx, eax, ebp, ...\n"
             "  memory:         [reg+OFFSET]:SIZE:TYPE\n"
@@ -787,20 +795,26 @@ def build_parser() -> argparse.ArgumentParser:
             "  Types: hex, float32, float64, uint32, int32, uint16, int16,\n"
             "         uint8, int8, ascii, utf16, ptr\n\n"
             "Filter format:\n"
-            "  [esp+8]==0x2  |  eax!=0  |  [ecx+0x54]:4:float32>0.5\n\n"
+            "  [esp+8]:4:uint32==0x2  |  eax!=0  |  [ecx+0x54]:4:float32>0.5\n\n"
             "Examples:\n"
             "  python -m livetools trace 0x401000 --count 10 "
             '--read "ecx; [esp+4]:12:float32"\n'
             "  python -m livetools trace 0x402000 --count 5 "
-            '--filter "[esp+8]==0x2" --read "[esp+c]:64:float32"\n'
+            '--filter "[esp+8]:4:uint32==0x2" --read "[esp+0xc]:64:float32"\n'
             "  python -m livetools trace 0x403000 --count 20 "
-            '--read "ecx; [esp+4]:12:float32" --read-leave "eax"\n\n'
+            '--read "ecx; [esp+4]:12:float32" --read-leave "eax"\n'
+            "  python -m livetools trace 0x4012AB --probe --count 20 "
+            '--read "[esp]:4:uint32; [esp+4]:4:uint32"\n\n'
             "NOTE: Some games only execute rendering/logic when their window\n"
             "is focused. If trace times out with 0 samples, alt-tab to the\n"
             "game before running."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    sp.add_argument("addr", help="Function address to hook (hex)")
+    sp.add_argument("addr",
+        help="Function entry to hook, or with --probe any instruction (hex)")
+    sp.add_argument("--probe", action="store_true",
+        help="Record each time ADDR is reached instead of hooking a function, "
+             "so ADDR may be any instruction (e.g. a call site)")
     sp.add_argument("--count", type=int, default=10,
         help="Number of calls to capture (default: 10)")
     sp.add_argument("--read", default=None,
@@ -808,7 +822,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--read-leave", default=None,
         help='Read spec for function exit (e.g. "eax; st0")')
     sp.add_argument("--filter", default=None,
-        help='Filter expression (e.g. "[esp+8]==0x2")')
+        help='Filter expression (e.g. "[esp+8]:4:uint32==0x2")')
     sp.add_argument("--timeout", type=int, default=30,
         help="Max seconds to wait for all samples (default: 30)")
     sp.add_argument("--output", default=None,
@@ -837,7 +851,7 @@ def build_parser() -> argparse.ArgumentParser:
             "to the game before running."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    sp.add_argument("addr", help="Function address to trace (hex)")
+    sp.add_argument("addr", help="Function entry to trace (hex)")
     sp.add_argument("--max-insn", type=int, default=1000,
         help="Max instructions to record before stopping (default: 1000)")
     sp.add_argument("--call-depth", type=int, default=0,
@@ -856,11 +870,15 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Collect data from one or more functions over a duration.\n"
             "Optionally partition records into intervals via fence hooks.\n\n"
+            "The addresses must be function entries, as for trace. With --probe\n"
+            "every address is hooked as an instruction probe instead (see\n"
+            "trace --help) and may be any instruction, e.g. a call site.\n\n"
             "The fence concept:\n"
-            "  --fence ADDR   Hook a boundary function (e.g. DX Present) that\n"
-            "                 increments an interval counter. Every trace record\n"
-            "                 includes the current interval ID, enabling per-frame\n"
-            "                 or per-N-calls analysis.\n\n"
+            "  --fence ADDR   Count an interval each time ADDR is reached, e.g.\n"
+            "                 the game's call to DX Present. ADDR may be any\n"
+            "                 instruction. Every trace record includes the\n"
+            "                 current interval ID, enabling per-frame or\n"
+            "                 per-N-calls analysis.\n\n"
             "Output: JSONL file in patches/<exe>/traces/ by default.\n\n"
             "Examples:\n"
             "  python -m livetools collect 0x401000 0x402000 "
@@ -871,8 +889,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m livetools collect 0x401000 "
             "--duration 20 --fence-every 100 --output output.jsonl\n\n"
             "  python -m livetools collect 0x401000 0x402000 "
-            '--read@0x401000="ecx; [esp+4]:12:float32" '
-            '--read@0x402000="ecx; [esp+4]:28:hex" '
+            '--read@ 0x401000="ecx; [esp+4]:12:float32" '
+            '--read@ 0x402000="ecx; [esp+4]:28:hex" '
             "--duration 15 --output multi.jsonl\n\n"
             "NOTE: Some games only execute rendering/logic when their window\n"
             "is focused. If collect finishes with 0 records, alt-tab to the\n"
@@ -880,7 +898,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sp.add_argument("addrs", nargs="+",
-        help="One or more function addresses to hook (hex)")
+        help="One or more function entries to hook, or with --probe any instructions (hex)")
+    sp.add_argument("--probe", action="store_true",
+        help="Hook every address as an instruction probe instead of a function "
+             "(see trace --help)")
     sp.add_argument("--duration", type=int, default=10,
         help="Collection duration in seconds (default: 10)")
     sp.add_argument("--max-records", type=int, default=0,
@@ -892,7 +913,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--read@", dest="read_at", action="append", default=None,
         help='Per-address read spec: ADDR=SPEC (e.g. 0x401000="ecx; [esp+4]:12:float32")')
     sp.add_argument("--fence", default=None,
-        help="Address of fence function for interval marking (e.g. DX Present)")
+        help="Address that marks an interval each time it is reached; any "
+             "instruction (e.g. the call to DX Present)")
     sp.add_argument("--fence-every", type=int, default=0,
         help="Mark interval every N calls to first traced addr")
     sp.add_argument("--label", action="append", default=None,

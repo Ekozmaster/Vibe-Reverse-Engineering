@@ -208,10 +208,11 @@ def format_trace(resp: dict) -> str:
     lines.append("")
 
     for i, s in enumerate(samples):
-        caller = s.get("caller", "?")
         interval = s.get("interval", 0)
         label = s.get("label", "")
-        hdr = f"#{i+1}  caller={caller}"
+        hdr = f"#{i+1}"
+        if "caller" in s:
+            hdr += f"  caller={s['caller']}"
         if interval:
             hdr += f"  interval={interval}"
         if label:
@@ -233,7 +234,8 @@ def format_trace(resp: dict) -> str:
                     parts.append(f"{r['spec']}=<err>")
                 else:
                     parts.append(f"{r['spec']}={_fmt_val(val)}")
-            lines.append(f"  ENTER  {' '.join(parts)}")
+            # A record without a leave part comes from a probe, not a function hook.
+            lines.append(f"  {'ENTER' if 'leave' in s else 'PROBE'}  {' '.join(parts)}")
 
         leave = s.get("leave", {})
         if leave:
