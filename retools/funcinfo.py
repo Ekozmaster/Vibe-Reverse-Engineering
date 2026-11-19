@@ -31,9 +31,8 @@ _MAX_FUNCTION_INSNS = 5000
 def find_start(b: Binary, va: int, **_kw) -> int | None:
     """Find the function entry point containing *va*.
 
-    Delegates to ``Binary.find_func_start`` which uses a sorted table
-    of CALL/JMP targets and PE exports with binary-search lookup.
-    Works for both x86 and x64 binaries without prologue heuristics.
+    Delegates to ``Binary.find_func_start``: the x64 exception table where
+    it covers *va*, else the nearest known entry point before it.
     """
     return b.find_func_start(va)
 
@@ -86,9 +85,9 @@ def main():
 
     print(f"Function: 0x{start:0{w}X} .. 0x{end_va:0{w}X}  ({end_va - start} bytes)")
     if not start <= va < max(end_va, start + 1):
-        print(f"[warning] 0x{va:0{w}X} is not inside this range. Function starts are "
-              f"known only from direct call/jmp targets and exports, so this is the "
-              f"nearest known start before the address, not its function.")
+        print(f"[warning] 0x{va:0{w}X} is not inside this range. Its function is reached "
+              f"only through a pointer, so its start is not known; this is the "
+              f"nearest known start before the address.")
     print()
 
     print(f"Returns ({len(rets)}):")

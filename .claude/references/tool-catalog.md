@@ -120,8 +120,8 @@ What each decompiler takes from kb.h:
 | `cfg.py $B $VA` | Control flow graph (basic blocks + edges, text or mermaid). Resolves MSVC switch/jump tables automatically. `--switch-details` shows table info | `cfg.py binary.exe 0x401000 --format mermaid` |
 | `callgraph.py $B $VA` | Caller/callee tree (multi-level, --up/--down N). `--indirect` adds vtable/fptr calls to --down trees | `callgraph.py binary.exe 0x401000 --down 2 --indirect` |
 | `xrefs.py $B $VA` | Find all calls/jumps TO an address. `--indirect` also scans for `call [reg+offset]`, `call [reg]`, `call [addr]`. Prefer `retools.query "SELECT * FROM callers WHERE callee_addr=..."` when index.db exists | `xrefs.py binary.exe 0x401000 --indirect` |
-| `dataflow.py $B $VA` | Forward constant propagation (`--constants`) or backward register slice (`--slice VA:REG`) within a function. **x86 only**: a 64-bit binary is refused with an error | `dataflow.py binary.exe 0x401000 --constants` |
-| `datarefs.py $B $VA` | Find instructions that reference a global address (mem deref + `--imm` for push/mov constants). Prefer `retools.query` against `xrefs`/`names` when index.db exists | `datarefs.py binary.exe 0x7A0000 --imm` |
+| `dataflow.py $B $VA` | Forward constant propagation (`--constants`) or backward register slice (`--slice VA:REG`) within a function. `--constants` models `mov`, `add`, `sub`, `lea`, `xor reg, reg`, `push`/`pop` and calls; a register written by anything else is left out, not reported with its old value. **x86 only**: a 64-bit binary is refused with an error | `dataflow.py binary.exe 0x401000 --constants` |
+| `datarefs.py $B $VA` | Find instructions that reference a global address (mem deref + `--imm` for push/mov constants), each labelled `[r ]`, `[w ]` or `[rw]`. `--access w` keeps every instruction that writes it (`w` and `rw`), `--access r` every one that reads it, `--access rw` only those that do both. Prefer `retools.query` against `xrefs`/`names` when index.db exists | `datarefs.py binary.exe 0x7A0000 --imm` |
 | `structrefs.py $B $OFF` | Find all `[reg+offset]` accesses (struct field usage) | `structrefs.py binary.exe 0x54 --base esi` |
 | `structrefs.py $B --aggregate` | Reconstruct C struct from all field accesses in a function | `structrefs.py binary.exe --aggregate --fn 0x401000 --base esi` |
 | `vtable.py $B dump $VA` | Dump C++ vtable slots with instruction preview | `vtable.py binary.exe dump 0x6A0000` |
@@ -301,9 +301,9 @@ Minidumps vary in how much data they capture depending on `MiniDumpWriteDump` fl
 - **Stack truncated**: small dumps may not capture enough stack depth. Use `memmap` to see what's actually available.
 - **`stackscan` shows data AND code pointers**: not every value on the stack is a return address. Use `throwmap match` for definitive call-site identification.
 
-### `funcinfo.py` -- call-target heuristic
+### `funcinfo.py` -- where function starts come from
 
-`find_start()` locates function boundaries by building a table of all `CALL`/`JMP` targets. This misses functions only reachable via indirect calls (vtable dispatch, callbacks, function pointers), and a `JMP` target inside a function is taken for a function start. `funcinfo.py` prints a `[warning]` line when the address you asked about is not inside the range it reports; treat that range as a different function. If `funcinfo.py` returns a clearly wrong function start, use `disasm.py` and look for padding/prologues manually.
+On x64 the exception table lists every function that has unwind information, with its extent, so an address inside such a function resolves to that function and an address in the gap behind one resolves to none. On x86, and for x64 leaf functions, only starts are known: targets of direct `CALL`s, exports, and `JMP` targets that sit behind padding, a return or another jump (functions reached by tail calls). That misses functions only reachable via indirect calls (vtable dispatch, callbacks, function pointers): 27% of the functions of one x86 C++ DLL, measured against its linker map. For such an address the nearest known start before it is reported. `funcinfo.py` prints a `[warning]` line when the address you asked about is not inside the range it reports; treat that range as a different function. If `funcinfo.py` returns a clearly wrong function start, use `disasm.py` and look for padding/prologues manually.
 
 ### `datarefs.py` / `search.py strings --xrefs` -- addressing modes
 

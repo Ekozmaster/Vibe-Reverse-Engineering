@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import functools
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,11 @@ from pathlib import Path
 import pefile
 from capstone import CS_ARCH_X86, CS_MODE_32, CS_MODE_64, Cs
 from capstone import x86_const as x86
+
+
+_EXCEPTION_DIRECTORY = 3
+_UNW_FLAG_CHAININFO = 0x4
+_MAX_UNWIND_CHAIN = 32  # a chain longer than this is a loop in a damaged file
 
 
 def sweep_code(code: bytes, va: int, is_64: bool):
@@ -167,17 +173,79 @@ class Binary:
 
     # ── Function entry-point table ────────────────────────────────────
 
+    @functools.cached_property
+    def _exception_chunks(self) -> list[tuple[int, int, int]]:
+        """(begin, end, function start) of each x64 exception table entry, sorted by begin.
+
+        The table has an entry for every function with unwind information,
+        which is every function but the leaf ones. A function the linker split
+        up has one entry per chunk, and the later chunks name the first through
+        chained unwind information.
+        """
+        if not self.is_64:
+            return []
+        directories = self.pe.OPTIONAL_HEADER.DATA_DIRECTORY
+        if len(directories) <= _EXCEPTION_DIRECTORY:
+            return []
+        directory = directories[_EXCEPTION_DIRECTORY]
+        table = self.read_va(self.base + directory.VirtualAddress, directory.Size)
+        chunks = []
+        for begin, end, unwind in struct.iter_unpack("<III", table[: len(table) - len(table) % 12]):
+            if end > begin:
+                chunks.append((self.base + begin, self.base + end, self.base + self._first_chunk(begin, unwind)))
+        return sorted(chunks)
+
+    @functools.cached_property
+    def _chunk_begins(self) -> list[int]:
+        return [begin for begin, _end, _start in self._exception_chunks]
+
+    def _first_chunk(self, begin: int, unwind: int) -> int:
+        """RVA where the function starts whose chunk at RVA *begin* has unwind information at RVA *unwind*."""
+        for _ in range(_MAX_UNWIND_CHAIN):
+            if unwind & 1:
+                # Not unwind information but another table entry that this one stands for
+                entry = self.read_va(self.base + unwind - 1, 12)
+            else:
+                header = self.read_va(self.base + unwind, 4)
+                if len(header) < 4 or not (header[0] >> 3) & _UNW_FLAG_CHAININFO:
+                    return begin
+                unwind_codes = (header[2] + 1) & ~1  # padded to an even count
+                entry = self.read_va(self.base + unwind + 4 + unwind_codes * 2, 12)
+            if len(entry) < 12:
+                return begin
+            begin, _end, unwind = struct.unpack("<III", entry)
+        return begin
+
+    def _chunk_at(self, va: int) -> tuple[int, int, int] | None:
+        """The exception table chunk that holds *va*."""
+        idx = bisect.bisect_right(self._chunk_begins, va) - 1
+        if idx >= 0 and va < self._exception_chunks[idx][1]:
+            return self._exception_chunks[idx]
+        return None
+
+    def _follows_end_of_code(self, va: int) -> bool:
+        """True when the bytes before *va* are padding, a return or an unconditional jump."""
+        before = self.read_va(va - 5, 5)
+        return len(before) == 5 and (
+            before[4] in (0xCC, 0x90, 0xC3)                 # int3, nop, ret
+            or before[2] == 0xC2                            # ret imm16
+            or before[0] == 0xE9 or before[3] == 0xEB)      # jmp rel32, jmp rel8
+
     @property
     def func_table(self) -> list[int]:
         """Sorted list of known function entry points (lazily built).
 
-        Collects targets of direct CALL/JMP rel32 instructions across
-        all executable sections, plus PE export addresses.  Used by
-        ``find_func_start`` for O(log n) function-start lookups.
+        Entry points come from the x64 exception table, the targets of direct
+        ``call rel32`` instructions and the exports. A ``jmp rel32`` target is
+        one only where a function can start, behind padding, a return or
+        another jump: that is a function reached by tail calls, while any other
+        jump target is a label inside a function. On x64 nothing inside a
+        function of the exception table is an entry point.
         """
         if hasattr(self, "_func_table"):
             return self._func_table
-        targets: set[int] = set()
+        called: set[int] = set()
+        jumped_to: set[int] = set()
         for va_start, raw_off, raw_size in self.exec_ranges():
             data = self.raw[raw_off : raw_off + raw_size]
             for i in range(len(data) - 4):
@@ -185,22 +253,34 @@ class Binary:
                     rel = int.from_bytes(data[i + 1 : i + 5], "little", signed=True)
                     dest = va_start + i + 5 + rel
                     if self.in_exec(dest):
-                        targets.add(dest)
+                        (called if data[i] == 0xE8 else jumped_to).add(dest)
+        starts = called | {va for va in jumped_to if self._follows_end_of_code(va)}
         if hasattr(self.pe, "DIRECTORY_ENTRY_EXPORT"):
             for exp in self.pe.DIRECTORY_ENTRY_EXPORT.symbols:
                 if exp.address:
-                    targets.add(self.base + exp.address)
-        self._func_table = sorted(targets)
+                    starts.add(self.base + exp.address)
+        starts = {va for va in starts if self._chunk_at(va) is None}
+        starts.update(start for _begin, _end, start in self._exception_chunks)
+        self._func_table = sorted(starts)
         return self._func_table
 
     def find_func_start(self, va: int) -> int | None:
-        """Find the function entry point containing *va*.
+        """Entry point of the function that holds *va*, or None when no known function does.
 
-        Uses ``func_table`` with binary search.  Returns None if *va*
-        precedes all known entry points.
+        On x64 the exception table gives each function's extent, so an address
+        behind the end of such a function is not counted as part of it. For
+        every other function only the start is known, and the nearest start at
+        or before *va* is returned however far back it lies.
         """
+        chunk = self._chunk_at(va)
+        if chunk is not None:
+            return chunk[2]
         idx = bisect.bisect_right(self.func_table, va) - 1
-        return self.func_table[idx] if idx >= 0 else None
+        if idx < 0:
+            return None
+        start = self.func_table[idx]
+        # A function of the exception table would hold *va* in one of its chunks
+        return None if self._chunk_at(start) is not None else start
 
     # ── Instruction analysis ─────────────────────────────────────────
 

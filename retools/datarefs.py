@@ -41,13 +41,18 @@ from common import Binary
 
 
 def _access_for(b, insn, addr_lo, addr_hi):
-    """Determine read/write access for operands matching the target range."""
+    """How *insn* uses its memory operands that lie in the target range: "r", "w" or "rw"."""
     mask = 0xFFFFFFFFFFFFFFFF if b.is_64 else 0xFFFFFFFF
     acc = set()
     for mop in b.mem_operands(insn):
-        if mop.base or mop.index:
+        if mop.index:
             continue
-        ea = mop.disp & mask
+        if mop.base == "rip":
+            ea = insn.address + insn.size + mop.disp
+        elif mop.base:
+            continue
+        else:
+            ea = mop.disp & mask
         if addr_lo <= ea < addr_hi:
             acc.update(mop.access)
     return "rw" if {"r", "w"} <= acc else ("w" if "w" in acc else "r")
@@ -69,7 +74,7 @@ def scan(b: Binary, addr: int, size: int, access_filter: str | None,
             mem_hit = True
         if mem_hit:
             acc = _access_for(b, insn, addr, addr_hi)
-            if access_filter and acc != access_filter:
+            if access_filter and not set(access_filter) <= set(acc):
                 if not imm_hit:
                     continue
                 acc = "imm"
@@ -195,7 +200,8 @@ def main():
                    help="Byte range: match refs to "
                         "[address, address+range) (default: 4)")
     p.add_argument("--access", choices=["r", "w", "rw"],
-                   help="Only show reads (r), writes (w), or both (rw)")
+                   help="Only show instructions that read (r) or write (w) the "
+                        "address; rw keeps the ones that do both")
     p.add_argument("--imm", action="store_true",
                    help="Also find immediate-value references "
                         "(push/mov of the address as a constant)")
