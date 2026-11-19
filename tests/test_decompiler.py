@@ -125,6 +125,21 @@ class TestLoadTypesOrdering:
         assert [c for c in r2.cmds if "afn " in c] == ["'@0x401000'afn _thunk_Foo"]
 
 
+def _radare2() -> str:
+    """Path of a radare2 that starts. Skips the test without one."""
+    import subprocess
+
+    import decompiler
+    r2_bin = decompiler._find_r2_bin()
+    if r2_bin is None:
+        pytest.skip("radare2 not found")
+    try:
+        subprocess.run([r2_bin, "-v"], capture_output=True, timeout=60, check=True)
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("radare2 does not start; tools/ may hold Git LFS pointer files (git lfs pull)")
+    return r2_bin
+
+
 def _exported_function(binary: str) -> int:
     """Virtual address of the first function *binary* exports itself."""
     import pefile
@@ -142,10 +157,7 @@ class TestKnowledgeBaseInRadare2:
     @pytest.fixture
     def session(self, sample_binary):
         import decompiler
-        r2_bin = decompiler._find_r2_bin()
-        if r2_bin is None:
-            pytest.skip("radare2 not found")
-        decompiler._ensure_r2_in_path(r2_bin)
+        decompiler._ensure_r2_in_path(_radare2())
         r2 = decompiler.r2pipe.open(sample_binary, flags=["-2"])
         r2.cmd("e scr.color=0")
         yield r2, _exported_function(sample_binary)
@@ -179,8 +191,7 @@ class TestKnowledgeBaseInRadare2:
 
     def test_decompiled_function_has_the_name_and_parameters_from_the_kb(self, sample_binary):
         import decompiler
-        if decompiler._find_r2_bin() is None:
-            pytest.skip("radare2 not found")
+        _radare2()
         va = _exported_function(sample_binary)
         kb = f"struct KbPoint {{\n    int x;\n    float y;\n}};\n@ {va:#x} int KbCount(KbPoint* point, int n);\n"
         code = decompiler.decompile(sample_binary, va, backend="pdg", types=kb)
