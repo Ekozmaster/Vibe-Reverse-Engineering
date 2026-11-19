@@ -4,7 +4,8 @@ kb.h lines take three shapes:
     @ 0xADDR <signature>;      -- function at an address
     $ 0xADDR <type...> <name>  -- global variable at an address
     <C declaration>            -- bare typedef / struct / enum
-Lines that are blank or begin with ``//`` are ignored.
+Lines that are blank or begin with ``//`` are ignored. A declaration may span
+lines: it runs until its braces are closed.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ class KbGlobal:
 class Kb:
     functions: list[KbFunction] = field(default_factory=list)
     globals: list[KbGlobal] = field(default_factory=list)
-    typedefs: list[str] = field(default_factory=list)
+    typedefs: list[str] = field(default_factory=list)  # one declaration each, on one line
 
 
 def extract_function_name(sig: str) -> str:
@@ -59,12 +60,22 @@ def parse_kb(text_or_path: str | Path) -> Kb:
     text = (text_or_path.read_text(encoding="utf-8", errors="replace")
             if isinstance(text_or_path, Path) else text_or_path)
     kb = Kb()
+    declaration: list[str] = []  # lines of the declaration being read
+
+    def end_declaration() -> None:
+        if declaration:
+            kb.typedefs.append(" ".join(declaration))
+            declaration.clear()
+
     for raw in text.splitlines():
         # Inline comments never reach entries: signatures/names/types feed
         # backend command strings (r2, Ghidra) where stray text is unsafe.
         line = raw.split("//", 1)[0].strip()
         if not line:
             continue
+
+        if line.startswith(("@ ", "$ ")):
+            end_declaration()
 
         if line.startswith("@ "):
             parts = line[2:].split(None, 1)
@@ -90,7 +101,12 @@ def parse_kb(text_or_path: str | Path) -> Kb:
             type_ = " ".join(parts[1:-1])
             kb.globals.append(KbGlobal(address=addr, type=type_, name=name))
         else:
-            kb.typedefs.append(line)
+            # A brace that opens a line belongs to the line before it ("struct Foo" / "{").
+            unclosed = sum(part.count("{") - part.count("}") for part in declaration) > 0
+            if not unclosed and not line.startswith("{"):
+                end_declaration()
+            declaration.append(line)
+    end_declaration()
     return kb
 
 

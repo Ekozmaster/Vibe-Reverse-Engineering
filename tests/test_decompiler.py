@@ -103,12 +103,90 @@ class TestLoadTypesOrdering:
         r2 = FakeR2()
         _load_types(r2, str(kb_path))
 
-        td_idx = next(i for i, c in enumerate(r2.cmds) if c.startswith("td "))
-        tl_idx = next(i for i, c in enumerate(r2.cmds) if c.startswith("tl "))
-        afs_idx = next(i for i, c in enumerate(r2.cmds) if c.startswith("afs "))
+        td_idx = next(i for i, c in enumerate(r2.cmds) if "td " in c)
+        tl_idx = next(i for i, c in enumerate(r2.cmds) if "tl " in c)
+        afs_idx = next(i for i, c in enumerate(r2.cmds) if "afs " in c)
 
         assert td_idx < tl_idx
         assert td_idx < afs_idx
+
+    def test_a_declaration_over_several_lines_is_one_command_radare2_does_not_split(self):
+        """A leading quote makes radare2 take the rest literally; unquoted, each ';' starts a new command."""
+        from decompiler import _load_types
+        r2 = FakeR2()
+        _load_types(r2, "struct Foo {\n    int x;\n    float y;\n};\n")
+        assert r2.cmds == ["'td struct Foo { int x; float y; };"]
+
+    def test_an_entry_without_a_parameter_list_only_names_the_function(self):
+        from decompiler import _load_types
+        r2 = FakeR2()
+        _load_types(r2, "@ 0x401000 _thunk_Foo;")
+        assert not [c for c in r2.cmds if "afs " in c]
+        assert [c for c in r2.cmds if "afn " in c] == ["'@0x401000'afn _thunk_Foo"]
+
+
+def _exported_function(binary: str) -> int:
+    """Virtual address of the first function *binary* exports itself."""
+    import pefile
+    pe = pefile.PE(binary, fast_load=True)
+    pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"]])
+    for symbol in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+        if not symbol.forwarder:
+            return pe.OPTIONAL_HEADER.ImageBase + symbol.address
+    raise LookupError(f"{binary} exports no function of its own")
+
+
+class TestKnowledgeBaseInRadare2:
+    """What a radare2 session holds after a knowledge base was loaded into it."""
+
+    @pytest.fixture
+    def session(self, sample_binary):
+        import decompiler
+        r2_bin = decompiler._find_r2_bin()
+        if r2_bin is None:
+            pytest.skip("radare2 not found")
+        decompiler._ensure_r2_in_path(r2_bin)
+        r2 = decompiler.r2pipe.open(sample_binary, flags=["-2"])
+        r2.cmd("e scr.color=0")
+        yield r2, _exported_function(sample_binary)
+        r2.quit()
+
+    def test_struct_written_over_several_lines_is_known_with_its_members(self, session):
+        from decompiler import _load_types
+        r2, _va = session
+        _load_types(r2, "struct KbPoint {\n    int x;\n    float y;\n};\n")
+        assert "KbPoint" in r2.cmd("ts").split()
+        assert r2.cmd("ts KbPoint").split()[-2:] == ["x", "y"]
+
+    def test_prototype_that_uses_a_struct_from_the_same_file(self, session):
+        from decompiler import _load_types
+        r2, va = session
+        _load_types(r2, f"struct KbPoint {{ int x; float y; }};\n@ {va:#x} int __stdcall KbCount(KbPoint* point, int n);\n")
+        assert r2.cmd(f"afs @ {va:#x}").strip() == "int __stdcall KbCount (KbPoint *point, int n);"
+
+    def test_member_function_keeps_its_qualified_name_and_gets_its_parameters(self, session):
+        from decompiler import _load_types
+        r2, va = session
+        _load_types(r2, f"@ {va:#x} void __thiscall Kb::Widget::~Widget(Widget* this, int flags);\n")
+        assert r2.cmd(f"afn @ {va:#x}").strip() == "Kb::Widget::~Widget"
+        assert "(Widget *this, int flags)" in r2.cmd(f"afs @ {va:#x}")
+
+    def test_global_is_a_flag_at_its_address(self, session):
+        from decompiler import _load_types
+        r2, va = session
+        _load_types(r2, f"$ {va + 0x10:#x} int g_kbCounter\n")
+        assert f"{va + 0x10:#010x}" in r2.cmd("f~g_kbCounter")
+
+    def test_decompiled_function_has_the_name_and_parameters_from_the_kb(self, sample_binary):
+        import decompiler
+        if decompiler._find_r2_bin() is None:
+            pytest.skip("radare2 not found")
+        va = _exported_function(sample_binary)
+        kb = f"struct KbPoint {{\n    int x;\n    float y;\n}};\n@ {va:#x} int KbCount(KbPoint* point, int n);\n"
+        code = decompiler.decompile(sample_binary, va, backend="pdg", types=kb)
+        if decompiler._MISSING_PLUGIN_HINT in code:
+            pytest.skip("r2ghidra not installed")
+        assert "KbCount(KbPoint *point,int n)" in code
 
 
 class _ScriptedR2:

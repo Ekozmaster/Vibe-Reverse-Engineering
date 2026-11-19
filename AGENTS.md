@@ -62,6 +62,8 @@ struct Foo { int x; float y; };
 $ 0x7C5548 Object* g_mainObject
 ```
 
+A struct, union or enum may be written over several lines; a function or a global takes one line.
+
 Update the KB when you: identify a function's purpose, reconstruct a struct, identify a global, find magic constants (define an enum), or resolve RTTI class names. Always pass `--types patches/<project>/kb.h` to the decompiler once a KB exists.
 
 ## Working Method

@@ -99,6 +99,11 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 
 **ALWAYS pass `--types patches/<project>/kb.h`** when using `decompiler.py`. Create the kb.h file on first decompilation if it doesn't exist. Every discovery (function names, struct layouts, globals) should be added to kb.h so subsequent decompilations produce richer output.
 
+What each decompiler takes from kb.h:
+
+- **r2ghidra** reads it on every call (`--types`): structs, unions and enums (also written over several lines), `typedef <type> Name;`, function names with their prototypes, and globals as named addresses. Two things radare2 itself does not take: `typedef struct X Y;` for a struct declared on another line (write `typedef struct X { ... } Y;`), and a pointer as the type of a global (the name still applies).
+- **Ghidra** reads it only when `kb-apply` runs, and keeps the result in the project. Types are stored first, so a prototype can use a struct from the same file. A prototype may carry a calling convention (`__cdecl`, `__stdcall`, `__fastcall`, `__thiscall`). When Ghidra cannot resolve a type in a prototype (one that is missing from kb.h, or a spelling such as `unsigned __int64`), the function still gets its name and the prototype is reported as skipped.
+
 | Tool | Purpose | Example |
 |------|---------|---------|
 | `disasm.py $B $VA` | Disassemble N instructions at VA | `disasm.py binary.exe 0x401000 -n 50` |
@@ -107,7 +112,7 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 | `pyghidra_backend.py decompile $B $VA --project $P` | Decompile via saved Ghidra project | `pyghidra_backend.py decompile game.exe 0x401000 --project patches/MyGame` |
 | `pyghidra_backend.py status $B --project $P` | Check if Ghidra project exists | `pyghidra_backend.py status game.exe --project patches/MyGame` |
 | `pyghidra_backend.py export $B --project $P [--db]` | Seed funcs/names/xrefs/blocks from an analyzed Ghidra program into index.db (`source='ghidra'`, overwrites provisional bootstrap rows at the same address) | `pyghidra_backend.py export game.exe --project patches/MyGame` |
-| `pyghidra_backend.py kb-apply $B --project $P --kb $KB` | Push kb.h names/prototypes/globals/typedefs into the Ghidra project. Idempotent — safe to re-run | `pyghidra_backend.py kb-apply game.exe --project patches/MyGame --kb patches/MyGame/kb.h` |
+| `pyghidra_backend.py kb-apply $B --project $P --kb $KB` | Push kb.h names/prototypes/globals/typedefs into the Ghidra project. Idempotent — safe to re-run. Prints one count per kind (`functions`, `labels`, `globals`, `typedefs`, `prototypes`) and `skipped`, the entries Ghidra refused; each of those is listed on stderr with Ghidra's reason | `pyghidra_backend.py kb-apply game.exe --project patches/MyGame --kb patches/MyGame/kb.h` |
 | `index.py status $GAME [--db]` | Per-table row counts + schema_version for `patches/<game>/index.db` | `python -m retools.index status MyGame` |
 | `query.py $GAME "SQL" [--db] [--json] [--list-tables] [--schema TABLE]` | Read-only SQL over index.db. Views: `callers`, `callees`, `grep`. Addresses are stored and printed as decimal integers; select `printf('0x%x', address)` to get hex. Connection is opened read-only, so it cannot change index.db. It is not free of side effects: `ATTACH DATABASE` and `VACUUM INTO` can still create other files | `python -m retools.query MyGame "SELECT * FROM grep WHERE name LIKE '%Ground%'"` |
 | `ghidra_server.py $GAME [--idle SECS]` | Run a per-project Ghidra daemon (port 27043; livetools owns 27042) holding one warm program so repeat `decompile`/`export`/`kb-apply` calls are sub-second instead of paying JVM+analysis startup each time. Tracks itself in `patches/<game>/ghidra/.state.json` (pid/port/project/binary), deleted on shutdown once the Ghidra program is closed | `python -m retools.ghidra_server MyGame --idle 600` |

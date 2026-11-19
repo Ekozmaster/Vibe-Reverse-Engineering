@@ -111,6 +111,45 @@ class TestInlineComments:
         assert kb.typedefs == ["struct Foo { int x; };"]
 
 
+class TestDeclarationsOverSeveralLines:
+    def test_struct_with_one_member_per_line_is_one_declaration(self):
+        from kb import parse_kb
+        kb = parse_kb("struct Foo {\n    int x;\n    float y;\n};\n")
+        assert kb.typedefs == ["struct Foo { int x; float y; };"]
+
+    def test_brace_on_its_own_line_belongs_to_the_line_before(self):
+        from kb import parse_kb
+        kb = parse_kb("struct Foo\n{\n    int x;\n};\n")
+        assert kb.typedefs == ["struct Foo { int x; };"]
+
+    def test_typedef_struct_ends_at_the_name_after_the_brace(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef struct _Foo {\n    int x;\n} Foo;\nenum Mode { MODE_A=0 };\n")
+        assert kb.typedefs == ["typedef struct _Foo { int x; } Foo;", "enum Mode { MODE_A=0 };"]
+
+    def test_nested_braces_stay_in_one_declaration(self):
+        from kb import parse_kb
+        kb = parse_kb("struct Outer {\n    union {\n        int i;\n        float f;\n    } value;\n    int tail;\n};\n")
+        assert kb.typedefs == ["struct Outer { union { int i; float f; } value; int tail; };"]
+
+    def test_enum_with_one_value_per_line(self):
+        from kb import parse_kb
+        kb = parse_kb("enum Mode {\n    MODE_A = 0,   // first\n    MODE_B = 1,\n};\n")
+        assert kb.typedefs == ["enum Mode { MODE_A = 0, MODE_B = 1, };"]
+
+    def test_complete_lines_stay_separate(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef int Handle;\nstruct Foo { int x; };\n")
+        assert kb.typedefs == ["typedef int Handle;", "struct Foo { int x; };"]
+
+    def test_function_and_global_lines_end_an_unclosed_declaration(self):
+        from kb import parse_kb
+        kb = parse_kb("struct Broken {\n    int x;\n@ 0x401000 void Foo(void);\n$ 0x7C5548 int g_x\n")
+        assert kb.typedefs == ["struct Broken { int x;"]
+        assert [f.name for f in kb.functions] == ["Foo"]
+        assert [g.name for g in kb.globals] == ["g_x"]
+
+
 class TestParseKbInputHandling:
     def test_content_that_names_a_file_is_parsed_as_content(self, tmp_path, monkeypatch):
         """A one-line kb string is parsed as content even if it happens to match

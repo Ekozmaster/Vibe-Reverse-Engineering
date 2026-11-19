@@ -6,6 +6,7 @@ using Ghidra's DecompInterface via the pyghidra bridge.
 
 import argparse
 import os
+import re
 import shutil
 import socket
 import sys
@@ -52,8 +53,16 @@ sys.path.insert(0, str(_HERE))  # so `from index import GameIndex` resolves as a
 
 
 def _ensure_java_env():
-    """Set JAVA_HOME and PATH from portable JDK in tools/ if needed."""
-    if os.environ.get("JAVA_HOME") or shutil.which("java"):
+    """Give pyghidra a JDK: the one JAVA_HOME names, else ``java`` on PATH, else a portable JDK in tools/.
+
+    pyghidra finds its JDK by running ``java``, or takes JAVA_HOME_OVERRIDE; it does not read JAVA_HOME.
+    """
+    launcher = "java.exe" if os.name == "nt" else "java"
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home and (Path(java_home) / "bin" / launcher).is_file():
+        os.environ.setdefault("JAVA_HOME_OVERRIDE", java_home)
+        return
+    if shutil.which("java"):
         return
     for d in sorted(_TOOLS.glob("jdk-*"), reverse=True):
         java_bin = d / "bin" / "java.exe"
@@ -410,18 +419,27 @@ def export(project_dir: str, binary: str, db_path: str) -> str:
 # kb-apply
 # ---------------------------------------------------------------------------
 
+_CALLING_CONVENTION = re.compile(r"\b__(?:cdecl|stdcall|fastcall|thiscall|vectorcall)\b")
+
+
 def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -> dict:
     """Apply a parsed Kb to an open program. Idempotent (USER_DEFINED upserts).
 
-    An ``@`` entry renames the function that contains its address; when no
-    function is there (bootstrap emits ``@`` lines for RTTI vtables and string
-    refs, which are data) it becomes a label instead of a bogus function. All
-    mutation goes through Program-level APIs so it stays inside the caller's
-    single transaction -- FlatProgramAPI.createFunction would open its own
-    nested transaction and leave it dangling, which then fails program.save().
+    Types are stored first, so that prototypes can name them. An ``@`` entry
+    renames the function that contains its address and, when it has a parameter
+    list, gives it that prototype; when no function is there (bootstrap emits
+    ``@`` lines for RTTI vtables and string refs, which are data) it becomes a
+    label instead of a bogus function. All mutation goes through Program-level
+    APIs so it stays inside the caller's single transaction --
+    FlatProgramAPI.createFunction would open its own nested transaction and
+    leave it dangling, which then fails program.save().
 
     apply_prototypes/apply_types gate the Ghidra-only signature/DTM code so a
     fake program (tests) can exercise the name/label path without those classes.
+
+    Returns:
+        How many entries of each kind were applied, and under ``skipped`` how
+        many Ghidra refused. Each refusal is reported on stderr.
     """
     from ghidra.program.model.symbol import SourceType
 
@@ -429,11 +447,22 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
     listing = program.getListing()
     symtab = program.getSymbolTable()
 
-    counts = {"functions": 0, "labels": 0, "globals": 0, "typedefs": 0, "skipped": 0}
+    counts = {"functions": 0, "labels": 0, "globals": 0, "typedefs": 0, "prototypes": 0, "skipped": 0}
 
-    def _skip(kind: str, entry: str, exc: Exception) -> None:
+    def _skip(kind: str, entry: str, reason: object) -> None:
         counts["skipped"] += 1
-        print(f"[kb-apply] skipped {kind} {entry!r}: {exc}", file=sys.stderr)
+        print(f"[kb-apply] skipped {kind} {entry!r}: {reason}", file=sys.stderr)
+
+    if apply_types:
+        from ghidra.app.util.cparser.C import CParser
+        # The second argument makes the parser store what it parses in the program
+        parser = CParser(program.getDataTypeManager(), True, None)
+        for td in kb.typedefs:
+            try:
+                parser.parse(td if td.endswith(";") else td + ";")
+                counts["typedefs"] += 1
+            except Exception as exc:
+                _skip("typedef", td, exc)  # non-type bare lines are skipped
 
     sig_parser = None
     if apply_prototypes:
@@ -459,13 +488,19 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
         except Exception as exc:
             _skip("function", fn.name, exc)  # e.g. duplicate name; others still apply
             continue
-        if apply_prototypes and sig_parser is not None:
+        if sig_parser is not None and "(" in fn.signature:
             from ghidra.app.cmd.function import ApplyFunctionSignatureCmd
             try:
-                definition = sig_parser.parse(func.getSignature(), fn.signature + ";")
-                if definition is not None:
-                    cmd = ApplyFunctionSignatureCmd(addr, definition, SourceType.USER_DEFINED)
-                    cmd.applyTo(program, _monitor)
+                # The parser takes neither a calling convention nor a closing ';'
+                convention = _CALLING_CONVENTION.search(fn.signature)
+                definition = sig_parser.parse(func.getSignature(), _CALLING_CONVENTION.sub("", fn.signature))
+                if convention:
+                    definition.setCallingConvention(convention.group())
+                cmd = ApplyFunctionSignatureCmd(addr, definition, SourceType.USER_DEFINED)
+                if cmd.applyTo(program, _monitor):
+                    counts["prototypes"] += 1
+                else:
+                    _skip("prototype", fn.signature, cmd.getStatusMsg())
             except Exception as exc:
                 _skip("prototype", fn.signature, exc)  # name is already applied
 
@@ -476,17 +511,6 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
             counts["globals"] += 1
         except Exception as exc:
             _skip("global", g.name, exc)  # name may be invalid; others still apply
-
-    if apply_types:
-        from ghidra.app.util.cparser.C import CParser
-        dtm = program.getDataTypeManager()
-        parser = CParser(dtm)
-        for td in kb.typedefs:
-            try:
-                parser.parse(td if td.endswith(";") else td + ";")
-                counts["typedefs"] += 1
-            except Exception as exc:
-                _skip("typedef", td, exc)  # non-type bare lines are skipped
 
     return counts
 

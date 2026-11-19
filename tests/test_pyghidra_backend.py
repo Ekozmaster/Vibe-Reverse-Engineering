@@ -10,6 +10,46 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
 
 
 # ---------------------------------------------------------------------------
+# _ensure_java_env
+# ---------------------------------------------------------------------------
+
+class TestJavaForPyghidra:
+    """pyghidra finds its JDK by running `java`, or takes JAVA_HOME_OVERRIDE; it does not read JAVA_HOME."""
+
+    @pytest.fixture
+    def no_java(self, tmp_path, monkeypatch):
+        """No java on PATH, no portable JDK, no override."""
+        import pyghidra_backend
+        monkeypatch.setattr(pyghidra_backend.shutil, "which", lambda name: None)
+        monkeypatch.setattr(pyghidra_backend, "_TOOLS", tmp_path / "tools")
+        # Set before deleting, so that monkeypatch also takes back a value the code under test writes
+        monkeypatch.setenv("JAVA_HOME_OVERRIDE", "")
+        monkeypatch.delenv("JAVA_HOME_OVERRIDE")
+        monkeypatch.delenv("JAVA_HOME", raising=False)
+
+    def test_jdk_named_by_java_home_is_handed_to_pyghidra(self, no_java, tmp_path, monkeypatch):
+        import os
+        import pyghidra_backend
+        launcher = tmp_path / "jdk" / "bin" / ("java.exe" if os.name == "nt" else "java")
+        launcher.parent.mkdir(parents=True)
+        launcher.write_bytes(b"")
+        monkeypatch.setenv("JAVA_HOME", str(tmp_path / "jdk"))
+
+        pyghidra_backend._ensure_java_env()
+
+        assert os.environ["JAVA_HOME_OVERRIDE"] == str(tmp_path / "jdk")
+
+    def test_java_home_that_holds_no_launcher_is_not_handed_over(self, no_java, tmp_path, monkeypatch):
+        import os
+        import pyghidra_backend
+        monkeypatch.setenv("JAVA_HOME", str(tmp_path / "missing"))
+
+        pyghidra_backend._ensure_java_env()
+
+        assert "JAVA_HOME_OVERRIDE" not in os.environ
+
+
+# ---------------------------------------------------------------------------
 # is_analyzed
 # ---------------------------------------------------------------------------
 
