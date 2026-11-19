@@ -455,30 +455,18 @@ def _phase5_suggested_layout(matrix_regs, ctab_matrices):
         if vp_reg:
             print(f"\n  Also found ViewProj at c{vp_reg} -- same issue, needs separation.")
     elif view_reg is not None or proj_reg is not None or world_reg is not None:
+        # Keys the proxy reads; what is not known stays a comment so the block is a valid INI section
         print(f"\n  [FFP.Registers]")
-        if view_reg is not None:
-            source = "CTAB" if 'View' in ctab_roles else "frequency"
-            print(f"  ViewStart={view_reg}          ; c{view_reg}-c{view_reg+3} ({source})")
-            print(f"  ViewEnd={view_reg + 4}")
-        else:
-            print(f"  ViewStart=???         ; could not determine -- check with livetools trace")
-            print(f"  ViewEnd=???")
-
-        if proj_reg is not None:
-            source = "CTAB" if 'Projection' in ctab_roles else "frequency"
-            print(f"  ProjStart={proj_reg}          ; c{proj_reg}-c{proj_reg+3} ({source})")
-            print(f"  ProjEnd={proj_reg + 4}")
-        else:
-            print(f"  ProjStart=???         ; could not determine -- check with livetools trace")
-            print(f"  ProjEnd=???")
-
-        if world_reg is not None:
-            source = "CTAB" if 'World' in ctab_roles else "frequency"
-            print(f"  WorldStart={world_reg}        ; c{world_reg}-c{world_reg+3} ({source})")
-            print(f"  WorldEnd={world_reg + 4}")
-        else:
-            print(f"  WorldStart=???        ; could not determine -- check with livetools trace")
-            print(f"  WorldEnd=???")
+        for start_key, end_key, role, reg in (("ViewStart", "ViewEnd", "View", view_reg),
+                                              ("ProjStart", "ProjEnd", "Projection", proj_reg),
+                                              ("WorldStart", "WorldEnd", "World", world_reg)):
+            if reg is None:
+                print(f"  ; {start_key}, {end_key}: could not determine -- check with livetools trace")
+                continue
+            source = "CTAB" if role in ctab_roles else "frequency"
+            print(f"  ; {role}: c{reg}-c{reg + 3} ({source})")
+            print(f"  {start_key}={reg}")
+            print(f"  {end_key}={reg + 4}")
 
         print(f"\n  IMPORTANT: Verify with livetools trace or dx9tracer --const-provenance.")
         print(f"  Remix requires SEPARATE World, View, and Projection matrices.")

@@ -20,7 +20,7 @@ namespace comp
 		bool has_saved_renderstate(const D3DRENDERSTATETYPE& state) const;
 		bool has_saved_renderstate(const uint32_t& state) const;
 
-		void set_texture_transform(IDirect3DDevice9* device, const D3DXMATRIX* matrix);
+		void set_texture_transform(IDirect3DDevice9* device, const D3DMATRIX* matrix);
 		void save_vs(IDirect3DDevice9* device);
 		void save_ps(IDirect3DDevice9* device);
 		void save_texture(IDirect3DDevice9* device, const bool stage);

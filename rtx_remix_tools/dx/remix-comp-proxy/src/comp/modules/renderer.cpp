@@ -3,6 +3,7 @@
 
 #include "imgui.hpp"
 #include "diagnostics.hpp"
+#include "skinning.hpp"
 #include "shared/common/ffp_state.hpp"
 
 namespace comp
@@ -26,7 +27,7 @@ namespace comp
 			// Only load if the file exists — no icon is shipped by default
 			if (GetFileAttributesA(icon_path) != INVALID_FILE_ATTRIBUTES)
 			{
-				HRESULT hr = D3DXCreateTextureFromFileA(dev, icon_path, &tex_addons::icon);
+				HRESULT hr = shared::utils::create_texture_from_file(dev, icon_path, &tex_addons::icon);
 				if (FAILED(hr))
 					shared::common::log("Renderer", std::format("Failed to load {}", icon_path), shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
 			}
@@ -131,8 +132,8 @@ namespace comp
 		 *   +-- NO  -> passthrough with shaders
 		 *   +-- YES
 		 *       +-- curDeclIsSkinned?
-		 *       |   +-- YES + skinning module -> skinning::draw_skinned_dip()
-		 *       |   +-- YES + no skinning     -> passthrough with shaders
+		 *       |   +-- [Skinning] Enabled=1 -> skinning::draw_skinned_dip()
+		 *       |   +-- [Skinning] Enabled=0 -> passthrough with shaders
 		 *       +-- !curDeclHasNormal?
 		 *       |   +-- passthrough (HUD/UI)
 		 *       |   GAME-SPECIFIC: remove this filter if world geometry lacks NORMAL
@@ -147,10 +148,15 @@ namespace comp
 			im->m_stats._drawcall_indexed_prim.track_single();
 			im->m_stats._drawcall_indexed_prim_using_vs.track_single();
 		}
+		else if (ffp.cur_decl_is_skinned() && skinning::is_available())
+		{
+			// Skinned mesh: FFP indexed vertex blending
+			hr = skinning::get()->draw_skinned_dip(dev, PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+			im->m_stats._drawcall_indexed_prim.track_single();
+		}
 		else if (ffp.cur_decl_is_skinned())
 		{
-			// Skinned mesh: passthrough with shaders.
-			// GAME-SPECIFIC: wire up skinning::get()->draw_skinned_dip() here when enabling skinning for this game.
+			// Skinned mesh with the skinning module off: passthrough with shaders
 			ffp.disengage(dev);
 			hr = dev->DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
 			im->m_stats._drawcall_indexed_prim.track_single();

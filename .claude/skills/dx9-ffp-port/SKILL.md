@@ -23,7 +23,7 @@ To create a game patch, **copy** the template to `patches/<GameName>/` and edit 
 4. Set `D3DRS_VERTEXBLEND` to the appropriate weight count (e.g. `D3DVBF_3WEIGHTS`)
 5. Let the FFP hardware pipeline do the blending
 
-Remix does the blending itself from this state: it needs the vertex shader cleared and reads at most 4 bones per vertex and palette slots `WORLDMATRIX(0..255)`. The game keeps submitting the same bind-pose vertex buffer, so the geometry Remix identifies does not change from frame to frame. The template's bone upload stops at 48 bones (`skinning.cpp`).
+Remix does the blending itself from this state: it needs the vertex shader cleared and reads at most 4 bones per vertex and palette slots `WORLDMATRIX(0..255)`. The game keeps submitting the same bind-pose vertex buffer, so the geometry Remix identifies does not change from frame to frame. The template relies on that too: it converts each vertex range of a skinned mesh once and reuses the result, so a game that rewrites a skinned mesh's vertex buffer is not handled.
 
 CPU-side vertex skinning (manually multiplying vertices by bone matrices) is a **last resort only**. It is extremely expensive, tanks frame rate, and should only be considered when FFP indexed vertex blending is not feasible. Always prefer the hardware path above.
 
@@ -37,7 +37,7 @@ Each game folder under `patches/<GameName>/` is a self-contained remix-comp-prox
 2. Parses `SetVertexDeclaration` via `ffp_state::on_set_vertex_declaration` to detect BLENDWEIGHT+BLENDINDICES (skinned), POSITIONT (screen-space), NORMAL presence, and per-element byte offsets
 3. Routes `DrawIndexedPrimitive` via `renderer::on_draw_indexed_prim`:
    - No NORMAL -> HUD/UI pass-through
-   - Skinned -> pass-through with shaders. The template ships with skinning unwired: `skinning::draw_skinned_dip()` has no caller until you add one (see Skinning below)
+   - Skinned -> pass-through with shaders while `[Skinning] Enabled=0` (the default). With `Enabled=1`, `skinning::draw_skinned_dip()` draws it with FFP indexed vertex blending
    - Rigid 3D (has NORMAL) -> NULLs shaders, applies FFP transforms
 4. Routes `DrawPrimitive` via `renderer::on_draw_primitive`: world-space (has decl, no POSITIONT, not skinned) -> FFP; otherwise pass-through
 5. Applies captured matrices via `ffp_state::apply_transforms` -> `SetTransform`
@@ -64,7 +64,7 @@ Each game folder under `patches/<GameName>/` is a self-contained remix-comp-prox
 | `src/comp/modules/imgui.cpp` | ImGui debug overlay (F4) with FFP tab |
 | `src/comp/game/game.cpp` | Per-game address init (patterns, hooks) |
 | `src/comp/game/game.hpp` | Per-game variables and function typedefs |
-| `remix-comp-proxy.ini` (in `assets/`) | Runtime config: albedo stage, skinning toggle, diagnostics, DLL chain |
+| `remix-comp-proxy.ini` (in `assets/`) | Runtime config: register layout, albedo stage, skinning, diagnostics, DLL chain |
 | `build.bat` | Build script: outputs d3d9.dll proxy. `build.bat [release\|debug] [--name Name]` |
 
 **`rtx_remix_tools/dx/remix-comp-proxy/` is the TEMPLATE.** Each game gets a full copy under `patches/<GameName>/` — the entire folder is self-contained and can be distributed as a standalone repo. Edit `src/comp/` directly in the game's copy.
@@ -162,7 +162,7 @@ python -m graphics.directx.dx9.tracer analyze <JSONL> --shader-map
 
 1. Copy the entire `rtx_remix_tools/dx/remix-comp-proxy/` folder to `patches/<GameName>/` (excluding `build/`)
 2. Edit `src/comp/` directly in the game's copy — this is the per-game customization layer
-3. Edit register layout defaults in `src/shared/common/ffp_state.hpp` (see Register Layout section below)
+3. Set the register layout in `assets/remix-comp-proxy.ini`, section `[FFP.Registers]` (see Register Layout below)
 4. Edit `src/comp/main.cpp`: set `WINDOW_CLASS_NAME` to the game's window class
 5. Customize `src/comp/modules/renderer.cpp` draw routing if needed (see Decision Trees below)
 6. Customize `src/comp/game/game.cpp` with game-specific address init if hooks are needed
@@ -180,13 +180,13 @@ cd patches/<GameName>
 
 Use `./build.bat`: it runs from both Git Bash and PowerShell, while a bare `build.bat` is not found in either.
 
-The link step needs `d3dx9.lib` in `deps/dxsdk/Lib/x86/`. The template does not ship that file, so a fresh copy fails with `LNK1181: cannot open input file 'd3dx9.lib'` until you put an x86 `d3dx9.lib` import library into that folder. It belongs to Microsoft's legacy DirectX SDK, not to the Windows SDK or Visual Studio. The build is x86 only and expects Visual Studio 2022.
+The build needs Visual Studio 2022 with a Windows SDK and nothing else: the Direct3D 9 headers, DirectXMath and the image decoder (WIC) come from the Windows SDK, and the proxy does not use D3DX, so the built `d3d9.dll` needs no `d3dx9_*.dll` beside the game. The build is x86 only. A game folder copied from the template while it still used D3DX keeps its own dependency: it includes `d3dx9.h` and links `d3dx9.lib` from its `deps/dxsdk/Lib/x86/`, a file from Microsoft's legacy DirectX SDK that the template never shipped.
 
 The build produces `d3d9.dll` in `patches/<GameName>/build/bin/release/`. Deploy to the game directory:
 - `d3d9.dll` (the game loads this as its d3d9 proxy)
 - `remix-comp-proxy.ini`
 - For Remix: the RTX Remix runtime for x86 games. Rename its `d3d9.dll` (the bridge client) to `d3d9_remix.dll` and copy it together with its `.trex/` folder; the bridge finds `.trex/` next to itself. `[Remix] DLLName` in the INI names the renamed file.
-- `assets/.trex/bridge.conf` into the game's `.trex/` folder only if the port uses the Remix API (its one active line is `exposeRemixApi = True`). Current Remix runtimes reject the API version the template vendors; see "Remix API from the proxy" in the reference
+- `assets/.trex/bridge.conf` into the game's `.trex/` folder only if the port uses the Remix API (its one active line is `exposeRemixApi = True`). The template is built against the API headers of Remix release 1.6.1, and a runtime only accepts callers built against its own API minor version; see "Remix API from the proxy" in the reference before pairing the port with another runtime
 
 ### Step 5: Diagnose with Log and ImGui
 
@@ -206,32 +206,44 @@ Do not change the logging delay unless the user asks -- it ensures the user gets
 
 ---
 
-## Register Layout (`ffp_state.hpp`)
+## Register Layout (`[FFP.Registers]`)
 
-The VS constant register layout is defined as member defaults in `src/shared/common/ffp_state.hpp`. Edit these when porting a new game:
+The VS constant register layout is read from `remix-comp-proxy.ini` when the game starts. Changing it takes a game restart, not a rebuild:
 
-```cpp
-// In ffp_state.hpp — private members with game-specific defaults
-int vs_reg_view_start_ = 0;
-int vs_reg_view_end_ = 4;
-int vs_reg_proj_start_ = 4;
-int vs_reg_proj_end_ = 8;
-int vs_reg_world_start_ = 16;
-int vs_reg_world_end_ = 20;
-int vs_reg_bone_threshold_ = 20;  // only matters when [Skinning] Enabled=1
-int vs_regs_per_bone_ = 3;        // 3 = 4x3 packed bones (most common), 4 = full 4x4
-int vs_bone_min_regs_ = 3;        // minimum register count to qualify as bone upload
+```ini
+[FFP.Registers]
+ViewStart=0
+ViewEnd=4
+ProjStart=4
+ProjEnd=8
+WorldStart=16
+WorldEnd=20
 ```
 
-Each matrix occupies 4 consecutive vec4 registers (= 16 floats). After changing defaults, rebuild with `build.bat`.
+`Start` is the first register of a matrix and `End` is one past its last, so a matrix in c8-c11 is `Start=8`, `End=12`. The proxy reads each matrix as 4 consecutive vec4 registers (16 floats) from its `Start`; `End` bounds the registers whose upload marks the matrix as changed. `find_matrix_registers.py` prints this section with what it could determine and leaves the rest as comments. A range outside c0-c255 makes the proxy log an error in `rtx_comp/console.log` and fall back to the layout above. The log also states the layout in use: `[FFP] Registers: View=c0-c3 Proj=c4-c7 World=c16-c19`.
+
+Edit `assets/remix-comp-proxy.ini` in the game folder (the build copies it next to `d3d9.dll`) and the copy already deployed beside the game.
 
 ### Bone Configuration for Skinning
 
-Before enabling skinning, run `find_skinning.py` to determine the bone start register (`vs_reg_bone_threshold_`) and upload pattern. Some games upload all bones in one call; others upload in groups until hitting a max (e.g., groups of 15, max 75). If the game uses grouped uploads, lower `vs_bone_min_regs_` so the proxy doesn't reject the smaller batches. If bone uploads overlap with non-bone constants, raise `vs_reg_bone_threshold_`.
+Three `[Skinning]` keys say which `SetVertexShaderConstantF` uploads are bone palettes. They only matter with `Enabled=1`:
+
+```ini
+[Skinning]
+Enabled=0
+; Lowest register a palette upload may start at
+BoneThreshold=20
+; 3 = 4x3 packed bones (most common), 4 = full 4x4
+RegsPerBone=3
+; Smallest upload, in registers, taken as bones
+BoneMinRegs=3
+```
+
+Before enabling skinning, run `find_skinning.py`: it suggests `BoneThreshold` and `RegsPerBone`. The proxy takes the most recent upload that starts at or above `BoneThreshold`, covers at least `BoneMinRegs` registers and holds a whole number of bones as the palette for the skinned draws that follow. A game that uploads a small palette per mesh part needs `BoneMinRegs` no larger than its smallest upload. If other constants at or above `BoneThreshold` are mistaken for bones, raise `BoneThreshold`. A game that fills one palette with several uploads at different registers is not handled: only the last upload counts.
 
 ## INI Config (`remix-comp-proxy.ini`)
 
-Runtime settings that don't require recompile:
+Runtime settings that don't require recompile (`[FFP.Registers]` and the bone keys of `[Skinning]` are described above):
 
 ```ini
 [FFP]
@@ -268,8 +280,7 @@ Each game folder under `patches/<GameName>/` is a **self-contained** copy of the
 
 | Component (in `patches/<GameName>/`) | Edit Per-Game? |
 |-----------|----------------|
-| `ffp_state.hpp` register layout defaults | **YES** — rebuild after changing |
-| `remix-comp-proxy.ini` albedo stage, diagnostics, chain | **YES** |
+| `remix-comp-proxy.ini` register layout, albedo stage, skinning, diagnostics, chain | **YES** — no rebuild |
 | `src/comp/main.cpp` WINDOW_CLASS_NAME | **YES** |
 | `src/comp/modules/renderer.cpp` draw routing | **YES** -- main draw routing |
 | `src/comp/game/game.cpp` address init and hooks | **YES** -- per-game hooks |
@@ -288,8 +299,8 @@ ffp.is_enabled() AND ffp.view_proj_valid()?
 +-- NO  -> passthrough with shaders
 +-- YES
     +-- ffp.cur_decl_is_skinned()?
-    |   +-- YES -> passthrough with shaders (template default)
-    |   GAME-SPECIFIC: call skinning::get()->draw_skinned_dip() here to enable skinning
+    |   +-- [Skinning] Enabled=1 -> skinning::draw_skinned_dip() (FFP indexed vertex blending)
+    |   +-- [Skinning] Enabled=0 -> passthrough with shaders (the default)
     +-- !ffp.cur_decl_has_normal()?
     |   +-- passthrough (HUD/UI)
     |   GAME-SPECIFIC: remove this filter if world geometry lacks NORMAL
@@ -322,12 +333,12 @@ AND !ffp.cur_decl_has_pos_t() AND !ffp.cur_decl_is_skinned()?
 - **Matrices look wrong**: D3D9 FFP `SetTransform` expects row-major. `ffp_state::apply_transforms` transposes column-major VS constants. If the game stores matrices row-major in VS constants (uncommon), remove the transpose in `ffp_state::apply_transforms`.
 - **Everything is white/black**: Albedo texture is on stage 1+, not stage 0. Set `AlbedoStage` in `remix-comp-proxy.ini`, or trace `SetTexture` calls to find the correct stage.
 - **Some objects render, others don't**: Check whether missing geometry has NORMAL in its vertex decl. Check `ffp.view_proj_valid()` is true at draw time. DrawPrimitive routes on decl presence + no POSITIONT + not skinned.
-- **Skinned meshes not converted**: The template passes skinned draws through with their shaders. Converting them takes two steps: set `[Skinning] Enabled=1` in `remix-comp-proxy.ini`, and in the game copy's `renderer.cpp` replace the passthrough at the `GAME-SPECIFIC: wire up skinning::get()->draw_skinned_dip()` comment with that call. Then verify `boneStart=` and `numBones=` are non-zero in `rtx_comp/diagnostics.log`.
+- **Skinned meshes not converted**: Skinned draws pass through with their shaders until `[Skinning] Enabled=1` is set in `remix-comp-proxy.ini`. With it set, verify `boneStart=` and `numBones=` are non-zero in `rtx_comp/diagnostics.log`; if they are zero, no upload matched `BoneThreshold`, `RegsPerBone` and `BoneMinRegs`. Only `DrawIndexedPrimitive` draws are converted, and the bone matrices are used as uploaded: a game whose shader multiplies the blended position by a separate world matrix needs that multiplication added in the game copy's `skinning.cpp`.
 - **Bones mixed up between NPCs**: Stale WORLDMATRIX slots from a previous object. The game may need a game-specific reset hook at a per-object boundary -- see Skinning Stability below.
 - **Game crashes on startup**: Set `[Remix] Enabled=0` in `remix-comp-proxy.ini` to test without Remix.
 - **Proxy loads but does nothing (two beeps after a wait of 30 seconds or more)**: `WINDOW_CLASS_NAME` in `comp/main.cpp` matched no window, so the modules never loaded. `rtx_comp/console.log` in the game directory lists the class name of every visible window the proxy saw (`> HWND: ... Class: ...`) and ends with `Could not find '...' Window. Not loading RTX Compatibility Mod.` Copy the game window's class name from that file.
 - **Geometry at origin / piled up**: World matrix register mapping wrong. Re-examine VS constant writes via `livetools trace` or DX9 tracer `--const-provenance`.
-- **World geometry shifts after skinned draws**: `WORLDMATRIX(0)` clobbered by bone[0]. The proxy tracks `world_dirty_` for re-application. If still broken, check for bone register overlap with world matrix range in `ffp_state.hpp`.
+- **World geometry shifts after skinned draws**: bone 0 is written to `WORLDMATRIX(0)`, which is `D3DTS_WORLD`. The proxy sends the world matrix again after each skinned draw (`ffp_state::restore_world`). If rigid geometry still moves, check whether the bone palette overlaps the `WorldStart`-`WorldEnd` range in `[FFP.Registers]`.
 - **ImGui overlay not appearing**: Press F4. Check that `WINDOW_CLASS_NAME` is correct and the window was found (`rtx_comp/console.log`). Check for DirectInput hook conflicts.
 
 ### Skinning Stability: Finding Game-Specific Hook Points

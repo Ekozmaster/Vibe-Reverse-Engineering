@@ -16,10 +16,11 @@ namespace shared::common
 		create_tick_ = GetTickCount();
 
 		log("FFP", std::format("State tracker initialized, FFP={}", enabled_ ? "ON" : "OFF"));
+		const auto& regs = cfg_->registers;
 		log("FFP", std::format("Registers: View=c{}-c{} Proj=c{}-c{} World=c{}-c{}",
-			vs_reg_view_start_, vs_reg_view_end_ - 1,
-			vs_reg_proj_start_, vs_reg_proj_end_ - 1,
-			vs_reg_world_start_, vs_reg_world_end_ - 1));
+			regs.view_start, regs.view_end - 1,
+			regs.proj_start, regs.proj_end - 1,
+			regs.world_start, regs.world_end - 1));
 	}
 
 	// ---- State mutators ----
@@ -30,23 +31,29 @@ namespace shared::common
 
 		std::memcpy(&vs_const_[start_reg * 4], data, count * 4 * sizeof(float));
 
+		const auto& regs = config::get().ffp.registers;
+		const auto& skinning = config::get().skinning;
+
 		// Dirty tracking keyed to game-specific register layout
-		UINT end_reg = start_reg + count;
-		if (start_reg < static_cast<UINT>(vs_reg_proj_end_) &&
-			end_reg > static_cast<UINT>(vs_reg_view_start_))
+		const UINT end_reg = start_reg + count;
+		const auto writes_into = [&](const int first, const int end)
 		{
+			return start_reg < static_cast<UINT>(end) && end_reg > static_cast<UINT>(first);
+		};
+
+		if (writes_into(regs.view_start, regs.view_end) || writes_into(regs.proj_start, regs.proj_end))
 			view_proj_dirty_ = true;
-		}
-		if (start_reg < static_cast<UINT>(vs_reg_world_end_) &&
-			end_reg > static_cast<UINT>(vs_reg_world_start_))
+
+		if (writes_into(regs.world_start, regs.world_end))
 		{
 			world_dirty_ = true;
+			world_written_ = true;
 		}
 
 		// Mark View+Proj valid once both ranges have been written
-		auto view_start = static_cast<UINT>(vs_reg_view_start_);
-		auto proj_start = static_cast<UINT>(vs_reg_proj_start_);
-		auto proj_end = static_cast<UINT>(vs_reg_proj_end_);
+		auto view_start = static_cast<UINT>(regs.view_start);
+		auto proj_start = static_cast<UINT>(regs.proj_start);
+		auto proj_end = static_cast<UINT>(regs.proj_end);
 
 		if (start_reg <= view_start && end_reg >= proj_end)
 		{
@@ -66,13 +73,13 @@ namespace shared::common
 			vs_const_write_log_[start_reg + i] = 1;
 
 		// Bone palette detection (for skinning module)
-		if (config::get().skinning.enabled &&
-			start_reg >= static_cast<UINT>(vs_reg_bone_threshold_) &&
-			count >= static_cast<UINT>(vs_bone_min_regs_) &&
-			(count % static_cast<UINT>(vs_regs_per_bone_)) == 0)
+		if (skinning.enabled &&
+			start_reg >= static_cast<UINT>(skinning.bone_threshold) &&
+			count >= static_cast<UINT>(skinning.bone_min_regs) &&
+			(count % static_cast<UINT>(skinning.regs_per_bone)) == 0)
 		{
 			bone_start_reg_ = static_cast<int>(start_reg);
-			num_bones_ = static_cast<int>(count) / vs_regs_per_bone_;
+			num_bones_ = static_cast<int>(count) / skinning.regs_per_bone;
 		}
 	}
 
@@ -244,6 +251,7 @@ namespace shared::common
 		view_proj_valid_ = false;
 		ffp_setup_ = false;
 		world_dirty_ = false;
+		world_written_ = false;
 		view_proj_dirty_ = false;
 		ffp_active_ = false;
 		bone_start_reg_ = 0;
@@ -321,18 +329,34 @@ namespace shared::common
 			dev->SetTexture(ts, cur_texture_[ts]);
 	}
 
+	void ffp_state::restore_world(IDirect3DDevice9* dev)
+	{
+		if (!dev) return;
+
+		// Until the game uploads a world matrix, FFP draws use the identity set at BeginScene
+		if (!world_written_)
+		{
+			dev->SetTransform(D3DTS_WORLD, &shared::globals::IDENTITY);
+			return;
+		}
+
+		world_dirty_ = true;
+		apply_transforms(dev);
+	}
+
 	// ---- Internal helpers ----
 
 	void ffp_state::apply_transforms(IDirect3DDevice9* dev)
 	{
+		const auto& regs = config::get().ffp.registers;
 		float transposed[16];
 
 		if (view_proj_dirty_)
 		{
-			mat4_transpose(transposed, &vs_const_[vs_reg_view_start_ * 4]);
+			mat4_transpose(transposed, &vs_const_[regs.view_start * 4]);
 			dev->SetTransform(D3DTS_VIEW, reinterpret_cast<const D3DMATRIX*>(transposed));
 
-			mat4_transpose(transposed, &vs_const_[vs_reg_proj_start_ * 4]);
+			mat4_transpose(transposed, &vs_const_[regs.proj_start * 4]);
 			dev->SetTransform(D3DTS_PROJECTION, reinterpret_cast<const D3DMATRIX*>(transposed));
 
 			view_proj_dirty_ = false;
@@ -340,7 +364,7 @@ namespace shared::common
 
 		if (world_dirty_)
 		{
-			mat4_transpose(transposed, &vs_const_[vs_reg_world_start_ * 4]);
+			mat4_transpose(transposed, &vs_const_[regs.world_start * 4]);
 			dev->SetTransform(D3DTS_WORLD, reinterpret_cast<const D3DMATRIX*>(transposed));
 
 			world_dirty_ = false;

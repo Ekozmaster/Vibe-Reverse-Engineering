@@ -37,13 +37,23 @@ namespace comp
 	private:
 		static constexpr int SKIN_VTX_SIZE = 48;
 		static constexpr int SKIN_CACHE_SIZE = 64;
+		static constexpr int MAX_BONES = 256;	// D3DTS_WORLDMATRIX takes indices 0-255
 
 		IDirect3DVertexDeclaration9* skin_exp_decl_ = nullptr;
 
-		// Expanded vertex buffer cache
-		IDirect3DVertexBuffer9* skin_exp_vb_[SKIN_CACHE_SIZE] = {};
-		unsigned int skin_exp_key_[SKIN_CACHE_SIZE] = {};
-		unsigned int skin_exp_nv_[SKIN_CACHE_SIZE] = {};
+		// The vertices of one draw, in the expanded layout. A buffer is reused for as long as
+		// the same range of the same source buffer is drawn with the same declaration, so the
+		// game is taken not to rewrite a skinned mesh's vertices.
+		struct expanded_range
+		{
+			IDirect3DVertexBuffer9* source = nullptr;
+			IDirect3DVertexDeclaration9* source_decl = nullptr;
+			UINT first_byte = 0;
+			UINT num_verts = 0;
+			UINT stride = 0;
+			IDirect3DVertexBuffer9* expanded = nullptr;
+		};
+		expanded_range skin_exp_cache_[SKIN_CACHE_SIZE] = {};
 
 		bool initialized_ = false;
 
@@ -52,7 +62,7 @@ namespace comp
 
 		// Vertex expansion
 		IDirect3DVertexBuffer9* get_expanded_vb(IDirect3DDevice9* dev,
-			IDirect3DVertexBuffer9* src_vb, INT base_vtx, UINT num_verts, UINT stride);
+			IDirect3DVertexBuffer9* src_vb, UINT first_byte, UINT num_verts, UINT stride);
 		void expand_skin_vertex(unsigned char* dst, const unsigned char* src, UINT stride);
 
 		// Bone upload

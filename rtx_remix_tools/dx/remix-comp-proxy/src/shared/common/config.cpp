@@ -3,6 +3,17 @@
 
 namespace shared::common
 {
+	namespace
+	{
+		// ffp_state keeps c0-c255 and reads a matrix as four registers from its start
+		constexpr int CAPTURED_VS_REGISTERS = 256;
+
+		bool holds_matrix(const int start, const int end)
+		{
+			return start >= 0 && start + 4 <= CAPTURED_VS_REGISTERS && end > start && end <= CAPTURED_VS_REGISTERS;
+		}
+	}
+
 	config& config::get()
 	{
 		static config instance;
@@ -70,8 +81,39 @@ namespace shared::common
 		if (ffp.albedo_stage < 0 || ffp.albedo_stage > 7)
 			ffp.albedo_stage = 0;
 
+		// [FFP.Registers]
+		auto& regs = ffp.registers;
+		regs.view_start = get_int("FFP.Registers", "ViewStart", regs.view_start);
+		regs.view_end = get_int("FFP.Registers", "ViewEnd", regs.view_end);
+		regs.proj_start = get_int("FFP.Registers", "ProjStart", regs.proj_start);
+		regs.proj_end = get_int("FFP.Registers", "ProjEnd", regs.proj_end);
+		regs.world_start = get_int("FFP.Registers", "WorldStart", regs.world_start);
+		regs.world_end = get_int("FFP.Registers", "WorldEnd", regs.world_end);
+		if (!holds_matrix(regs.view_start, regs.view_end) ||
+			!holds_matrix(regs.proj_start, regs.proj_end) ||
+			!holds_matrix(regs.world_start, regs.world_end))
+		{
+			log("Config", "[FFP.Registers] names a matrix outside c0-c255 or an End that is not above its Start; using the default layout",
+				LOG_TYPE::LOG_TYPE_ERROR, true);
+			regs = {};
+		}
+
 		// [Skinning]
 		skinning.enabled = get_bool("Skinning", "Enabled", false);
+		skinning.bone_threshold = get_int("Skinning", "BoneThreshold", skinning.bone_threshold);
+		skinning.regs_per_bone = get_int("Skinning", "RegsPerBone", skinning.regs_per_bone);
+		skinning.bone_min_regs = get_int("Skinning", "BoneMinRegs", skinning.bone_min_regs);
+		if (skinning.bone_threshold < 0 || skinning.bone_threshold >= CAPTURED_VS_REGISTERS ||
+			(skinning.regs_per_bone != 3 && skinning.regs_per_bone != 4) ||
+			skinning.bone_min_regs < 1)
+		{
+			log("Config", "[Skinning] needs BoneThreshold in 0-255, RegsPerBone 3 or 4 and BoneMinRegs 1 or more; using the default bone layout",
+				LOG_TYPE::LOG_TYPE_ERROR, true);
+			const skinning_settings defaults;
+			skinning.bone_threshold = defaults.bone_threshold;
+			skinning.regs_per_bone = defaults.regs_per_bone;
+			skinning.bone_min_regs = defaults.bone_min_regs;
+		}
 
 		// [Diagnostics]
 		diagnostics.enabled = get_bool("Diagnostics", "Enabled", true);
@@ -92,6 +134,7 @@ namespace shared::common
 		log("Config", std::format("Loaded from: {}", ini_path_));
 		log("Config", std::format("FFP={} AlbedoStage={}", ffp.enabled ? 1 : 0, ffp.albedo_stage));
 		if (skinning.enabled)
-			log("Config", "Skinning ENABLED", LOG_TYPE::LOG_TYPE_WARN);
+			log("Config", std::format("Skinning ENABLED: bones from c{}, {} registers each, uploads of {} registers or more",
+				skinning.bone_threshold, skinning.regs_per_bone, skinning.bone_min_regs), LOG_TYPE::LOG_TYPE_WARN);
 	}
 }

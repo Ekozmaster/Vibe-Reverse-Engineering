@@ -6,7 +6,7 @@ namespace comp::game
 
 	struct some_struct_containing_matrices
 	{
-		D3DXMATRIX view;
-		D3DXMATRIX proj;
+		D3DMATRIX view;
+		D3DMATRIX proj;
 	};
 }

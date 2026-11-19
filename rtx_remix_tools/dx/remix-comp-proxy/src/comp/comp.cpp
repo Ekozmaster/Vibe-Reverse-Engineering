@@ -25,42 +25,21 @@ namespace comp
 		const auto& im = imgui::get();
 		if (im->m_dbg_use_fake_camera)
 		{
-			D3DXMATRIX view_matrix
-			(
-				1.0f, 0.0f, 0.0f, 0.0f,
-				0.0f, 0.447f, 0.894f, 0.0f,
-				0.0f, -0.894f, 0.447f, 0.0f,
-				0.0f, 100.0f, -50.0f, 1.0f
-			);
+			// No roll, for simplicity
+			const auto rotation = DirectX::XMMatrixRotationRollPitchYaw(
+				DEG2RAD(im->m_dbg_camera_pitch), DEG2RAD(im->m_dbg_camera_yaw), 0.0f);
 
-			D3DXMATRIX proj_matrix
-			(
-				1.359f, 0.0f, 0.0f, 0.0f,
-				0.0f, 2.414f, 0.0f, 0.0f,
-				0.0f, 0.0f, 1.001f, 1.0f,
-				0.0f, 0.0f, -1.0f, 0.0f
-			);
+			// Negated: a camera moves the world the opposite way
+			const auto translation = DirectX::XMMatrixTranslation(
+				-im->m_dbg_camera_pos[0], -im->m_dbg_camera_pos[1], -im->m_dbg_camera_pos[2]);
 
-			// Construct view matrix
-			D3DXMATRIX rotation, translation;
-			D3DXMatrixRotationYawPitchRoll(&rotation,
-				D3DXToRadian(im->m_dbg_camera_yaw),		// Yaw in radians
-				D3DXToRadian(im->m_dbg_camera_pitch),	// Pitch in radians
-				0.0f);									// No roll for simplicity
+			const auto view_matrix = shared::utils::to_d3dmatrix(DirectX::XMMatrixMultiply(rotation, translation));
 
-			D3DXMatrixTranslation(&translation,
-				-im->m_dbg_camera_pos[0], // Negate for camera (moves world opposite)
-				-im->m_dbg_camera_pos[1],
-				-im->m_dbg_camera_pos[2]);
-
-			D3DXMatrixMultiply(&view_matrix, &rotation, &translation);
-
-			// Construct projection matrix
-			D3DXMatrixPerspectiveFovLH(&proj_matrix,
-				D3DXToRadian(im->m_dbg_camera_fov), // FOV in radians
+			const auto proj_matrix = shared::utils::to_d3dmatrix(DirectX::XMMatrixPerspectiveFovLH(
+				DEG2RAD(im->m_dbg_camera_fov),
 				im->m_dbg_camera_aspect,
 				im->m_dbg_camera_near_plane,
-				im->m_dbg_camera_far_plane);
+				im->m_dbg_camera_far_plane));
 
 			shared::globals::d3d_device->SetTransform(D3DTS_WORLD, &shared::globals::IDENTITY);
 			shared::globals::d3d_device->SetTransform(D3DTS_VIEW, &view_matrix);

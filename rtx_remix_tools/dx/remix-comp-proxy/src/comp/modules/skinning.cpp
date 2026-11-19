@@ -41,10 +41,13 @@ namespace comp
 			return dev->DrawIndexedPrimitive(pt, base_vtx, min_vtx, num_verts, start_idx, prim_count);
 		}
 
-		// Get expanded vertex buffer from cache or create new
+		// Get expanded vertex buffer from cache or create new.
+		// The draw reads num_verts vertices of the stream, from vertex base_vtx + min_vtx on.
 		auto* src_vb = ffp.stream_vb(0);
 		UINT stride = ffp.stream_stride(0);
-		auto* exp_vb = get_expanded_vb(dev, src_vb, base_vtx, num_verts, stride);
+		const INT first_vtx = base_vtx + static_cast<INT>(min_vtx);
+		auto* exp_vb = first_vtx < 0 ? nullptr
+			: get_expanded_vb(dev, src_vb, ffp.stream_offset(0) + static_cast<UINT>(first_vtx) * stride, num_verts, stride);
 
 		if (!exp_vb)
 		{
@@ -54,6 +57,7 @@ namespace comp
 
 		// Engage FFP with skinning
 		ffp.engage(dev);
+		ffp.setup_albedo_texture(dev);
 		upload_bones(dev);
 
 		// Swap in expanded VB and declaration
@@ -62,7 +66,8 @@ namespace comp
 		dev->SetVertexDeclaration(skin_exp_decl_);
 		dev->SetStreamSource(0, exp_vb, 0, SKIN_VTX_SIZE);
 
-		auto hr = dev->DrawIndexedPrimitive(pt, 0, 0, num_verts, start_idx, prim_count);
+		// Vertex 0 of the expanded buffer is the vertex the index min_vtx names
+		auto hr = dev->DrawIndexedPrimitive(pt, -static_cast<INT>(min_vtx), min_vtx, num_verts, start_idx, prim_count);
 
 		// Restore original state
 		dev->SetVertexDeclaration(orig_decl);
@@ -70,6 +75,7 @@ namespace comp
 		dev->SetStreamSource(0, src_vb, ffp.stream_offset(0), stride);
 
 		disable_skinning(dev);
+		ffp.restore_world(dev);	// bone 0 went to WORLDMATRIX(0), which is D3DTS_WORLD
 		ffp.restore_textures(dev);
 
 		return hr;
@@ -108,46 +114,41 @@ namespace comp
 
 	void skinning::release_cache()
 	{
-		for (int i = 0; i < SKIN_CACHE_SIZE; i++)
+		for (auto& entry : skin_exp_cache_)
 		{
-			if (skin_exp_vb_[i])
-			{
-				skin_exp_vb_[i]->Release();
-				skin_exp_vb_[i] = nullptr;
-			}
-			skin_exp_key_[i] = 0;
-			skin_exp_nv_[i] = 0;
+			if (entry.expanded)
+				entry.expanded->Release();
+			entry = {};
 		}
 	}
 
 	IDirect3DVertexBuffer9* skinning::get_expanded_vb(IDirect3DDevice9* dev,
-		IDirect3DVertexBuffer9* src_vb, INT base_vtx, UINT num_verts, UINT stride)
+		IDirect3DVertexBuffer9* src_vb, UINT first_byte, UINT num_verts, UINT stride)
 	{
 		if (!src_vb || stride == 0 || num_verts == 0) return nullptr;
 
-		// Hash: src_vb pointer + base_vtx + num_verts + stride
-		unsigned int key = static_cast<unsigned int>(reinterpret_cast<uintptr_t>(src_vb));
-		key ^= static_cast<unsigned int>(base_vtx) * 0x9E3779B9u;
-		key ^= num_verts * 0x517CC1B7u;
-		key ^= stride * 0x6C62272Eu;
+		auto* src_decl = shared::common::ffp_state::get().last_decl();
 
-		int slot = key % SKIN_CACHE_SIZE;
+		unsigned int hash = static_cast<unsigned int>(reinterpret_cast<uintptr_t>(src_vb));
+		hash ^= first_byte * 0x9E3779B9u;
+		hash ^= num_verts * 0x517CC1B7u;
+		hash ^= stride * 0x6C62272Eu;
+
+		auto& entry = skin_exp_cache_[hash % SKIN_CACHE_SIZE];
 
 		// Cache hit
-		if (skin_exp_vb_[slot] && skin_exp_key_[slot] == key && skin_exp_nv_[slot] == num_verts)
-			return skin_exp_vb_[slot];
+		if (entry.expanded && entry.source == src_vb && entry.source_decl == src_decl &&
+			entry.first_byte == first_byte && entry.num_verts == num_verts && entry.stride == stride)
+			return entry.expanded;
 
 		// Cache miss: evict and create
-		if (skin_exp_vb_[slot])
-		{
-			skin_exp_vb_[slot]->Release();
-			skin_exp_vb_[slot] = nullptr;
-		}
+		if (entry.expanded)
+			entry.expanded->Release();
+		entry = {};
 
 		// Lock source VB
 		unsigned char* src_data = nullptr;
-		UINT read_off = static_cast<UINT>(base_vtx) * stride;
-		if (FAILED(src_vb->Lock(read_off, num_verts * stride, reinterpret_cast<void**>(&src_data), D3DLOCK_READONLY)))
+		if (FAILED(src_vb->Lock(first_byte, num_verts * stride, reinterpret_cast<void**>(&src_data), D3DLOCK_READONLY)))
 			return nullptr;
 
 		// Create expanded VB
@@ -174,9 +175,7 @@ namespace comp
 		exp_vb->Unlock();
 		src_vb->Unlock();
 
-		skin_exp_vb_[slot] = exp_vb;
-		skin_exp_key_[slot] = key;
-		skin_exp_nv_[slot] = num_verts;
+		entry = { src_vb, src_decl, first_byte, num_verts, stride, exp_vb };
 
 		return exp_vb;
 	}
@@ -195,7 +194,9 @@ namespace comp
 		auto bw_off = ffp.cur_decl_blend_weight_off();
 		auto bw_type = ffp.cur_decl_blend_weight_type();
 
-		if (bw_type == D3DDECLTYPE_FLOAT3 || bw_type == D3DDECLTYPE_FLOAT2 || bw_type == D3DDECLTYPE_FLOAT1)
+		// A FLOAT4's fourth weight is left out: fixed-function blending derives the last weight from the others
+		if (bw_type == D3DDECLTYPE_FLOAT4 || bw_type == D3DDECLTYPE_FLOAT3 ||
+			bw_type == D3DDECLTYPE_FLOAT2 || bw_type == D3DDECLTYPE_FLOAT1)
 		{
 			auto* bw = reinterpret_cast<const float*>(&src[bw_off]);
 			out[3] = (num_weights >= 1) ? bw[0] : 0.0f;
@@ -264,7 +265,7 @@ namespace comp
 
 		const float* vs_const = ffp.vs_const_data();
 		int regs_per_bone = ffp.regs_per_bone();
-		int max_bones = (num_bones > 48) ? 48 : num_bones;
+		int max_bones = (num_bones > MAX_BONES) ? MAX_BONES : num_bones;
 
 		for (int i = 0; i < max_bones; i++)
 		{

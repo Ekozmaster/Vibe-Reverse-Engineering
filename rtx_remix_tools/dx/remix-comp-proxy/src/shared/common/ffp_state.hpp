@@ -43,6 +43,9 @@ namespace shared::common
 		// Restore original texture bindings on all 8 stages. Call after draw.
 		void restore_textures(IDirect3DDevice9* dev);
 
+		// Send the world transform again. Call after a draw that used D3DTS_WORLD for something else.
+		void restore_world(IDirect3DDevice9* dev);
+
 		// --- Read-only accessors for renderer ---
 
 		bool is_enabled() const { return enabled_; }
@@ -79,16 +82,15 @@ namespace shared::common
 		UINT stream_offset(UINT stream) const { return stream < 4 ? stream_offset_[stream] : 0; }
 		UINT stream_stride(UINT stream) const { return stream < 4 ? stream_stride_[stream] : 0; }
 
-		// VS constant register layout (game-specific, edit defaults when porting)
-		int reg_view_start() const { return vs_reg_view_start_; }
-		int reg_view_end() const { return vs_reg_view_end_; }
-		int reg_proj_start() const { return vs_reg_proj_start_; }
-		int reg_proj_end() const { return vs_reg_proj_end_; }
-		int reg_world_start() const { return vs_reg_world_start_; }
-		int reg_world_end() const { return vs_reg_world_end_; }
-		int reg_bone_threshold() const { return vs_reg_bone_threshold_; }
-		int regs_per_bone() const { return vs_regs_per_bone_; }
-		int bone_min_regs() const { return vs_bone_min_regs_; }
+		// VS constant register layout: [FFP.Registers] and [Skinning] in remix-comp-proxy.ini
+		int reg_view_start() const { return config::get().ffp.registers.view_start; }
+		int reg_view_end() const { return config::get().ffp.registers.view_end; }
+		int reg_proj_start() const { return config::get().ffp.registers.proj_start; }
+		int reg_proj_end() const { return config::get().ffp.registers.proj_end; }
+		int reg_world_start() const { return config::get().ffp.registers.world_start; }
+		int reg_world_end() const { return config::get().ffp.registers.world_end; }
+		int reg_bone_threshold() const { return config::get().skinning.bone_threshold; }
+		int regs_per_bone() const { return config::get().skinning.regs_per_bone; }
 
 		// Skinning data (populated by skinning module via on_set_vs_const_f bone detection)
 		int bone_start_reg() const { return bone_start_reg_; }
@@ -118,6 +120,7 @@ namespace shared::common
 
 		// Dirty tracking
 		bool world_dirty_ = false;
+		bool world_written_ = false;
 		bool view_proj_dirty_ = false;
 		bool view_proj_valid_ = false;
 		bool ffp_active_ = false;
@@ -145,17 +148,6 @@ namespace shared::common
 		int cur_decl_pos_off_ = 0;
 		int cur_decl_normal_off_ = 0;
 		int cur_decl_normal_type_ = -1;
-
-		// VS constant register layout (game-specific defaults — edit when porting)
-		int vs_reg_view_start_ = 0;
-		int vs_reg_view_end_ = 4;
-		int vs_reg_proj_start_ = 4;
-		int vs_reg_proj_end_ = 8;
-		int vs_reg_world_start_ = 16;
-		int vs_reg_world_end_ = 20;
-		int vs_reg_bone_threshold_ = 20;
-		int vs_regs_per_bone_ = 3;
-		int vs_bone_min_regs_ = 3;
 
 		// Bone detection
 		int bone_start_reg_ = 0;

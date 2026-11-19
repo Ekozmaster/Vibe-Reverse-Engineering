@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rtx_remix_tools" / "dx" / "scripts"))
 
 from d3d9_calls import PUSH_EAX, PUSH_ECX, Code, call_method, push, push32, write_pe32, write_pe32_plus
+from proxy_template import ini_section_in, keys_of, keys_the_proxy_reads
 
 # IDirect3DDevice9 vtable offsets
 PRESENT, CREATE_TEXTURE, SET_TRANSFORM, SET_RENDER_STATE = 0x44, 0x5C, 0xB0, 0xE4
@@ -111,6 +112,11 @@ class TestMatrixRegisters:
     def test_field_read_at_the_method_offset_reports_no_registers(self, text):
         assert "c16-c47" not in text and "c32-" not in text
 
+    def test_suggested_layout_is_an_ini_section_the_proxy_reads(self, text):
+        layout = ini_section_in(text, "FFP.Registers")
+        assert dict(layout["FFP.Registers"]) == {"WorldStart": "8", "WorldEnd": "12"}
+        assert keys_of(layout) <= keys_the_proxy_reads()
+
 
 class TestRenderStates:
     @pytest.fixture(scope="class")
@@ -179,6 +185,11 @@ class TestSkinning:
 
     def test_skinned_fvf(self, text):
         assert "0x0000001A" in text
+
+    def test_suggested_configuration_is_an_ini_section_the_proxy_reads(self, text):
+        suggestion = ini_section_in(text, "Skinning")
+        assert dict(suggestion["Skinning"]) == {"Enabled": "1", "BoneThreshold": "20", "RegsPerBone": "3"}
+        assert keys_of(suggestion) <= keys_the_proxy_reads()
 
 
 class TestBlendStates:

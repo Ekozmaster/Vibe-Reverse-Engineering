@@ -73,22 +73,21 @@ mkdir "%GAME_OUT%" 2>nul
 mkdir "%GAME_OBJ%" 2>nul
 
 :: Include paths
-set "INC=/I"%SRC%" /I"%DEPS%\bridge_api" /I"%DEPS%\dxsdk\Include" /I"%DEPS%\imgui" /I"%DEPS%\minhook\include""
-
-:: Lib search path
-set "LIBPATH=/LIBPATH:"%DEPS%\dxsdk\Lib\x86""
+set "INC=/I"%SRC%" /I"%DEPS%\bridge_api" /I"%DEPS%\imgui" /I"%DEPS%\minhook\include""
 
 :: Common compiler flags
 set "CF=/nologo /std:c++latest /W4 /MP /EHsc /Zm100"
 set "CF=%CF% /wd4239 /wd4369 /wd4505 /wd4996 /wd5311 /wd6001 /wd6385 /wd6386 /wd26812"
 set "CF=%CF% /D_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS /D_WINDOWS /DWIN32"
 
-:: Config-specific flags
+:: Config-specific flags. DEPS_CF is for minhook and imgui, which have to use the same C runtime.
 if /i "%CONFIG%"=="release" (
     set "CF=%CF% /O2 /GL /Gy /Oi /GF /MT /Zi /DNDEBUG /WX"
+    set "DEPS_CF=/O2 /MT"
     set "LF=/LTCG /OPT:REF /OPT:ICF"
 ) else (
     set "CF=%CF% /Od /MTd /ZI /DDEBUG /D_DEBUG"
+    set "DEPS_CF=/Od /MTd"
     set "LF="
 )
 
@@ -104,7 +103,7 @@ echo.
 :: -------------------------------------------------------
 echo [1/4] minhook
 set "MH_SRC=%DEPS%\minhook\src"
-cl /nologo /c /W0 /MP /MT /O2 ^
+cl /nologo /c /W0 /MP %DEPS_CF% ^
     /I"%DEPS%\minhook\include" ^
     /Fo"%OBJ%\minhook\\" ^
     "%MH_SRC%\buffer.c" ^
@@ -121,7 +120,7 @@ if errorlevel 1 goto :fail
 :: -------------------------------------------------------
 echo [2/4] imgui
 set "IM=%DEPS%\imgui"
-cl /nologo /c /W0 /MP /std:c++latest /MT /O2 /EHsc ^
+cl /nologo /c /W0 /MP /std:c++latest %DEPS_CF% /EHsc ^
     /I"%IM%" ^
     /Fo"%OBJ%\imgui\\" ^
     "%IM%\imgui.cpp" ^
@@ -195,7 +194,7 @@ cl /nologo /c %CF% %INC% /I"%COMP_DIR%\.." ^
 if errorlevel 1 goto :fail
 
 :: Link DLL as d3d9.dll proxy (exports via .def, no d3d9.lib import)
-link /nologo /DLL /SUBSYSTEM:WINDOWS /DEBUG /PDBCompress %LF% %LIBPATH% ^
+link /nologo /DLL /SUBSYSTEM:WINDOWS /DEBUG /PDBCompress %LF% ^
     /DEF:"%ROOT%d3d9.def" ^
     /OUT:"%GAME_OUT%\d3d9.dll" ^
     /PDB:"%GAME_OUT%\%NAME%.pdb" ^
@@ -203,7 +202,7 @@ link /nologo /DLL /SUBSYSTEM:WINDOWS /DEBUG /PDBCompress %LF% %LIBPATH% ^
     "%OUT%\_shared.lib" ^
     "%OUT%\imgui.lib" ^
     "%OUT%\minhook.lib" ^
-    d3dx9.lib psapi.lib user32.lib gdi32.lib shell32.lib advapi32.lib ole32.lib
+    windowscodecs.lib psapi.lib user32.lib gdi32.lib shell32.lib advapi32.lib ole32.lib
 if errorlevel 1 goto :fail
 
 :: Copy INI to build output (game-specific copy takes priority over template)

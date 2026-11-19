@@ -1,11 +1,70 @@
 #include "std_include.hpp"
 #include "shared/globals.hpp"
 
+#include <objbase.h>
+#include <wincodec.h>
+#include <wrl/client.h>
+
 #define VA_BUFFER_COUNT		64
 #define VA_BUFFER_SIZE		65536
 
 namespace shared::utils
 {
+	namespace
+	{
+		HRESULT decode_image_to_texture(IDirect3DDevice9* device, const std::wstring& path, IDirect3DTexture9** texture)
+		{
+			using Microsoft::WRL::ComPtr;
+
+			ComPtr<IWICImagingFactory> factory;
+			HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+			if (FAILED(hr)) return hr;
+
+			ComPtr<IWICBitmapDecoder> decoder;
+			hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+			if (FAILED(hr)) return hr;
+
+			ComPtr<IWICBitmapFrameDecode> frame;
+			hr = decoder->GetFrame(0, &frame);
+			if (FAILED(hr)) return hr;
+
+			// 32bppBGRA has the byte order of D3DFMT_A8R8G8B8
+			ComPtr<IWICFormatConverter> pixels;
+			hr = factory->CreateFormatConverter(&pixels);
+			if (FAILED(hr)) return hr;
+			hr = pixels->Initialize(frame.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+			if (FAILED(hr)) return hr;
+
+			UINT width = 0, height = 0;
+			hr = pixels->GetSize(&width, &height);
+			if (FAILED(hr)) return hr;
+
+			ComPtr<IDirect3DTexture9> created;
+			hr = device->CreateTexture(width, height, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &created, nullptr);
+			if (FAILED(hr)) return hr;
+
+			D3DLOCKED_RECT locked;
+			hr = created->LockRect(0, &locked, nullptr, 0);
+			if (FAILED(hr)) return hr;
+			hr = pixels->CopyPixels(nullptr, locked.Pitch, locked.Pitch * height, static_cast<BYTE*>(locked.pBits));
+			created->UnlockRect(0);
+			if (FAILED(hr)) return hr;
+
+			*texture = created.Detach();
+			return S_OK;
+		}
+	}
+
+	HRESULT create_texture_from_file(IDirect3DDevice9* device, const char* path, IDirect3DTexture9** texture)
+	{
+		// The decoder is a COM object, and the calling thread may not have COM yet.
+		// A thread already in another apartment mode (RPC_E_CHANGED_MODE) can use it as it is.
+		const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+		const HRESULT hr = decode_image_to_texture(device, std::filesystem::path(path).wstring(), texture);
+		if (SUCCEEDED(com)) CoUninitialize();
+		return hr;
+	}
+
 	const char* va(const char* fmt, ...)
 	{
 		static char g_vaBuffer[VA_BUFFER_COUNT][VA_BUFFER_SIZE];
@@ -38,7 +97,7 @@ namespace shared::utils
 		return result;
 	}
 
-	void transpose_float3x4_to_d3dxmatrix(const float3x4& src, D3DXMATRIX& dest)
+	void transpose_float3x4_to_d3dmatrix(const float3x4& src, D3DMATRIX& dest)
 	{
 		dest.m[0][0] = src.m[0][0];
 		dest.m[0][1] = src.m[1][0];
@@ -61,13 +120,13 @@ namespace shared::utils
 		dest.m[3][3] = 1.0f;
 	}
 
-	void transpose_d3dxmatrix(const D3DXMATRIX* input, D3DXMATRIX* output, const std::uint32_t count)
+	void transpose_d3dmatrix(const D3DMATRIX* input, D3DMATRIX* output, const std::uint32_t count)
 	{
 		for (auto i = 0u; i < count; ++i)
 		{
-			D3DXMATRIX& out = output[i];
+			D3DMATRIX& out = output[i];
 
-			// column-major D3DXMATRIX from row-major 3x4
+			// column-major D3DMATRIX from row-major 3x4
 			out._11 = input[i].m[0][0]; out._12 = input[i].m[1][0]; out._13 = input[i].m[2][0]; out._14 = input[i].m[3][0];
 			out._21 = input[i].m[0][1]; out._22 = input[i].m[1][1]; out._23 = input[i].m[2][1]; out._24 = input[i].m[3][1];
 			out._31 = input[i].m[0][2]; out._32 = input[i].m[1][2]; out._33 = input[i].m[2][2]; out._34 = input[i].m[3][2];
@@ -240,7 +299,7 @@ namespace shared::utils
 			BYTE UsageIndex;	// Semantic index
 		};
 
-		d3dvertelem decl[MAX_FVF_DECL_SIZE]; UINT numElements = 0;
+		d3dvertelem decl[MAXD3DDECLLENGTH + 1]; UINT numElements = 0;	// + 1 for D3DDECL_END
 		vertex_decl->GetDeclaration((D3DVERTEXELEMENT9*)decl, &numElements);
 		int break_me = 1; // breakpint and look into decl
 #endif

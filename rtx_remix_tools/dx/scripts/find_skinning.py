@@ -207,7 +207,7 @@ def find_bone_palettes(text_data, text_va):
     """Detect bone palette uploads from SetVertexShaderConstantF patterns.
 
     Heuristic: start_reg >= 20, count >= 9, count divisible by 3 or 4.
-    These match the proxy's auto-detection in ffp_state.cpp.
+    The proxy applies its own thresholds, the [Skinning] keys of remix-comp-proxy.ini.
     """
     sites = scan_vtable_calls(text_data, text_va, 0x178)
     sites += [(va, 'indirect') for va, _ in scan_vtable_mov(text_data, text_va, 0x178)]
@@ -494,9 +494,9 @@ def main():
         print("  [Skinning]")
         print("  Enabled=1")
         if best_start is not None:
-            print(f"  ; bone_threshold={best_start} (auto-detected)")
+            print(f"  BoneThreshold={best_start}")
         if best_rpb is not None:
-            print(f"  ; regs_per_bone={best_rpb} (auto-detected)")
+            print(f"  RegsPerBone={best_rpb}")
         print(f"  ; SKIN_VTX_SIZE={PROXY_SKIN_VTX_SIZE} (fixed proxy layout)")
         if skinned_decls:
             bw_summary = ", ".join(sorted(
