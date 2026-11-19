@@ -41,6 +41,13 @@ _PROBE_SEES_NO_RETURN = (
     "and never sees a return."
 )
 
+_STEP_MODES = ("into", "over", "out")
+_STEP_GIVEN_UP = (
+    "step did not end within {timeout} s and was given up: the call being stepped over, "
+    "or the function being stepped out of, has not returned. The thread is running. To "
+    "stop it later, set a breakpoint where it will arrive and wait with watch."
+)
+
 
 class Daemon:
     def __init__(self, target: str, *, spawn: bool = False):
@@ -150,8 +157,8 @@ class Daemon:
                     if ev:
                         ev.set()
 
-            elif ptype == "trace_error":
-                print(f"[agent trace_error] {payload}", file=sys.stderr)
+            elif ptype in ("trace_error", "agent_error"):
+                print(f"[agent {ptype}] {payload}", file=sys.stderr)
 
             elif ptype == "steptrace_done":
                 self._steptrace_event.set()
@@ -203,14 +210,17 @@ class Daemon:
         resp = {**self._base_resp(), "ok": result.get("ok", False)}
         resp["bpId"] = result.get("id")
         resp["msg"] = result.get("msg", "")
+        if "error" in result:
+            resp["error"] = result["error"]
         return resp
 
     def _cmd_bp_del(self, cmd: dict) -> dict:
+        """Remove a breakpoint. A thread frozen at it is released as well."""
         addr = cmd["addr"]
-        if self.api.is_frozen() and self.api.get_frozen_addr() == addr:
-            self.script.post({"type": "resume"})
-            time.sleep(0.05)
+        frozen_addr = self.api.get_frozen_addr()
         result = self.api.remove_bp(addr)
+        if result.get("ok") and frozen_addr and int(frozen_addr, 16) == int(addr, 16):
+            self.api.unfreeze(None)
         return {**self._base_resp(), **result}
 
     def _cmd_bp_list(self, cmd: dict) -> dict:
@@ -303,107 +313,36 @@ class Daemon:
         return {**self._base_resp(), "ok": True, "frames": frames}
 
     def _cmd_resume(self, cmd: dict) -> dict:
-        if not self.api.is_frozen():
+        if not self.api.unfreeze(None):
             return {**self._base_resp(), "ok": False, "error": "not frozen"}
-        self.script.post({"type": "resume"})
-        time.sleep(0.05)
         return {**self._base_resp(), "ok": True}
 
     def _cmd_step(self, cmd: dict) -> dict:
+        """Run the frozen thread for one step and report where it froze again.
+
+        into: one instruction. over: one instruction, but a call (or a repeated
+        string instruction) runs to its end. out: until the current function
+        has returned to its caller. A step that outlasts the timeout is given
+        up, so nothing is left waiting to freeze the thread later.
+        """
         mode = cmd.get("mode", "over")
-        if not self.api.is_frozen():
-            return {**self._base_resp(), "ok": False, "error": "not frozen"}
-        regs = self.api.get_registers()
-        is_x64 = regs.get("_arch") == "x64"
-        eip = "0x" + regs["rip" if is_x64 else "eip"]
-        esp = "0x" + regs["rsp" if is_x64 else "esp"]
-        ptr_size = 8 if is_x64 else 4
-        insns = self.api.disasm_at(eip, 2)
-        if not insns:
-            return {**self._base_resp(), "ok": False, "error": "disasm failed at EIP"}
-        current = insns[0]
-        mnemonic = current.get("mnemonic", "")
-        size = current.get("size", 0)
-        op_str = current.get("opStr", "")
-        eip_int = int(eip, 16)
-        next_seq = f"0x{eip_int + size:08X}"
-
-        def _resolve():
-            try:
-                return f"0x{int(op_str, 16):08X}"
-            except ValueError:
-                return None
-
-        is_call = mnemonic == "call"
-        is_uncond_jmp = mnemonic == "jmp"
-        is_cond_jmp = mnemonic.startswith("j") and not is_uncond_jmp
-        secondary_addr = None
-
-        if mode == "over":
-            if is_call:
-                next_addr = next_seq
-            elif is_uncond_jmp:
-                t = _resolve()
-                next_addr = t if t else next_seq
-            elif is_cond_jmp:
-                t = _resolve()
-                next_addr = next_seq
-                if t:
-                    self.api.install_bp(t)
-                    secondary_addr = t
-            else:
-                next_addr = next_seq
-        elif mode == "into":
-            if is_call or is_uncond_jmp:
-                t = _resolve()
-                next_addr = t if t else next_seq
-            else:
-                next_addr = next_seq
-        elif mode == "out":
-            ret_raw = self.api.read_memory(esp, ptr_size)
-            if ret_raw is None:
-                return {**self._base_resp(), "ok": False, "error": "cannot read return address"}
-            ret_addr = int.from_bytes(bytes(ret_raw), "little")
-            next_addr = f"0x{ret_addr:08X}"
-        else:
+        if mode not in _STEP_MODES:
             return {**self._base_resp(), "ok": False, "error": f"unknown step mode: {mode}"}
-
-        self.api.install_bp(next_addr)
         with self._lock:
             self._hit = None
             self._hit_event.clear()
-        self.script.post({"type": "resume"})
+        if not self.api.unfreeze(mode):
+            return {**self._base_resp(), "ok": False, "error": "not frozen"}
 
-        deadline = time.time() + 10
-        hit = None
-        while time.time() < deadline:
-            remaining = max(0.1, deadline - time.time())
-            self._hit_event.wait(timeout=min(remaining, 0.5))
-            with self._lock:
-                if self._hit is not None:
-                    hit = self._hit
-                    self._hit = None
-                    self._hit_event.clear()
-                    break
-            try:
-                if self.api.is_frozen():
-                    time.sleep(0.1)
-                    with self._lock:
-                        if self._hit is not None:
-                            hit = self._hit
-                            self._hit = None
-                            self._hit_event.clear()
-                    break
-            except Exception:
-                pass
-
-        self.api.remove_bp(next_addr)
-        if secondary_addr:
-            self.api.remove_bp(secondary_addr)
-        if hit is None and not self.api.is_frozen():
-            return {**self._base_resp(), "ok": False, "error": "step timed out (10s)"}
-        snap = self.api.get_snapshot(8, 8)
-        return {**self._base_resp(), "ok": True, "snapshot": snap}
+        timeout = cmd.get("timeout", 10)
+        if not self._hit_event.wait(timeout=timeout):
+            self.api.cancel_step()
+        with self._lock:
+            stopped = self._hit is not None
+        if not stopped:
+            return {**self._base_resp(), "ok": False,
+                    "error": _STEP_GIVEN_UP.format(timeout=timeout)}
+        return self._consume_hit()
 
     def _cmd_scan(self, cmd: dict) -> dict:
         pattern = cmd["pattern"]
@@ -416,12 +355,8 @@ class Daemon:
         return {**self._base_resp(), "ok": True, "results": results}
 
     def _cmd_detach(self, cmd: dict) -> dict:
-        try:
-            if self.api and self.api.is_frozen():
-                self.script.post({"type": "resume"})
-                time.sleep(0.05)
-        except Exception:
-            pass
+        """Stop the daemon. Unloading the agent removes its breakpoints and
+        releases a frozen thread."""
         self._running = False
         return {**self._base_resp(), "ok": True, "msg": "detaching"}
 
@@ -628,7 +563,8 @@ class Daemon:
         self._steptrace_event.clear()
         result = self.api.install_step_trace(addr, config)
         if not result.get("ok"):
-            return {**self._base_resp(), "ok": False, "error": "install_step_trace failed"}
+            return {**self._base_resp(), "ok": False,
+                    "error": result.get("error", "install_step_trace failed")}
 
         timeout = cmd.get("timeout", 30)
         self._steptrace_event.wait(timeout=timeout)

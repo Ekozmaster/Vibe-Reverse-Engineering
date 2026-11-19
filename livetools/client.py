@@ -134,9 +134,10 @@ def format_snapshot(snap: dict, header: str = "BREAKPOINT HIT") -> str:
     addr = snap.get("addr", "????????")
     if not addr.startswith("0x"):
         addr = "0x" + addr
-    bp_id = snap.get("bpId", "?")
-    hit = snap.get("hitCount", "?")
-    lines.append(f"=== {header} === {addr} (bp#{bp_id}, hit #{hit})")
+    title = f"=== {header} === {addr}"
+    if snap.get("bpId"):
+        title += f" (bp#{snap['bpId']}, hit #{snap.get('hitCount', '?')})"
+    lines.append(title)
     lines.append("")
 
     regs = snap.get("regs", {})

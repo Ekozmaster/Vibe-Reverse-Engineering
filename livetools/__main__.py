@@ -26,9 +26,9 @@ Inspection:
     python -m livetools mem write <addr> <hex_bytes>
 
 Non-blocking tracing:
-    python -m livetools trace <addr> [--count N] [--read SPEC] [--filter EXPR]
+    python -m livetools trace <addr> [--probe] [--count N] [--read SPEC] [--filter EXPR]
     python -m livetools steptrace <addr> [--max-insn N] [--call-depth D]
-    python -m livetools collect <addr> [addr2 ...] [--duration N] [--fence ADDR]
+    python -m livetools collect <addr> [addr2 ...] [--probe] [--duration N] [--fence ADDR]
     python -m livetools modules [--filter PATTERN]
 
 Offline analysis:
@@ -763,10 +763,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- control --
     sp = sub.add_parser("step",
-        help="Single-step one instruction (must be frozen at a bp)")
+        help="Run the frozen thread for one step (after a breakpoint hit or an earlier step)",
+        description=(
+            "Run the frozen thread for one step and freeze it again.\n\n"
+            "  over   one instruction; a call runs until it returns (default)\n"
+            "  into   one instruction; a call is entered\n"
+            "  out    until the current function has returned to its caller\n\n"
+            "A step that has not ended after 10 seconds (a call that blocks, a\n"
+            "function that keeps looping) is given up with an error and the\n"
+            "thread runs on. To stop it later, set a breakpoint and use 'watch'."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     sp.add_argument("mode", nargs="?", default="over",
         choices=["over", "into", "out"],
-        help="'over' skips calls, 'into' enters, 'out' runs to return (default: over)")
+        help="How far to run (default: over)")
 
     sub.add_parser("resume", help="Resume execution (unfreeze from breakpoint)")
 

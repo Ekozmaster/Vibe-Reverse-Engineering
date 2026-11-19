@@ -40,7 +40,7 @@ Full syntax and recipes: the `/dynamic-analysis` skill (canonical livetools refe
 - `livetools attach <name_or_pid>` — attach to running process
 - `livetools attach <path> --spawn` — launch exe suspended, instrument, resume (catches init code)
 - `livetools trace` / `steptrace` / `collect` — hit logging, register reads, instruction traces
-- `livetools bp` / `watch` / `regs` / `stack` / `bt` — breakpoints + inspection
+- `livetools bp` / `watch` / `step` / `resume` / `regs` / `stack` / `bt` — breakpoints, single-stepping, inspection
 - `livetools mem read/write/alloc` / `scan` — memory ops
 - `livetools dipcnt` / `memwatch` — D3D9 draw counters, first-access watch on a memory page (read or write)
 - `livetools vishook` — selective visibility override via code cave

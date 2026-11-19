@@ -24,18 +24,54 @@ _CODE = {ENTRY: "push ebp", CALL_SITE: "call 0x401040"}
 
 
 class FakeAgent:
-    """Stands in for the agent's RPC surface and records the hooks requested."""
+    """Stands in for the agent's RPC surface and records what it is asked to do.
+
+    Attributes:
+        frozen_addr: Where a thread is frozen, or None.
+        calls: Names of the state-changing calls made, in order.
+        on_unfreeze: Called with the step mode when the frozen thread is released.
+    """
 
     def __init__(self):
         self.traces: list[tuple[str, dict]] = []
         self.fences: list[str] = []
         self.step_traces: list[str] = []
+        self.frozen_addr: str | None = None
+        self.calls: list[str] = []
+        self.on_unfreeze = lambda step: None
+        self.bp_refusal: str | None = None
 
     def list_bps(self):
         return []
 
     def is_frozen(self):
-        return False
+        return self.frozen_addr is not None
+
+    def get_frozen_addr(self):
+        return self.frozen_addr
+
+    def install_bp(self, addr):
+        if self.bp_refusal:
+            return {"ok": False, "error": self.bp_refusal}
+        return {"ok": True, "id": 1}
+
+    def remove_bp(self, addr):
+        self.calls.append("remove_bp")
+        return {"ok": True}
+
+    def unfreeze(self, step):
+        if self.frozen_addr is None:
+            return False
+        self.calls.append("unfreeze")
+        self.frozen_addr = None
+        self.on_unfreeze(step)
+        return True
+
+    def cancel_step(self):
+        self.calls.append("cancel_step")
+
+    def get_snapshot(self, stack_count, disasm_count):
+        return {"addr": self.frozen_addr, "regs": {}, "stack": [], "disasm": []}
 
     def disasm_at(self, addr, count):
         mnemonic, _, operands = _CODE[addr].partition(" ")
@@ -151,6 +187,75 @@ class TestStepTrace:
         assert agent.step_traces == []
 
 
+class TestBreakpoint:
+    def test_delete_removes_it_before_releasing_the_thread_frozen_there(self, daemon, agent):
+        agent.frozen_addr = "0x0000000000401040"
+
+        reply = daemon.handle({"cmd": "bp_del", "addr": ENTRY})
+
+        assert reply["ok"] and reply["state"] == "RUNNING"
+        assert agent.calls == ["remove_bp", "unfreeze"]
+
+    def test_delete_leaves_a_thread_frozen_elsewhere_alone(self, daemon, agent):
+        agent.frozen_addr = CALL_SITE
+
+        reply = daemon.handle({"cmd": "bp_del", "addr": ENTRY})
+
+        assert reply["ok"] and reply["state"] == "FROZEN"
+        assert agent.calls == ["remove_bp"]
+
+    def test_add_reports_why_the_agent_refused(self, daemon, agent):
+        agent.bp_refusal = "the byte at this address is already an int3"
+
+        reply = daemon.handle({"cmd": "bp_add", "addr": ENTRY})
+
+        assert not reply["ok"]
+        assert reply["error"] == agent.bp_refusal
+
+
+class TestResume:
+    def test_without_a_frozen_thread_is_an_error(self, daemon):
+        reply = daemon.handle({"cmd": "resume"})
+
+        assert not reply["ok"] and reply["error"] == "not frozen"
+
+
+class TestStep:
+    def test_reports_where_the_thread_froze_again(self, daemon, agent):
+        agent.frozen_addr = ENTRY
+
+        def freeze_again(step):
+            agent.frozen_addr = CALL_SITE
+            daemon._on_message({"type": "send", "payload": {"type": "bp_hit", "addr": CALL_SITE}}, None)
+
+        agent.on_unfreeze = freeze_again
+
+        reply = daemon.handle({"cmd": "step", "mode": "into"})
+
+        assert reply["ok"] and reply["snapshot"]["addr"] == CALL_SITE
+
+    def test_that_does_not_end_is_given_up(self, daemon, agent):
+        agent.frozen_addr = ENTRY
+
+        reply = daemon.handle({"cmd": "step", "mode": "over", "timeout": 0})
+
+        assert not reply["ok"] and "given up" in reply["error"]
+        assert agent.calls == ["unfreeze", "cancel_step"]
+
+    def test_unknown_mode_is_an_error(self, daemon, agent):
+        agent.frozen_addr = ENTRY
+
+        reply = daemon.handle({"cmd": "step", "mode": "sideways"})
+
+        assert not reply["ok"] and "sideways" in reply["error"]
+        assert agent.calls == []
+
+    def test_without_a_frozen_thread_is_an_error(self, daemon):
+        reply = daemon.handle({"cmd": "step", "mode": "over"})
+
+        assert not reply["ok"] and reply["error"] == "not frozen"
+
+
 class TestCommandLine:
     @pytest.fixture
     def sent(self, monkeypatch):
@@ -178,6 +283,21 @@ class TestCommandLine:
         cli.cmd_collect(cli.build_parser().parse_args(["collect", CALL_SITE, "--probe"]))
 
         assert sent[0]["probe"] is True
+
+
+class TestFormatSnapshot:
+    _SNAPSHOT = {"addr": "0x00401054", "regs": {"_arch": "x86"}, "stack": [], "disasm": []}
+
+    def test_breakpoint_stop_names_the_breakpoint_and_its_hit_count(self):
+        text = client.format_snapshot({**self._SNAPSHOT, "bpId": 1, "hitCount": 2})
+
+        assert text.splitlines()[0] == "=== BREAKPOINT HIT === 0x00401054 (bp#1, hit #2)"
+
+    def test_stop_away_from_a_breakpoint_names_only_the_address(self):
+        text = client.format_snapshot({**self._SNAPSHOT, "bpId": 0, "hitCount": 0},
+                                      header="STEP COMPLETE")
+
+        assert text.splitlines()[0] == "=== STEP COMPLETE === 0x00401054"
 
 
 class TestFormatTrace:

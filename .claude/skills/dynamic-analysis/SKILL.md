@@ -47,11 +47,19 @@ Supported `--as` types: `float32`, `float64`, `half`, `uint8`, `int8`, `uint16`,
 
 ### Control
 ```
-python -m livetools step [over|into|out]      # unreliable: can crash the target (see below)
+python -m livetools step [over|into|out]      # run the frozen thread one step, freeze again (returns snapshot)
 python -m livetools resume                    # unfreeze target
 ```
 
-**Do not rely on `step`.** A breakpoint replaces the first bytes at its address with a jump into Frida's trampoline, and `step` decodes those patched bytes to decide where to go next. Stepping from a breakpoint lands inside the trampoline (the snapshot shows an address outside every module) and the next step crashes the target. To follow execution through a function use `steptrace`, or set a second breakpoint further on and `resume` to it.
+`step over` (the default) runs one instruction and lets a `call` run until it returns. `step into` runs one instruction and enters a call. `step out` runs until the current function has returned to its caller. A step that has not ended after 10 seconds (a call that blocks, a function that keeps looping) is given up with an error and the thread runs on.
+
+**What a breakpoint is.** One `int3` byte written over the first byte of the instruction. The thread that reaches it freezes before that instruction runs, with its registers, stack and code exactly as the program left them, and a breakpoint may sit on any instruction.
+
+- One thread is frozen at a time. Every other thread keeps running; when one reaches a breakpoint its hit is counted and it runs on.
+- `bp del` on the breakpoint a thread is frozen at also resumes that thread. After a `step` the thread is frozen somewhere else, and `bp del` leaves it frozen.
+- `detach` removes every breakpoint and releases the frozen thread.
+- `disasm` and `mem read` show the `int3` (`CC`) of a breakpoint that is set, except at the address a thread is frozen at, where the original byte is back.
+- A breakpoint and a hook cannot share bytes. `trace`, `collect` and its fence refuse an address whose first bytes hold a breakpoint, `bp add` refuses an address inside the bytes of a hook that is active, and `steptrace` refuses to start while any breakpoint is set. `bp add` also refuses an address that already holds an `int3`, such as the padding between functions.
 
 ### Patch + Scan (anytime)
 ```
@@ -183,7 +191,7 @@ python -m livetools trace 0x4012AB --probe --count 20 --read "[esp]:4:uint32; [e
 A probe record holds the registers and the `--read` data at that instruction. It has no `caller` and no return value, and `--read-leave` is rejected. `--filter` and `--count` work as for a function hook.
 
 - The hook replaces at least 5 bytes at the address (up to 14 on x64). When the instruction there is shorter, the instructions after it are moved as well, and the target crashes if other code jumps to one of them.
-- While a probe, a fence or a breakpoint sits on a `call` instruction, the function it calls sees a return address inside Frida's trampoline. A function-hook trace of that callee then reports a `caller` outside every module.
+- While a probe or a fence sits on a `call` instruction, the function it calls sees a return address inside Frida's trampoline. A function-hook trace of that callee then reports a `caller` outside every module.
 
 ### steptrace -- Instruction-level execution recording via Stalker
 
@@ -381,9 +389,11 @@ Disasm @ EIP:
   00401006  push  ebp
 ```
 
+After a `step` the first line reads `=== STEP COMPLETE === 0x00401006`, with the breakpoint and hit count added only when the step ended on a breakpoint.
+
 Status line in every response:
 ```
-[attached: target.exe (pid 1234) | FROZEN @ 00401000 | bps: 3]
+[attached: target.exe (pid 1234) | FROZEN @ 0x00401000 | bps: 3]
 ```
 
 ---
@@ -448,20 +458,20 @@ After a snapshot shows ECX=008800A0 and you suspect a float at offset +0x54:
 python -m livetools mem read 0x008800F4 4 --as float32
 ```
 
-### Recipe 7: Inspect state at two points in a function
+### Recipe 7: Step through a function
 
 ```
 python -m livetools bp add <function_entry>
-python -m livetools bp add <later_addr_in_function>
 python -m livetools watch --timeout 60          # frozen at the entry
-python -m livetools regs
-python -m livetools resume
-python -m livetools watch --timeout 60          # frozen at the later address
+python -m livetools step                        # one instruction; a call runs until it returns
+python -m livetools step into                   # one instruction; enters a call
 python -m livetools mem read <addr> 32
+python -m livetools step out                    # runs until this function has returned to its caller
+python -m livetools bp del <function_entry>
 python -m livetools resume
 ```
 
-Keep the two breakpoints apart by at least the hook size (5 bytes on x86, 14 on x64), which is how many bytes a breakpoint overwrites. For the instruction-by-instruction path between them use `steptrace <function_entry>`.
+Each `step` prints the same snapshot as `watch`. To stop somewhere further on without stepping there, set a second breakpoint and `resume`. To record the whole path through a function in one go, use `steptrace <function_entry>` with no breakpoint set.
 
 ### Recipe 8: Patch a byte and verify
 

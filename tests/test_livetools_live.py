@@ -8,17 +8,12 @@ there hands the callee a corrupted argument and never sees a return.
 """
 
 import json
-import sys
 
 import pytest
 
 pytest.importorskip("frida")
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32" or sys.maxsize < 2**32,
-    reason="needs 64-bit Python on Windows to start the x86 and x64 host programs",
-)
 
-from live_target import ARGS, RESULT, LiveTarget, server
+from live_target import ARGS, RESULT
 
 _READ_ARGS_AT_CALL = {"x86": "[esp]:12:uint32", "x64": "rcx; rdx; r8"}
 _READ_ARGS_AT_ENTRY = {"x86": "[esp+4]:12:uint32", "x64": "rcx; rdx; r8"}
@@ -29,19 +24,6 @@ def _arguments(record: dict, arch: str) -> tuple:
     if arch == "x86":
         return tuple(reads[0]["value"])
     return tuple(int(read["value"], 16) for read in reads)
-
-
-@pytest.fixture(scope="module", params=["x86", "x64"])
-def target(request, tmp_path_factory):
-    scratch = tmp_path_factory.mktemp("livetools")
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(server, "STATE_FILE", scratch / "state.json")
-        patch.setattr(server, "WORKSPACE", scratch)
-        live = LiveTarget(request.param)
-        try:
-            yield live
-        finally:
-            live.close()
 
 
 class TestFunctionHook:
