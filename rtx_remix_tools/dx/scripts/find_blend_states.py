@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, analyze_pushes,
+    scan_vtable_calls, scan_vtable_mov, method_immediates,
     decode_transform_type,
 )
 
@@ -53,14 +53,9 @@ def main():
 
     state_usage = defaultdict(list)
     for va, _ in sites:
-        pushes = analyze_pushes(data, sections, image_base, va, window=40)
-        if len(pushes) < 2:
-            continue
-        state_id = pushes[-2][1]
-        value = pushes[-1][1]
-        if state_id not in BLEND_STATES and value in BLEND_STATES:
-            state_id, value = value, state_id
-        if state_id in BLEND_STATES:
+        pushed = method_immediates(text_data, text_va, va, "SetRenderState")
+        state_id, value = pushed["State"], pushed["Value"]
+        if state_id in BLEND_STATES and value is not None:
             state_usage[state_id].append((va, value))
 
     print(f"\n=== Vertex Blend Render States ===\n")
@@ -105,15 +100,9 @@ def main():
 
     wm_calls = []
     for va, _ in xform_sites:
-        pushes = analyze_pushes(data, sections, image_base, va, window=40)
-        if not pushes:
-            continue
-        # SetTransform(State, pMatrix) — pMatrix is usually a register push
-        # (not captured), so scan all pushes for a WORLDMATRIX range value.
-        for _, pval, _ in pushes:
-            if 256 <= pval <= 511:
-                wm_calls.append((va, pval))
-                break
+        state = method_immediates(text_data, text_va, va, "SetTransform")["State"]
+        if state is not None and 256 <= state <= 511:
+            wm_calls.append((va, state))
 
     if wm_calls:
         indices = sorted(set(v - 256 for _, v in wm_calls))

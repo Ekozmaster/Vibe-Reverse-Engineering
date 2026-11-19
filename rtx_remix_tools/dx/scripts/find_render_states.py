@@ -19,7 +19,7 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, analyze_pushes,
+    scan_vtable_calls, scan_vtable_mov, method_args, arg_text,
     D3DRS, D3DRS_ID, decode_rs_value,
 )
 
@@ -74,6 +74,22 @@ RS_CATEGORIES = {
 }
 
 
+def _value_text(state_id, value):
+    """How the Value argument of one call reads: decoded when it is a pushed constant."""
+    if value is None or value.value is None:
+        return arg_text(value)
+    return str(decode_rs_value(state_id, value.value))
+
+
+def _summary_line(state_id, entries):
+    state_name = D3DRS.get(state_id, f"STATE_{state_id}")
+    counts = defaultdict(int)
+    for _, value in entries:
+        counts[_value_text(state_id, value)] += 1
+    values = [f"{text} x{count}" if count > 1 else text for text, count in sorted(counts.items())]
+    return f"  {state_name:35s} [{len(entries):3d} sites]  values: {', '.join(values)}"
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -98,26 +114,17 @@ def main():
     all_sites = [(va, reg) for va, reg in direct]
     all_sites += [(va, 'indirect') for va, _ in indirect]
 
-    # Track per-state: {state_id: [(call_va, value), ...]}
+    # Track per-state: {state_id: [(call_va, Value argument), ...]}
     state_usage = defaultdict(list)
     unknown_sites = []
 
     for va, reg in all_sites:
-        pushes = analyze_pushes(data, sections, image_base, va, window=40)
-        # SetRenderState(device, State, Value) — last two pushes are Value, State
-        # In cdecl/thiscall, pushed right-to-left: push Value; push State; call
-        if len(pushes) >= 2:
-            state_id = pushes[-2][1]
-            value = pushes[-1][1]
-            # Swap if state_id looks like a value and value looks like a state
-            if state_id not in D3DRS and value in D3DRS:
-                state_id, value = value, state_id
-            state_usage[state_id].append((va, value))
-        elif len(pushes) == 1:
-            # Only got one push — might be register-loaded
-            unknown_sites.append((va, pushes))
+        pushed = method_args(text_data, text_va, va, "SetRenderState")
+        state = pushed["State"]
+        if state is None or state.value is None:
+            unknown_sites.append(va)
         else:
-            unknown_sites.append((va, []))
+            state_usage[state.value].append((va, pushed["Value"]))
 
     # -- Per-state summary --
     print(f"\n=== Render State Summary ({len(state_usage)} states found) ===\n")
@@ -129,18 +136,7 @@ def main():
             continue
         print(f"  -- {cat_name} --")
         for state_id, entries in found:
-            state_name = D3DRS.get(state_id, f"STATE_{state_id}")
-            # Collect unique values
-            values = defaultdict(int)
-            for _, val in entries:
-                values[val] += 1
-            val_strs = []
-            for val, count in sorted(values.items()):
-                decoded = decode_rs_value(state_id, val)
-                suffix = f" x{count}" if count > 1 else ""
-                val_strs.append(f"{decoded}{suffix}")
-            print(f"  {state_name:35s} [{len(entries):3d} sites]  "
-                  f"values: {', '.join(val_strs)}")
+            print(_summary_line(state_id, entries))
             categorized.add(state_id)
         print()
 
@@ -150,22 +146,11 @@ def main():
     if uncategorized:
         print(f"  -- Other --")
         for state_id in sorted(uncategorized):
-            entries = uncategorized[state_id]
-            state_name = D3DRS.get(state_id, f"STATE_{state_id}")
-            values = defaultdict(int)
-            for _, val in entries:
-                values[val] += 1
-            val_strs = []
-            for val, count in sorted(values.items()):
-                decoded = decode_rs_value(state_id, val)
-                suffix = f" x{count}" if count > 1 else ""
-                val_strs.append(f"{decoded}{suffix}")
-            print(f"  {state_name:35s} [{len(entries):3d} sites]  "
-                  f"values: {', '.join(val_strs)}")
+            print(_summary_line(state_id, uncategorized[state_id]))
         print()
 
     if unknown_sites:
-        print(f"  ({len(unknown_sites)} call sites with register-loaded arguments -- "
+        print(f"  ({len(unknown_sites)} call sites whose State is not a pushed constant -- "
               f"not decoded statically)")
 
     # -- Detailed per-site output --
@@ -175,9 +160,9 @@ def main():
             state_name = D3DRS.get(state_id, f"STATE_{state_id}")
             entries = state_usage[state_id]
             print(f"  {state_name} ({state_id}):")
-            for va, val in entries:
-                decoded = decode_rs_value(state_id, val)
-                print(f"    0x{va:08X}: value = {decoded} (0x{val:X})")
+            for va, value in entries:
+                raw = f" (0x{value.value:X})" if value and value.value is not None else ""
+                print(f"    0x{va:08X}: value = {_value_text(state_id, value)}{raw}")
             print()
 
     print("--- DONE ---")

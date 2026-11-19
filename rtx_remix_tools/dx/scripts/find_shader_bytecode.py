@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header,
     scan_vtable_calls, scan_vtable_mov,
-    find_push_addr_near_call, va_to_offset,
+    method_immediates, va_to_offset,
     validate_shader_token, find_shader_end,
 )
 
@@ -47,28 +47,25 @@ def find_shaders(data, sections, image_base, text_data, text_va, vtable_offset, 
     if not all_sites:
         return []
 
-    # CreateVertexShader(device, pFunction, ppShader)
-    # pFunction is a pointer to shader bytecode — pushed as imm32
     found = []
     seen_addrs = set()
 
     for va, reg in all_sites:
-        addr_pushes = find_push_addr_near_call(data, sections, image_base, va, window=60)
-        for push_va, target_va in addr_pushes:
-            if target_va in seen_addrs:
-                continue
-            file_off = va_to_offset(sections, image_base, target_va)
-            if file_off is None:
-                continue
-            info = validate_shader_token(data, file_off)
-            if info is None:
-                continue
-            shader_type, major, minor = info
-            byte_len = find_shader_end(data, file_off)
-            if byte_len is None:
-                continue
-            seen_addrs.add(target_va)
-            found.append((target_va, shader_type, major, minor, byte_len))
+        target_va = method_immediates(text_data, text_va, va, label)["pFunction"]
+        if target_va is None or target_va in seen_addrs:
+            continue
+        file_off = va_to_offset(sections, image_base, target_va)
+        if file_off is None:
+            continue
+        info = validate_shader_token(data, file_off)
+        if info is None:
+            continue
+        shader_type, major, minor = info
+        byte_len = find_shader_end(data, file_off)
+        if byte_len is None:
+            continue
+        seen_addrs.add(target_va)
+        found.append((target_va, shader_type, major, minor, byte_len))
 
     return found
 

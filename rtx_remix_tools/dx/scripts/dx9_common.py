@@ -1,21 +1,52 @@
-"""D3D9 binary analysis primitives: PE parsing, vtable scanning, enum dicts.
+"""D3D9 binary analysis primitives: PE parsing, vtable scanning, call-argument
+recovery, enum dicts.
 
 Bulk is reference data (~400 lines of enum dicts), rest is PE/pattern helpers.
 """
 import struct
+import sys
+from functools import lru_cache
+from pathlib import Path
+from typing import NamedTuple
+
+from capstone import CS_ARCH_X86, CS_GRP_CALL, CS_GRP_INT, CS_GRP_IRET, CS_GRP_JUMP, CS_GRP_RET, CS_MODE_32, Cs
+from capstone import x86_const as x86
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from graphics.directx.dx9.tracer.d3d9_methods import D3D9_METHODS
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # PE Parsing
 # ═══════════════════════════════════════════════════════════════════════
 
+_PE32_MAGIC = 0x10B
+_PE32_PLUS_MAGIC = 0x20B
+_OPTIONAL_HEADER_OFFSET = 24
+_IMAGE_BASE_OFFSET = 52
+
+
 def parse_pe(data):
-    """Parse PE headers. Returns (image_base, sections).
+    """Parse PE32 headers. Returns (image_base, sections).
 
     Each section: dict with name, va, raw, rawsz, vsz, chars.
+
+    Raises:
+        ValueError: *data* is not a PE file, or is not a 32-bit one.
     """
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise ValueError("not a PE file (no MZ header)")
     pe_sig_off = struct.unpack_from("<I", data, 0x3C)[0]
-    image_base = struct.unpack_from("<I", data, pe_sig_off + 52)[0]
+    if (data[pe_sig_off:pe_sig_off + 4] != b"PE\0\0"
+            or len(data) < pe_sig_off + _IMAGE_BASE_OFFSET + 4):
+        raise ValueError("not a PE file (no PE signature)")
+    magic = struct.unpack_from("<H", data, pe_sig_off + _OPTIONAL_HEADER_OFFSET)[0]
+    if magic == _PE32_PLUS_MAGIC:
+        raise ValueError("64-bit binary (PE32+); these scanners read 32-bit D3D9 call sites only")
+    if magic != _PE32_MAGIC:
+        raise ValueError(f"not a PE32 file (optional header magic 0x{magic:X})")
+    image_base = struct.unpack_from("<I", data, pe_sig_off + _IMAGE_BASE_OFFSET)[0]
     num_sections = struct.unpack_from("<H", data, pe_sig_off + 6)[0]
     opt_hdr_size = struct.unpack_from("<H", data, pe_sig_off + 20)[0]
     section_start = pe_sig_off + 24 + opt_hdr_size
@@ -82,51 +113,36 @@ def find_text_section(data, image_base, sections):
 # Pattern Scanning
 # ═══════════════════════════════════════════════════════════════════════
 
-# Register encodings for ModRM byte
-_CALL_REGS_DWORD = {0x90: 'eax', 0x91: 'ecx', 0x92: 'edx', 0x93: 'ebx',
-                    0x96: 'esi', 0x97: 'edi'}
-_CALL_REGS_BYTE = {0x50: 'eax', 0x51: 'ecx', 0x52: 'edx', 0x53: 'ebx',
-                   0x55: 'ebp', 0x56: 'esi', 0x57: 'edi'}
+# ModRM r/m values of the registers that can be a base without a SIB byte
 _GP_REGS = {0: 'eax', 1: 'ecx', 2: 'edx', 3: 'ebx', 5: 'ebp', 6: 'esi', 7: 'edi'}
+
+# ModRM bits of "call [reg+disp]" (FF /2): mod 10 takes a disp32, mod 01 a disp8
+_CALL_DISP32 = 0x90
+_CALL_DISP8 = 0x50
+_MAX_DISP8 = 0x7F
 
 
 def scan_vtable_calls(text_data, text_va, vtable_offset):
-    """Find call [reg+vtable_offset] patterns (disp32).
+    """Find call [reg+vtable_offset], in the disp32 and the disp8 encoding.
 
-    Returns: [(va, reg_name), ...]
+    Compilers use the one-byte displacement for the first 32 vtable slots.
+
+    Returns: [(va, reg_name), ...] in address order.
     """
+    encodings = [(_CALL_DISP32, struct.pack('<I', vtable_offset))]
+    if vtable_offset <= _MAX_DISP8:
+        encodings.append((_CALL_DISP8, bytes([vtable_offset])))
     results = []
-    offset_bytes = struct.pack('<I', vtable_offset)
-    for mod_rm, reg_name in _CALL_REGS_DWORD.items():
-        pattern = bytes([0xFF, mod_rm]) + offset_bytes
-        pos = 0
-        while True:
-            idx = text_data.find(pattern, pos)
-            if idx == -1:
-                break
-            results.append((text_va + idx, reg_name))
-            pos = idx + 1
-    results.sort()
-    return results
-
-
-def scan_vtable_calls_byte(text_data, text_va, vtable_offset):
-    """Find call [reg+vtable_offset] patterns (disp8, offset <= 0x7F).
-
-    Returns: [(va, reg_name), ...]
-    """
-    if vtable_offset > 0x7F:
-        return []
-    results = []
-    for mod_rm, reg_name in _CALL_REGS_BYTE.items():
-        pattern = bytes([0xFF, mod_rm, vtable_offset])
-        pos = 0
-        while True:
-            idx = text_data.find(pattern, pos)
-            if idx == -1:
-                break
-            results.append((text_va + idx, reg_name))
-            pos = idx + 1
+    for mod_bits, displacement in encodings:
+        for rm, reg_name in _GP_REGS.items():
+            pattern = bytes([0xFF, mod_bits | rm]) + displacement
+            pos = 0
+            while True:
+                idx = text_data.find(pattern, pos)
+                if idx == -1:
+                    break
+                results.append((text_va + idx, reg_name))
+                pos = idx + 1
     results.sort()
     return results
 
@@ -155,71 +171,224 @@ def scan_vtable_mov(text_data, text_va, vtable_offset):
 
 
 def scan_all_patterns(text_data, text_va, vtable_offset):
-    """Find call and mov patterns for a vtable offset (disp8 + disp32).
+    """Find call and mov patterns for a vtable offset.
 
     Returns: [(va, description), ...]
     """
-    results = []
-
-    # call [reg+disp8]
-    if vtable_offset <= 0x7F:
-        for va, reg in scan_vtable_calls_byte(text_data, text_va, vtable_offset):
-            results.append((va, f"call [{reg}+0x{vtable_offset:02X}]"))
-
-    # call [reg+disp32]
-    for va, reg in scan_vtable_calls(text_data, text_va, vtable_offset):
-        results.append((va, f"call [{reg}+0x{vtable_offset:03X}]"))
-
-    # mov reg, [reg+disp32]
+    results = [(va, f"call [{reg}+0x{vtable_offset:03X}]")
+               for va, reg in scan_vtable_calls(text_data, text_va, vtable_offset)]
     results.extend(scan_vtable_mov(text_data, text_va, vtable_offset))
-
     results.sort()
     return results
 
 
-def analyze_pushes(data, sections, image_base, call_va, window=40):
-    """Scan backwards from call_va for push imm8/imm32 instructions.
+# ═══════════════════════════════════════════════════════════════════════
+# Call Arguments
+# ═══════════════════════════════════════════════════════════════════════
+#
+# A stdcall method call pushes its arguments last to first and `this` last of
+# all, so the push nearest the call is `this` and the one before it is the
+# first declared parameter. A pushed register is an argument like any other.
 
-    Returns: [(push_va, value, type_str), ...] oldest-first.
-    type_str is 'imm8' or 'imm32'.
+_METHODS = {spec.name: spec for spec in D3D9_METHODS.values()}
+
+_decoder = Cs(CS_ARCH_X86, CS_MODE_32)
+_decoder.detail = True
+
+# x86 cannot be decoded backwards. Decoding forwards from an arbitrary earlier
+# byte falls into step with the real instructions after a few of them. So the
+# bytes before a site are decoded from every offset in a stretch well before
+# it, and an instruction near the site is trusted only when all of those
+# decodings pass through it.
+_LOOKBACK = 96          # bytes before a site that decoding may start from
+_TRUSTED = 48           # bytes before a site that instructions are taken from
+_MAX_INSN = 15          # longest x86 instruction
+_LOOKAHEAD = 64         # bytes after a method-pointer load searched for the call through it
+
+_FLOW_GROUPS = (CS_GRP_CALL, CS_GRP_JUMP, CS_GRP_RET, CS_GRP_INT, CS_GRP_IRET)
+
+
+class StackArg(NamedTuple):
+    """One argument pushed for a call.
+
+    Attributes:
+        va: Address of the push instruction.
+        value: The immediate that was pushed, or None for a register or a
+            memory operand.
+        source: The pushed operand as text: "0x14", "eax", "dword ptr [ebp - 8]".
     """
-    file_off = va_to_offset(sections, image_base, call_va)
-    if file_off is None:
-        return []
-    context_start = max(0, file_off - window)
-    context = data[context_start:file_off + 6]
-    pushes = []
-    i = 0
-    while i < len(context) - 6:
-        b = context[i]
-        if b == 0x6A:  # push imm8
-            val = context[i + 1]
-            push_va = call_va - (file_off - context_start - i)
-            pushes.append((push_va, val, 'imm8'))
-            i += 2
-        elif b == 0x68:  # push imm32
-            val = struct.unpack_from('<I', context, i + 1)[0]
-            push_va = call_va - (file_off - context_start - i)
-            pushes.append((push_va, val, 'imm32'))
-            i += 5
-        else:
-            i += 1
-    return pushes
+    va: int
+    value: int | None
+    source: str
 
 
-def find_push_addr_near_call(data, sections, image_base, call_va, window=60):
-    """Find push imm32 instructions near a call that point to valid addresses.
+def _trusted_start(text_data, text_va, site_va):
+    """Address of the earliest instruction before *site_va* that is certain.
 
-    Returns: [(push_va, target_va), ...] oldest-first.
+    *site_va* itself when none is. None when no decoding ends exactly at
+    *site_va*: the site then lies inside another instruction, or in data.
     """
-    pushes = analyze_pushes(data, sections, image_base, call_va, window)
-    results = []
-    for pva, val, ptype in pushes:
-        if ptype == 'imm32':
-            off = va_to_offset(sections, image_base, val)
-            if off is not None:
-                results.append((pva, val))
-    return results
+    site_off = site_va - text_va
+    first = max(0, site_off - _LOOKBACK)
+
+    # following[o]: where the instruction at offset o ends, kept only for
+    # offsets from which decoding arrives exactly at the site
+    following = {}
+    for off in range(site_off - 1, first - 1, -1):
+        insn = next(_decoder.disasm_lite(text_data[off:off + _MAX_INSN], text_va + off), None)
+        if insn is None:
+            continue
+        end = off + insn[1]
+        if end == site_off or end in following:
+            following[off] = end
+    if not following:
+        return None
+
+    arriving = sorted(following)
+    voters = [off for off in arriving if off < site_off - _TRUSTED] or arriving[:1]
+    passing = dict.fromkeys(arriving, 0)
+    for off in voters:
+        passing[off] = 1
+    for off in arriving:
+        if following[off] != site_off:
+            passing[following[off]] += passing[off]
+
+    certain = [off for off in arriving
+               if off >= site_off - _TRUSTED and passing[off] == len(voters)]
+    return text_va + (certain[0] if certain else site_off)
+
+
+def _instructions_before_call(text_data, text_va, site_va):
+    """Instructions that run just before the call a scan hit leads to, oldest first.
+
+    The hit is either the call itself, or a load of the method pointer into a
+    register that is then called. None when the hit is not an instruction, or
+    leads to no call (a field that happens to sit at the method's offset).
+    """
+    start = _trusted_start(text_data, text_va, site_va)
+    if start is None:
+        return None
+    site_off = site_va - text_va
+    before = list(_decoder.disasm(text_data[start - text_va:site_off], start))
+    ahead = _decoder.disasm(text_data[site_off:site_off + _LOOKAHEAD], site_va)
+    site = next(ahead, None)
+    if site is None:
+        return None
+    if site.id == x86.X86_INS_CALL:
+        return before
+    if site.id != x86.X86_INS_MOV or site.operands[0].type != x86.X86_OP_REG:
+        return None
+
+    method_reg = site.operands[0].reg
+    for insn in ahead:
+        if insn.id == x86.X86_INS_CALL:
+            target = insn.operands[0]
+            called_through_it = target.type == x86.X86_OP_REG and target.reg == method_reg
+            return before if called_through_it else None
+        if any(insn.group(group) for group in _FLOW_GROUPS):
+            return None
+        if method_reg in insn.regs_access()[1]:
+            return None
+        before.append(insn)
+    return None
+
+
+def _stack_arg(push):
+    operand = push.operands[0]
+    if operand.type == x86.X86_OP_IMM:
+        return StackArg(push.address, operand.imm & 0xFFFFFFFF, push.op_str)
+    return StackArg(push.address, None, push.op_str)
+
+
+@lru_cache(maxsize=2)
+def _jump_targets(text_data, text_va):
+    """Every address a direct jump in the code section goes to.
+
+    One linear sweep of the whole section, so a jump is found however far it
+    is from its target and whichever side of it. Data in the section decodes
+    into jumps that do not exist; their targets only make the argument walk
+    stop early.
+    """
+    sweep = Cs(CS_ARCH_X86, CS_MODE_32)
+    sweep.skipdata = True
+    targets = set()
+    for _address, _size, mnemonic, operands in sweep.disasm_lite(text_data, text_va):
+        if mnemonic[0] == 'j' or mnemonic.startswith('loop'):
+            try:
+                targets.add(int(operands, 16))
+            except ValueError:
+                pass  # through a register or memory: no target to read
+    return frozenset(targets)
+
+
+def _stack_args(insns, count, jump_targets):
+    """The last *count* values *insns* push, most recent first.
+
+    None stands for a value the code does not settle. The walk back ends at
+    anything else that moves the stack pointer or transfers control, and at an
+    address in *jump_targets*: another path joins there, and what it pushed is
+    not in front of us.
+    """
+    args = []
+    for insn in reversed(insns):
+        if len(args) == count:
+            break
+        if insn.id == x86.X86_INS_PUSH:
+            args.append(_stack_arg(insn))
+        elif (any(insn.group(group) for group in _FLOW_GROUPS)
+              or x86.X86_REG_ESP in insn.regs_access()[1]):
+            break
+        if insn.address in jump_targets:
+            break
+    return args + [None] * (count - len(args))
+
+
+def method_args(text_data, text_va, site_va, method):
+    """Stack arguments of the device method call a scan hit leads to, by parameter name.
+
+    Args:
+        text_data: Bytes of the code section the scan ran on.
+        text_va: Virtual address of its first byte.
+        site_va: A hit of scan_vtable_calls or scan_vtable_mov.
+        method: IDirect3DDevice9 method name, e.g. "SetRenderState".
+
+    Returns:
+        {"this": ..., <parameter name>: ...} in declaration order, holding a
+        StackArg for each argument the code before the call settles and None
+        for the rest.
+    """
+    names = ["this"] + [name for name, _type in _METHODS[method].args]
+    insns = _instructions_before_call(text_data, text_va, site_va)
+    if insns is None:
+        return dict.fromkeys(names)
+    values = _stack_args(insns, len(names), _jump_targets(text_data, text_va))
+    return dict(zip(names, values))
+
+
+def method_immediates(text_data, text_va, site_va, method):
+    """Like method_args, keeping only pushed immediates.
+
+    Returns:
+        {"this": ..., <parameter name>: ...} with the immediate pushed for each
+        argument, or None where the argument came from a register or memory,
+        or was not recovered.
+    """
+    args = method_args(text_data, text_va, site_va, method)
+    return {name: arg.value if arg else None for name, arg in args.items()}
+
+
+def arg_text(arg):
+    """A stack argument as it reads in a report.
+
+    The number for a pushed constant, the operand in angle brackets for a
+    pushed register or memory operand, <unknown> when the code before the call
+    does not show what was pushed.
+    """
+    if arg is None:
+        return "<unknown>"
+    if arg.value is None:
+        return f"<{arg.source}>"
+    return str(arg.value)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -227,16 +396,21 @@ def find_push_addr_near_call(data, sections, image_base, call_va, window=60):
 # ═══════════════════════════════════════════════════════════════════════
 
 def load_binary(path):
-    """Read binary + parse PE. Returns (data, image_base, sections)."""
-    from pathlib import Path
+    """Read binary + parse PE. Returns (data, image_base, sections).
+
+    Exits with a message for a file these scanners cannot read: one that is
+    not a PE, or a 64-bit one.
+    """
     data = Path(path).read_bytes()
-    image_base, sections = parse_pe(data)
+    try:
+        image_base, sections = parse_pe(data)
+    except ValueError as exc:
+        sys.exit(f"ERROR: {path}: {exc}")
     return data, image_base, sections
 
 
 def load_text_section(data, image_base, sections):
     """Load first executable section. Returns (text_data, text_va) or exits."""
-    import sys
     raw_start, raw_size, text_va = find_text_section(data, image_base, sections)
     if raw_start is None:
         print("ERROR: no executable section found")

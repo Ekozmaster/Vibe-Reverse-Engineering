@@ -14,7 +14,7 @@ import argparse
 
 from dx9_common import (
     load_binary, load_text_section, scan_vtable_calls, scan_vtable_mov,
-    analyze_pushes,
+    method_args, arg_text,
 )
 
 
@@ -49,11 +49,10 @@ def main():
         if len(all_sites) > 50:
             print(f"  (showing first 50 of {len(all_sites)} sites)")
         for va, reg in all_sites[:50]:
-            pushes = analyze_pushes(data, sections, image_base, va)
-            if pushes:
-                print(f"\n  0x{va:08X}: call [{reg}+0x178]")
-                for pva, pval, ptype in pushes[-5:]:
-                    print(f"    push {ptype} {pval} (0x{pval:X})")
+            pushed = method_args(text_data, text_va, va, "SetVertexShaderConstantF")
+            print(f"\n  0x{va:08X}: call [{reg}+0x178]")
+            print("    " + "  ".join(f"{name}={arg_text(arg)}"
+                                     for name, arg in pushed.items() if name != "this"))
 
     # --- DrawIndexedPrimitive (0x148) ---
     print(f"\n\n=== DrawIndexedPrimitive call sites (call [reg+0x148]) ===")

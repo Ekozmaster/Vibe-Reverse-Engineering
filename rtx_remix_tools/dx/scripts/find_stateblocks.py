@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header,
     scan_vtable_calls, scan_vtable_mov, scan_all_patterns,
-    analyze_pushes, D3DSTATEBLOCKTYPE,
+    method_args, arg_text, D3DSTATEBLOCKTYPE,
 )
 
 # Device methods
@@ -72,18 +72,14 @@ def main():
         all_sites = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
 
         if offset == 0xEC and all_sites:
-            # CreateStateBlock(device, Type, ppSB)
-            # Type is D3DSTATEBLOCKTYPE pushed as imm8 (1-3)
             type_counts = defaultdict(int)
             for va, reg in all_sites:
-                pushes = analyze_pushes(data, sections, image_base, va, window=30)
-                for _, pval, ptype in pushes:
-                    if pval in D3DSTATEBLOCKTYPE:
-                        type_counts[pval] += 1
-                        print(f"    0x{va:08X}: type={D3DSTATEBLOCKTYPE[pval]}")
-                        break
+                block_type = method_args(text_data, text_va, va, "CreateStateBlock")["Type"]
+                if block_type is not None and block_type.value in D3DSTATEBLOCKTYPE:
+                    type_counts[block_type.value] += 1
+                    print(f"    0x{va:08X}: type={D3DSTATEBLOCKTYPE[block_type.value]}")
                 else:
-                    print(f"    0x{va:08X}: type=<register-loaded>")
+                    print(f"    0x{va:08X}: type={arg_text(block_type)}")
 
             if type_counts:
                 print(f"\n    State block types:")
@@ -96,7 +92,6 @@ def main():
                 print(f"    0x{va:08X}: {desc}")
 
     # -- IDirect3DStateBlock9 Apply/Capture --
-    # These use small vtable offsets so we need disp8 scanning too
     print(f"\n\n=== IDirect3DStateBlock9 vtable calls ===")
     print(f"  (Note: small offsets may produce false positives from non-D3D vtables)\n")
 

@@ -231,6 +231,12 @@ All analysis: `python -m graphics.directx.dx9.tracer analyze <JSONL> [OPTIONS]`
 
 Targeted first-pass scanners for D3D9 games. Run from repo root. Output is candidate addresses and patterns — always follow up with retools/livetools for confirmation.
 
+**32-bit only.** Every script except `find_d3d_calls.py` reads PE32 code and exits with an error on a 64-bit binary or on a file that is not a PE.
+
+**How call arguments are reported.** A script reads the pushes in front of each call and assigns them to the method's parameters by position, so a pushed register counts as an argument. A pushed constant is decoded. A pushed register or memory operand is shown in angle brackets (`<eax>`): the value is only known at run time. `<unknown>` means the code in front of the call does not settle the argument (an earlier call, a stack adjustment or a join of two code paths lies in between); nothing is guessed. Sites whose arguments are not constants are left out of summaries such as register ranges, so follow them up with `livetools trace --probe` on the call site.
+
+**Which calls are found.** `call [reg+offset]` in both its encodings, which covers every vtable slot. A `mov reg, [reg+offset]` hit is listed as indirect; it is a real call only when a `call reg` follows, and only then are its arguments read. Small offsets also match calls on other interfaces, so confirm a low-slot hit (`Present`, `Reset`, `CreateTexture`) before relying on it.
+
 | Script | What it surfaces | Example |
 |--------|-----------------|---------|
 | `find_d3d_calls.py $B` | D3D9/D3DX imports and call sites | `python rtx_remix_tools/dx/scripts/find_d3d_calls.py game.exe` |

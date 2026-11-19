@@ -17,7 +17,7 @@ import struct
 
 from dx9_common import (
     load_binary, find_text_section, va_to_offset,
-    scan_vtable_calls, scan_vtable_mov, find_push_addr_near_call,
+    scan_vtable_calls, scan_vtable_mov, method_immediates,
 )
 
 D3DDECLTYPE = {
@@ -121,19 +121,20 @@ def scan_for_decls(data, sections, image_base):
 
     print(f"Found {len(call_vas)} CreateVertexDeclaration call sites")
 
-    # For each call site, find pushed addresses that point to valid D3DVERTEXELEMENT9
+    # Keep the pVertexElements arguments that point at a valid D3DVERTEXELEMENT9
     for call_va in sorted(call_vas):
-        for _, addr in find_push_addr_near_call(data, sections, image_base, call_va, window=60):
-            off_check = va_to_offset(sections, image_base, addr)
-            if off_check is None:
-                continue
-            elem = data[off_check:off_check + 8]
-            if len(elem) < 8:
-                continue
-            stream, offset, typ, method, usage, usage_idx = \
-                struct.unpack_from("<HHBBBB", elem)
-            if stream <= 4 and typ <= 17 and usage <= 13:
-                found.add(addr)
+        pushed = method_immediates(text_data, text_va, call_va, "CreateVertexDeclaration")
+        addr = pushed["pVertexElements"]
+        off_check = None if addr is None else va_to_offset(sections, image_base, addr)
+        if off_check is None:
+            continue
+        elem = data[off_check:off_check + 8]
+        if len(elem) < 8:
+            continue
+        stream, offset, typ, method, usage, usage_idx = \
+            struct.unpack_from("<HHBBBB", elem)
+        if stream <= 4 and typ <= 17 and usage <= 13:
+            found.add(addr)
 
     return sorted(found)
 

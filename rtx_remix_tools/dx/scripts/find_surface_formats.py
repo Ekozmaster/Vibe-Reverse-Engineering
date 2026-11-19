@@ -21,7 +21,7 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, analyze_pushes,
+    scan_vtable_calls, scan_vtable_mov, method_immediates,
     decode_format, D3DPOOL,
 )
 
@@ -39,52 +39,15 @@ METHODS = {
 }
 
 
-def extract_format_from_pushes(pushes):
-    """Heuristic: find the D3DFORMAT argument among pushes.
-
-    Format values are typically in range 20-117 for standard formats,
-    or large FourCC values (DXT1-5, etc.).
-    """
-    # Known DXT FourCC values
-    dxt_values = {0x31545844, 0x32545844, 0x33545844, 0x34545844, 0x35545844}
-
-    candidates = []
-    for _, val, ptype in pushes:
-        # Standard format range
-        if 20 <= val <= 117:
-            candidates.append(val)
-        # FourCC DXT
-        elif val in dxt_values:
-            candidates.append(val)
-        # INTZ shadow format
-        elif val == 0x34324E49:
-            candidates.append(val)
-    return candidates
+_SIZE_PARAMETERS = ("Width", "Height", "Depth", "EdgeLength")
 
 
-def extract_dimensions(pushes):
-    """Heuristic: find width/height among pushes.
-
-    Dimensions are typically power-of-2 or common screen resolutions.
-    """
-    dims = []
-    for _, val, ptype in pushes:
-        if ptype == 'imm32' and val in (64, 128, 256, 512, 1024, 2048, 4096,
-                                         320, 480, 640, 720, 768, 800, 960,
-                                         1080, 1200, 1280, 1366, 1440, 1600,
-                                         1920, 2560, 3840):
-            dims.append(val)
-        elif ptype == 'imm8' and val == 0:
-            continue  # skip zeros
-    return dims
-
-
-def extract_pool(pushes):
-    """Heuristic: find D3DPOOL argument."""
-    for _, val, _ in pushes:
-        if val in D3DPOOL:
-            return val
-    return None
+def size_text(pushed):
+    """The created surface's size as "256x128", or None unless every dimension is a constant."""
+    dims = [pushed[name] for name in _SIZE_PARAMETERS if name in pushed]
+    if None in dims:
+        return None
+    return "x".join(str(dim) for dim in dims)
 
 
 def main():
@@ -116,12 +79,10 @@ def main():
             continue
 
         for va, reg in all_sites:
-            pushes = analyze_pushes(data, sections, image_base, va, window=80)
-            formats = extract_format_from_pushes(pushes)
-            dims = extract_dimensions(pushes)
-            pool = extract_pool(pushes)
+            pushed = method_immediates(text_data, text_va, va, name)
+            fmt, size, pool = pushed["Format"], size_text(pushed), pushed.get("Pool")
 
-            for fmt in formats:
+            if fmt is not None:
                 all_formats[fmt] += 1
                 if offset == 0x70:
                     rt_formats[fmt] += 1
@@ -130,16 +91,15 @@ def main():
                 elif offset in (0x5C, 0x60, 0x64):
                     tex_formats[fmt] += 1
 
-            if args.all or formats:
+            if args.all or fmt is not None:
                 parts = [f"0x{va:08X}:"]
-                if dims:
-                    parts.append(f"dims={dims}")
-                if formats:
-                    parts.append(f"fmt={[decode_format(f) for f in formats]}")
+                if size is not None:
+                    parts.append(size)
+                if fmt is not None:
+                    parts.append(f"fmt={decode_format(fmt)}")
                 if pool is not None:
                     parts.append(f"pool={D3DPOOL.get(pool, str(pool))}")
-                if args.all or formats:
-                    print(f"    {' '.join(parts)}")
+                print(f"    {' '.join(parts)}")
 
     # -- Format Summary --
     print(f"\n\n{'='*60}")

@@ -22,7 +22,7 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, analyze_pushes,
+    scan_vtable_calls, scan_vtable_mov, method_immediates,
     decode_fvf, D3DFVF_POSITIONS, D3DFVF_FLAGS,
 )
 
@@ -107,18 +107,8 @@ def main():
     fvf_values = defaultdict(list)  # fvf -> [call_va, ...]
 
     for va, reg in all_sites:
-        pushes = analyze_pushes(data, sections, image_base, va, window=30)
-        # FVF is typically pushed as imm32 (it's a bitfield, usually > 0xFF)
-        fvf_val = None
-        for _, pval, ptype in pushes:
-            if ptype == 'imm32' and pval > 0 and pval < 0x10000:
-                fvf_val = pval
-                break
-            if ptype == 'imm8' and pval > 0:
-                # Small FVF like D3DFVF_XYZ (0x002) could be imm8
-                fvf_val = pval
-                break
-        if fvf_val is not None:
+        fvf_val = method_immediates(text_data, text_va, va, "SetFVF")["FVF"]
+        if fvf_val is not None and 0 < fvf_val < 0x10000:
             fvf_values[fvf_val].append(va)
 
     # Decode each unique FVF

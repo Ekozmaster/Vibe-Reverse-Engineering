@@ -24,9 +24,8 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, analyze_pushes,
-    va_to_offset, find_push_addr_near_call,
-    validate_shader_token, find_shader_end,
+    scan_vtable_calls, scan_vtable_mov, method_immediates,
+    va_to_offset, validate_shader_token, find_shader_end,
 )
 
 # Vtable offsets
@@ -197,24 +196,16 @@ def _phase1_svscf_uploads(data, image_base, sections, text_data, text_va):
     all_svscf = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
     print(f"  Total SVSCF call sites: {len(all_svscf)}")
 
-    # Extract (start_reg, count) from push arguments
     reg_uploads = defaultdict(list)  # (start, count) -> [call_va, ...]
     unknown_sites = 0
 
     for va, reg in all_svscf:
-        pushes = analyze_pushes(data, sections, image_base, va, window=50)
-        if len(pushes) >= 2:
-            start_reg = pushes[-2][1]
-            count = pushes[-1][1]
-            # Heuristic: start_reg < 256, count <= 256
-            if start_reg > 255 and count <= 255:
-                start_reg, count = count, start_reg
-            if start_reg <= 255 and count <= 256:
-                reg_uploads[(start_reg, count)].append(va)
-            else:
-                unknown_sites += 1
-        else:
+        pushed = method_immediates(text_data, text_va, va, "SetVertexShaderConstantF")
+        start_reg, count = pushed["StartRegister"], pushed["Vector4fCount"]
+        if start_reg is None or count is None or start_reg > 255 or count > 256:
             unknown_sites += 1
+        else:
+            reg_uploads[(start_reg, count)].append(va)
 
     # Focus on count=4 (matrix) uploads
     matrix_regs = {}  # start_reg -> [call_va, ...]
@@ -334,26 +325,25 @@ def _phase3_ctab_extraction(data, sections, image_base, text_data, text_va):
     seen_shaders = set()
 
     for va, reg in all_vs:
-        addr_pushes = find_push_addr_near_call(data, sections, image_base, va, window=60)
-        for _, target_va in addr_pushes:
-            if target_va in seen_shaders:
-                continue
-            file_off = va_to_offset(sections, image_base, target_va)
-            if file_off is None:
-                continue
-            info = validate_shader_token(data, file_off)
-            if info is None:
-                continue
-            seen_shaders.add(target_va)
-            byte_len = find_shader_end(data, file_off)
-            if byte_len is None:
-                continue
+        target_va = method_immediates(text_data, text_va, va, "CreateVertexShader")["pFunction"]
+        if target_va is None or target_va in seen_shaders:
+            continue
+        file_off = va_to_offset(sections, image_base, target_va)
+        if file_off is None:
+            continue
+        info = validate_shader_token(data, file_off)
+        if info is None:
+            continue
+        seen_shaders.add(target_va)
+        byte_len = find_shader_end(data, file_off)
+        if byte_len is None:
+            continue
 
-            constants = parse_ctab(data, file_off, byte_len)
-            for name, reg_idx, reg_count, rows, cols in constants:
-                if rows >= 3 and cols >= 3:  # matrix (3x3 or 4x4)
-                    role = classify_matrix_name(name)
-                    ctab_matrices.append((name, reg_idx, reg_count, rows, cols, target_va, role))
+        constants = parse_ctab(data, file_off, byte_len)
+        for name, reg_idx, reg_count, rows, cols in constants:
+            if rows >= 3 and cols >= 3:  # matrix (3x3 or 4x4)
+                role = classify_matrix_name(name)
+                ctab_matrices.append((name, reg_idx, reg_count, rows, cols, target_va, role))
 
     if ctab_matrices:
         print(f"\n  Found {len(ctab_matrices)} matrix constants in shader CTABs:\n")

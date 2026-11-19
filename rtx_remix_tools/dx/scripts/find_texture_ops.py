@@ -19,7 +19,7 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, analyze_pushes,
+    scan_vtable_calls, scan_vtable_mov, method_immediates,
     D3DTSS, D3DSAMP, decode_tss_value, decode_samp_value,
 )
 
@@ -49,21 +49,14 @@ def main():
     indirect = scan_vtable_mov(text_data, text_va, offset)
     print(f"  Direct: {len(direct)}, Indirect: {len(indirect)}")
 
-    # SetTexture(device, Stage, pTexture) — push pTexture; push Stage; call
     stage_counts = defaultdict(int)
     all_tex = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
     for va, reg in all_tex:
-        pushes = analyze_pushes(data, sections, image_base, va, window=40)
-        if pushes:
-            # Last push before call is the stage index (or close to it)
-            stage = pushes[-1][1] if len(pushes) >= 1 else None
-            # If stage looks like a pointer, try the other push
-            if stage is not None and stage > 16 and len(pushes) >= 2:
-                stage = pushes[-2][1]
-            if stage is not None and stage <= 16:
-                stage_counts[stage] += 1
-                if args.all:
-                    print(f"    0x{va:08X}: stage={stage}")
+        stage = method_immediates(text_data, text_va, va, "SetTexture")["Stage"]
+        if stage is not None and stage <= 16:
+            stage_counts[stage] += 1
+            if args.all:
+                print(f"    0x{va:08X}: stage={stage}")
 
     if stage_counts:
         print(f"\n  Texture stages used:")
@@ -79,23 +72,14 @@ def main():
     indirect = scan_vtable_mov(text_data, text_va, offset)
     print(f"  Direct: {len(direct)}, Indirect: {len(indirect)}")
 
-    # SetTextureStageState(device, Stage, Type, Value)
-    # Push order: Value, Type, Stage
     tss_data = defaultdict(lambda: defaultdict(list))  # stage -> type -> [values]
     all_tss = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
 
     for va, reg in all_tss:
-        pushes = analyze_pushes(data, sections, image_base, va, window=50)
-        if len(pushes) >= 3:
-            stage = pushes[-3][1]
-            tss_type = pushes[-2][1]
-            value = pushes[-1][1]
-            # Validate: stage 0-7, type in D3DTSS
-            if stage <= 7 and tss_type in D3DTSS:
-                tss_data[stage][tss_type].append(value)
-            elif tss_type <= 7 and stage in D3DTSS:
-                # Arguments might be swapped
-                tss_data[tss_type][stage].append(value)
+        pushed = method_immediates(text_data, text_va, va, "SetTextureStageState")
+        stage, tss_type, value = pushed["Stage"], pushed["Type"], pushed["Value"]
+        if None not in (stage, tss_type, value) and stage <= 7 and tss_type in D3DTSS:
+            tss_data[stage][tss_type].append(value)
 
     if tss_data:
         print(f"\n  -- Per-stage texture state summary --")
@@ -122,21 +106,14 @@ def main():
     indirect = scan_vtable_mov(text_data, text_va, offset)
     print(f"  Direct: {len(direct)}, Indirect: {len(indirect)}")
 
-    # SetSamplerState(device, Sampler, Type, Value)
-    # Push order: Value, Type, Sampler
     samp_data = defaultdict(lambda: defaultdict(list))  # sampler -> type -> [values]
     all_samp = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
 
     for va, reg in all_samp:
-        pushes = analyze_pushes(data, sections, image_base, va, window=50)
-        if len(pushes) >= 3:
-            sampler = pushes[-3][1]
-            samp_type = pushes[-2][1]
-            value = pushes[-1][1]
-            if sampler <= 16 and samp_type in D3DSAMP:
-                samp_data[sampler][samp_type].append(value)
-            elif samp_type <= 16 and sampler in D3DSAMP:
-                samp_data[samp_type][sampler].append(value)
+        pushed = method_immediates(text_data, text_va, va, "SetSamplerState")
+        sampler, samp_type, value = pushed["Sampler"], pushed["Type"], pushed["Value"]
+        if None not in (sampler, samp_type, value) and sampler <= 16 and samp_type in D3DSAMP:
+            samp_data[sampler][samp_type].append(value)
 
     if samp_data:
         print(f"\n  -- Per-sampler state summary --")

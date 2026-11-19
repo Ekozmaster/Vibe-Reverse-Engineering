@@ -24,8 +24,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header, va_to_offset,
-    scan_vtable_calls, scan_vtable_mov, analyze_pushes,
-    find_push_addr_near_call, D3DRS, decode_transform_type,
+    scan_vtable_calls, scan_vtable_mov, method_immediates,
+    D3DRS, decode_transform_type,
 )
 
 
@@ -155,45 +155,42 @@ def scan_for_skinned_decls(data, sections, image_base, text_data, text_va):
     all_addrs = set()
 
     for call_va in sorted(call_vas):
-        for _, addr in find_push_addr_near_call(data, sections, image_base, call_va, window=60):
-            if addr in all_addrs:
-                continue
-            all_addrs.add(addr)
+        pushed = method_immediates(text_data, text_va, call_va, "CreateVertexDeclaration")
+        addr = pushed["pVertexElements"]
+        if addr is None or addr in all_addrs:
+            continue
+        all_addrs.add(addr)
 
-            off_check = va_to_offset(sections, image_base, addr)
-            if off_check is None:
-                continue
-            elem = data[off_check:off_check + 8]
-            if len(elem) < 8:
-                continue
-            stream, offset, typ, method, usage, usage_idx = \
-                struct.unpack_from("<HHBBBB", elem)
-            if not (stream <= 4 and typ <= 17 and usage <= 13):
-                continue
+        off_check = va_to_offset(sections, image_base, addr)
+        if off_check is None:
+            continue
+        elem = data[off_check:off_check + 8]
+        if len(elem) < 8:
+            continue
+        stream, offset, typ, method, usage, usage_idx = \
+            struct.unpack_from("<HHBBBB", elem)
+        if not (stream <= 4 and typ <= 17 and usage <= 13):
+            continue
 
-            elements = parse_decl(data, sections, image_base, addr)
-            if elements and is_skinned(elements):
-                skinned.append((addr, analyze_decl(elements)))
+        elements = parse_decl(data, sections, image_base, addr)
+        if elements and is_skinned(elements):
+            skinned.append((addr, analyze_decl(elements)))
 
     return skinned
 
 
 # ── FVF scanning ────────────────────────────────────────────────────
 
-def scan_fvf_skinning(data, sections, image_base, text_data, text_va):
+def scan_fvf_skinning(text_data, text_va):
     """Find SetFVF calls with skinning bits set."""
     sites = scan_vtable_calls(text_data, text_va, 0x164)  # SetFVF
     sites += scan_vtable_mov(text_data, text_va, 0x164)
 
     skinned_fvfs = []
     for va, _ in sites:
-        pushes = analyze_pushes(data, sections, image_base, va)
-        if not pushes:
-            continue
-        # SetFVF(device, FVF) — FVF is the last push
-        val = pushes[-1][1]
+        val = method_immediates(text_data, text_va, va, "SetFVF")["FVF"]
         # FVF codes are bitfields; anything > 0xFFFFF is likely an address
-        if val > 0xFFFFF:
+        if val is None or val > 0xFFFFF:
             continue
         pos_type = val & 0x00E
         if pos_type in (0x006, 0x008, 0x00A, 0x00C, 0x00E):
@@ -206,7 +203,7 @@ def scan_fvf_skinning(data, sections, image_base, text_data, text_va):
 
 # ── Bone palette detection ──────────────────────────────────────────
 
-def find_bone_palettes(data, sections, image_base, text_data, text_va):
+def find_bone_palettes(text_data, text_va):
     """Detect bone palette uploads from SetVertexShaderConstantF patterns.
 
     Heuristic: start_reg >= 20, count >= 9, count divisible by 3 or 4.
@@ -217,19 +214,10 @@ def find_bone_palettes(data, sections, image_base, text_data, text_va):
 
     candidates = []
     for va, _ in sites:
-        pushes = analyze_pushes(data, sections, image_base, va, window=50)
-        if len(pushes) < 2:
+        pushed = method_immediates(text_data, text_va, va, "SetVertexShaderConstantF")
+        start_reg, count = pushed["StartRegister"], pushed["Vector4fCount"]
+        if start_reg is None or count is None:
             continue
-
-        # SetVertexShaderConstantF(device, StartRegister, pConstantData, Vector4fCount)
-        # Last two pushed immediates: count, start_reg (right-to-left push order)
-        start_reg = pushes[-2][1]
-        count = pushes[-1][1]
-
-        # Swap if order looks wrong (start_reg should be < count for bone palettes)
-        if count < start_reg and count <= 255 and start_reg > 0:
-            start_reg, count = count, start_reg
-
         if start_reg < 20 or count < 9 or start_reg > 255 or count > 768:
             continue
 
@@ -259,7 +247,7 @@ def find_bone_palettes(data, sections, image_base, text_data, text_va):
 
 # ── FFP blend state detection ───────────────────────────────────────
 
-def find_vertex_blend_states(data, sections, image_base, text_data, text_va):
+def find_vertex_blend_states(text_data, text_va):
     """Find SetRenderState calls for D3DRS_VERTEXBLEND (151) and
     D3DRS_INDEXEDVERTEXBLENDENABLE (167)."""
     sites = scan_vtable_calls(text_data, text_va, 0xE4)  # SetRenderState
@@ -267,15 +255,9 @@ def find_vertex_blend_states(data, sections, image_base, text_data, text_va):
 
     vb_states = defaultdict(list)
     for va, _ in sites:
-        pushes = analyze_pushes(data, sections, image_base, va, window=40)
-        if len(pushes) < 2:
-            continue
-        state_id = pushes[-2][1]
-        value = pushes[-1][1]
-        # Swap if state_id looks like a value and value looks like a state
-        if state_id not in (151, 167) and value in (151, 167):
-            state_id, value = value, state_id
-        if state_id in (151, 167):
+        pushed = method_immediates(text_data, text_va, va, "SetRenderState")
+        state_id, value = pushed["State"], pushed["Value"]
+        if state_id in (151, 167) and value is not None:
             vb_states[state_id].append((va, value))
 
     return vb_states
@@ -283,7 +265,7 @@ def find_vertex_blend_states(data, sections, image_base, text_data, text_va):
 
 # ── SetTransform(WORLDMATRIX(n)) detection ──────────────────────────
 
-def find_worldmatrix_transforms(data, sections, image_base, text_data, text_va):
+def find_worldmatrix_transforms(text_data, text_va):
     """Find SetTransform calls with WORLDMATRIX(n) arguments (>= 256).
 
     WORLDMATRIX(n) = 256 + n. Realistic bone indices are 0..255, so
@@ -294,15 +276,9 @@ def find_worldmatrix_transforms(data, sections, image_base, text_data, text_va):
 
     wm_calls = []
     for va, _ in sites:
-        pushes = analyze_pushes(data, sections, image_base, va, window=40)
-        if not pushes:
-            continue
-        # SetTransform(State, pMatrix) — pMatrix is usually a register push
-        # (not captured), so scan all pushes for a WORLDMATRIX range value.
-        for _, pval, _ in pushes:
-            if 256 <= pval <= 511:
-                wm_calls.append((va, pval))
-                break
+        state = method_immediates(text_data, text_va, va, "SetTransform")["State"]
+        if state is not None and 256 <= state <= 511:
+            wm_calls.append((va, state))
     return wm_calls
 
 
@@ -349,7 +325,7 @@ def main():
     print(f"{'='*60}")
 
     skinned_decls = scan_for_skinned_decls(data, sections, image_base, text_data, text_va)
-    fvf_skinned = scan_fvf_skinning(data, sections, image_base, text_data, text_va)
+    fvf_skinned = scan_fvf_skinning(text_data, text_va)
 
     if skinned_decls:
         print(f"\n  {len(skinned_decls)} skinned declaration(s) found:\n")
@@ -406,7 +382,7 @@ def main():
     print("  Bone Palette Candidates (SetVertexShaderConstantF)")
     print(f"{'='*60}")
 
-    palettes = find_bone_palettes(data, sections, image_base, text_data, text_va)
+    palettes = find_bone_palettes(text_data, text_va)
 
     if palettes:
         print(f"\n  {len(palettes)} candidate(s) found:\n")
@@ -446,7 +422,7 @@ def main():
     print("  FFP Vertex Blending (Render States)")
     print(f"{'='*60}")
 
-    vb_states = find_vertex_blend_states(data, sections, image_base, text_data, text_va)
+    vb_states = find_vertex_blend_states(text_data, text_va)
 
     D3DVERTEXBLENDFLAGS = {0: "DISABLE", 1: "1WEIGHTS", 2: "2WEIGHTS", 3: "3WEIGHTS", 255: "TWEENING"}
 
@@ -479,7 +455,7 @@ def main():
         print(f"  D3DRS_INDEXEDVERTEXBLENDENABLE: not found")
 
     # WORLDMATRIX transforms
-    wm_calls = find_worldmatrix_transforms(data, sections, image_base, text_data, text_va)
+    wm_calls = find_worldmatrix_transforms(text_data, text_va)
     if wm_calls:
         indices = sorted(set(v - 256 for _, v in wm_calls))
         max_idx = max(indices)
