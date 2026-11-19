@@ -180,7 +180,7 @@ cd patches/<GameName>
 
 Use `./build.bat`: it runs from both Git Bash and PowerShell, while a bare `build.bat` is not found in either.
 
-The build needs Visual Studio 2022 with a Windows SDK and nothing else: the Direct3D 9 headers, DirectXMath and the image decoder (WIC) come from the Windows SDK, and the proxy does not use D3DX, so the built `d3d9.dll` needs no `d3dx9_*.dll` beside the game. The build is x86 only. A game folder copied from the template while it still used D3DX keeps its own dependency: it includes `d3dx9.h` and links `d3dx9.lib` from its `deps/dxsdk/Lib/x86/`, a file from Microsoft's legacy DirectX SDK that the template never shipped.
+The build needs Visual Studio 2022 or later (any edition, or the Build Tools) with a Windows SDK and nothing else; `build.bat` finds the newest one through `vswhere`, wherever it is installed. The Direct3D 9 headers, DirectXMath and the image decoder (WIC) come from the Windows SDK, and the proxy does not use D3DX, so the built `d3d9.dll` needs no `d3dx9_*.dll` beside the game. The build is x86 only. A game folder copied from the template while it still used D3DX keeps its own dependency: it includes `d3dx9.h` and links `d3dx9.lib` from its `deps/dxsdk/Lib/x86/`, a file from Microsoft's legacy DirectX SDK that the template never shipped.
 
 The build produces `d3d9.dll` in `patches/<GameName>/build/bin/release/`. Deploy to the game directory:
 - `d3d9.dll` (the game loads this as its d3d9 proxy)

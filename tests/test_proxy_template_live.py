@@ -1,7 +1,7 @@
 """The remix-comp-proxy template, built from the working tree and run in front of a toy program.
 
-Needs Windows, the Visual Studio 2022 C++ tools and a Direct3D 9 device; skipped
-without them. The toy and what its picture means are described in ``proxy_live``.
+Needs Windows, the C++ tools of Visual Studio 2022 or later and a Direct3D 9 device;
+skipped without them. The toy and what its picture means are described in ``proxy_live``.
 """
 
 import json
@@ -42,7 +42,7 @@ def _merged(*settings):
 
 @pytest.fixture(scope="module")
 def builds(tmp_path_factory):
-    """The template and the toy, built. Skips without the Visual Studio 2022 C++ tools."""
+    """The template and the toy, built. Skips without the C++ tools of Visual Studio 2022 or later."""
     try:
         return proxy_live.ProxyToy(tmp_path_factory.mktemp("proxy_toy"))
     except proxy_live.Unavailable as reason:
@@ -79,6 +79,11 @@ class TestBuild:
 
     def test_the_debug_configuration_builds(self, builds):
         build = builds.build("debug")
+        assert build.returncode == 0, build.stdout[-3000:] + build.stderr[-3000:]
+
+    def test_visual_studio_is_found_outside_its_default_folders(self, builds, tmp_path):
+        relocated = proxy_live.environment_with_relocated_visual_studio(tmp_path)
+        build = builds.build("debug", env=relocated)
         assert build.returncode == 0, build.stdout[-3000:] + build.stderr[-3000:]
 
     def test_the_proxy_needs_no_d3dx_dll(self, builds):

@@ -18,6 +18,9 @@ from proxy_template import TEMPLATE
 
 TOY_SOURCE = Path(__file__).resolve().parent / "proxy_toy" / "toy.cpp"
 
+# Where every Visual Studio installer since 2017 puts its locator, under Program Files (x86)
+_LOCATOR = Path("Microsoft Visual Studio") / "Installer" / "vswhere.exe"
+
 # (row, column) of each shape in the toy's picture
 CELLS = {
     "rigid quad": (0, 0),
@@ -85,13 +88,30 @@ class Frame:
 
 
 def find_vcvarsall() -> Path | None:
-    """vcvarsall.bat of Visual Studio 2022, looked for where the template's build.bat looks."""
-    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
-        for edition in ("Community", "Professional", "Enterprise", "BuildTools"):
-            path = Path(root or "") / "Microsoft Visual Studio" / "2022" / edition / "VC" / "Auxiliary" / "Build" / "vcvarsall.bat"
-            if path.is_file():
-                return path
-    return None
+    """vcvarsall.bat of the newest Visual Studio (2022 or later) that has the C++ tools, or None."""
+    locator = Path(os.environ.get("ProgramFiles(x86)", "")) / _LOCATOR
+    if not locator.is_file():
+        return None
+    installation = subprocess.run(
+        [str(locator), "-latest", "-products", "*", "-version", "17.0",
+         "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"],
+        capture_output=True, text=True).stdout.strip()
+    vcvarsall = Path(installation) / "VC" / "Auxiliary" / "Build" / "vcvarsall.bat"
+    return vcvarsall if installation and vcvarsall.is_file() else None
+
+
+def environment_with_relocated_visual_studio(scratch: Path) -> dict[str, str]:
+    """An environment in which Visual Studio is not where its installer puts it by default.
+
+    Both Program Files variables name folders under *scratch* that hold nothing but
+    the Visual Studio locator, which goes on reporting the real installation.
+    """
+    program_files = scratch / "Program Files"
+    program_files_x86 = scratch / "Program Files (x86)"
+    program_files.mkdir()
+    (program_files_x86 / _LOCATOR).parent.mkdir(parents=True)
+    shutil.copyfile(Path(os.environ["ProgramFiles(x86)"]) / _LOCATOR, program_files_x86 / _LOCATOR)
+    return {**os.environ, "ProgramFiles": str(program_files), "ProgramFiles(x86)": str(program_files_x86)}
 
 
 def build_toy(folder: Path, vcvarsall: Path) -> Path:
@@ -142,7 +162,7 @@ class ProxyToy:
     def __init__(self, scratch: Path):
         vcvarsall = find_vcvarsall()
         if os.name != "nt" or vcvarsall is None:
-            raise Unavailable("needs Windows with the Visual Studio 2022 C++ tools")
+            raise Unavailable("needs Windows with the C++ tools of Visual Studio 2022 or later")
         self._scratch = scratch
         self._template_copy = scratch / "proxy"
         shutil.copytree(TEMPLATE, self._template_copy, ignore=shutil.ignore_patterns("build", ".claude"))
@@ -150,10 +170,14 @@ class ProxyToy:
         self.proxy_dir = self._template_copy / "build" / "bin" / "release"
         self._toy = build_toy(scratch / "toy", vcvarsall)
 
-    def build(self, config: str) -> subprocess.CompletedProcess:
-        """Run build.bat for *config* ("release" or "debug") in the copy of the template."""
+    def build(self, config: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        """Run build.bat for *config* ("release" or "debug") in the copy of the template.
+
+        Args:
+            env: The environment build.bat runs in; this process's environment when None.
+        """
         script = self._template_copy / "build.bat"
-        return subprocess.run(["cmd", "/c", str(script), config], cwd=self._template_copy, capture_output=True, text=True)
+        return subprocess.run(["cmd", "/c", str(script), config], cwd=self._template_copy, capture_output=True, text=True, env=env)
 
     def frame(self, name: str, layout: Layout, *, ini: dict | None = None, proxy: bool = True, albedo_stage: int = 0,
               files: dict[str, bytes] | None = None) -> Frame:

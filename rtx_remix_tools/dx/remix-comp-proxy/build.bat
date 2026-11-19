@@ -28,25 +28,18 @@ echo Unknown argument: %~1
 exit /b 1
 :args_done
 
-:: Find Visual Studio
-set "VCVARS="
-for %%p in (
-    "%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
-    "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat"
-    "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
-    "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
-    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
-    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat"
-    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
-    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
-) do (
-    if exist %%p set "VCVARS=%%~p"
+:: Find the newest Visual Studio (2022 or later, any edition, Build Tools included) that
+:: has the C++ tools. Every Visual Studio installer puts vswhere.exe at this path.
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VSDIR="
+if exist "%VSWHERE%" (
+    for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -version 17.0 -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
 )
-if "%VCVARS%"=="" (
-    echo ERROR: Visual Studio 2022 not found
+if "%VSDIR%"=="" (
+    echo ERROR: Visual Studio 2022 or later with the C++ tools not found
     exit /b 1
 )
-call "%VCVARS%" x86 >nul 2>&1
+call "%VSDIR%\VC\Auxiliary\Build\vcvarsall.bat" x86 >nul 2>&1
 if errorlevel 1 ( echo ERROR: vcvarsall.bat failed & exit /b 1 )
 
 :: Paths
