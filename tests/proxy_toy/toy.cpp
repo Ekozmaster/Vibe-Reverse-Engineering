@@ -566,6 +566,12 @@ int main(int argc, char** argv)
 		check(dev->BeginScene(), "BeginScene");
 		check(dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 64), 1.0f, 0), "Clear");
 		draw_scene(s);
+
+		// One object is created in every frame, so that a call trace of any frame holds a Create call
+		IDirect3DVertexDeclaration9* created = nullptr;
+		check(dev->CreateVertexDeclaration(FLAT_DECL, &created), "CreateVertexDeclaration");
+		created->Release();
+
 		check(dev->EndScene(), "EndScene");
 
 		if (frame == FRAMES - 1)

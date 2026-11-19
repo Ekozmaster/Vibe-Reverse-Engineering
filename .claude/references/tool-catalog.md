@@ -197,7 +197,15 @@ python -m graphics.directx.dx9.tracer trigger --game-dir <GAME_DIR>             
 
 **proxy.ini** settings: `CaptureFrames=N` (frames to record), `CaptureInit=1` (capture boot-time calls like shader creation), `Chain.DLL=<wrapper.dll>` (chain to another d3d9 wrapper, or leave empty for system d3d9).
 
-**IMPORTANT**: `--game-dir` must point to the directory containing the deployed proxy DLL (where the game runs).
+**IMPORTANT**: `--game-dir` must point to the directory containing the deployed proxy DLL (where the game runs). It defaults to the current directory.
+
+`trigger --wait` follows the capture and exits 0 only after the tracer has reported its last frame; in every other case it prints an `[error]` line saying what it saw and exits 1:
+
+- No tracer took the trigger within 120 s (game not running, or the DLL is in another folder): the trigger file is removed again, so a later game start does not begin a capture.
+- The capture stopped short of `--frames`: the standalone tracer captures `CaptureFrames` frames from `proxy.ini` whatever `--frames` says, so keep the two equal.
+- The trigger was taken but no progress appears: that is the tracer built into remix-comp-proxy, which reads the frame count from the trigger and reports no progress. Look for the new file under `captures/`. Started this way it records one frame fewer than asked (`frames=2` gives one frame), so ask for one more.
+
+A progress file left by an earlier capture is deleted before the trigger is written.
 
 ### Analysis Commands
 

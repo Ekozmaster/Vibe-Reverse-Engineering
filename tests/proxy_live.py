@@ -81,6 +81,7 @@ class Shape:
 class Frame:
     shapes: dict[str, Shape]
     log: str
+    folder: Path    # where the toy ran; the proxy writes its own files there
 
 
 def find_vcvarsall() -> Path | None:
@@ -198,4 +199,4 @@ class ProxyToy:
         log = (folder / "rtx_comp" / "console.log").read_text(encoding="utf-8", errors="replace") if proxy else ""
         if proxy and "[Renderer] Module initialized." not in log:
             raise RuntimeError(f"{name}: the proxy had not loaded its modules when the toy saved its frame. Its log: {log!r}")
-        return Frame(_read_frame(folder / "frame.raw"), log)
+        return Frame(_read_frame(folder / "frame.raw"), log, folder)

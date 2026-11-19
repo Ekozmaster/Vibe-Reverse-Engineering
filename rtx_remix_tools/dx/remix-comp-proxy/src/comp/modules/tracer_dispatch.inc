@@ -833,7 +833,6 @@ inline void trace_CreateVertexDeclaration(tracer& t, const void* pVertexElements
     t.record_arg_ptr("ppDecl", ppDecl);
     t.record_data_vtxdecl("elements", (const BYTE*)pVertexElements);
     t.record_backtrace();
-    t.record_end();
 }
 
 inline void trace_SetVertexDeclaration(tracer& t, const void* pDecl)
@@ -875,7 +874,6 @@ inline void trace_CreateVertexShader(tracer& t, const void* pFunction, const voi
     t.record_arg_ptr("ppShader", ppShader);
     t.record_data_shader("bytecode", (const DWORD*)pFunction);
     t.record_backtrace();
-    t.record_end();
 }
 
 inline void trace_SetVertexShader(tracer& t, const void* pShader)
@@ -1020,7 +1018,6 @@ inline void trace_CreatePixelShader(tracer& t, const void* pFunction, const void
     t.record_arg_ptr("ppShader", ppShader);
     t.record_data_shader("bytecode", (const DWORD*)pFunction);
     t.record_backtrace();
-    t.record_end();
 }
 
 inline void trace_SetPixelShader(tracer& t, const void* pShader)
@@ -1136,6 +1133,14 @@ inline void trace_CreateQuery(tracer& t, DWORD Type, const void* ppQuery)
     t.record_arg_uint("Type", Type);
     t.record_arg_ptr("ppQuery", ppQuery);
     t.record_backtrace();
+    t.record_end();
+}
+
+// Ends the record of a method that creates an object, once the call has returned.
+// The dispatch functions of those methods leave their record open for it.
+inline void trace_created(tracer& t, const void* created)
+{
+    t.record_created_handle(created);
     t.record_end();
 }
 

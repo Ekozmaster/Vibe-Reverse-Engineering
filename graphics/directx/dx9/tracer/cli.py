@@ -51,6 +51,52 @@ def cmd_codegen(args: argparse.Namespace) -> None:
         sys.stdout.write(code)
 
 
+_WAIT_TIMEOUT_SECONDS = 120.0
+_POLL_SECONDS = 0.3
+# A tracer that reports progress writes its first line as it takes the trigger
+_PROGRESS_GRACE_SECONDS = 2.0
+
+
+def _read_progress(path: Path) -> tuple[int, int] | None:
+    """(frame, calls) from the tracer's progress file; None while there is nothing to read."""
+    try:
+        frame, calls = path.read_text().split()[:2]
+        return int(frame), int(calls)
+    except (OSError, ValueError):
+        return None
+
+
+def _wait_for_capture(trigger_path: Path, progress_path: Path, frames: int) -> str | None:
+    """Follow a capture to its last frame.
+
+    Returns:
+        None once the tracer reports frame *frames*; otherwise the reason the
+        capture was not seen to finish.
+    """
+    start = time.time()
+    taken_at = None
+    progress = None
+    while time.time() - start < _WAIT_TIMEOUT_SECONDS:
+        time.sleep(_POLL_SECONDS)
+        seen = _read_progress(progress_path)
+        if seen is not None and seen != progress:
+            progress = seen
+            print(f"\r  [frame {seen[0]}] {seen[1]} calls captured ({time.time() - start:.1f}s)  ", end="", flush=True)
+        if progress is not None and progress[0] >= frames:
+            return None
+        if taken_at is None and not trigger_path.exists():
+            taken_at = time.time()
+        if taken_at is not None and progress is None and time.time() - taken_at > _PROGRESS_GRACE_SECONDS:
+            return ("a tracer took the trigger but reports no progress. The tracer built into "
+                    "remix-comp-proxy reports none: look for the capture in its output folder (captures by default)")
+
+    if progress is not None:
+        return (f"the capture stopped at frame {progress[0]} of {frames}. The standalone tracer captures as many "
+                f"frames as [Trace] CaptureFrames in its proxy.ini says, whatever --frames is")
+    return (f"no tracer took the trigger within {_WAIT_TIMEOUT_SECONDS:.0f}s. Is the game running, "
+            f"with the tracer's d3d9.dll in {trigger_path.parent}?")
+
+
 def cmd_trigger(args: argparse.Namespace) -> None:
     game_dir = Path(args.game_dir) if args.game_dir else Path(".")
     trigger_path = game_dir / "dxtrace_capture.trigger"
@@ -68,6 +114,8 @@ def cmd_trigger(args: argparse.Namespace) -> None:
             time.sleep(1)
         print("\r  Triggering capture NOW                                        ")
 
+    # Progress left by an earlier capture would read as progress of this one
+    progress_path.unlink(missing_ok=True)
     trigger_path.write_text(f"frames={args.frames}\n")
     print(f"  Trigger file created: {trigger_path}")
 
@@ -76,43 +124,24 @@ def cmd_trigger(args: argparse.Namespace) -> None:
         return
 
     print("  Waiting for capture to complete...")
-    last_frame = -1
-    last_seq = -1
-    start = time.time()
-
-    while True:
-        time.sleep(0.3)
-
-        if progress_path.exists():
-            try:
-                parts = progress_path.read_text().strip().split()
-                frame, seq = int(parts[0]), int(parts[1])
-                if frame != last_frame or seq != last_seq:
-                    elapsed = time.time() - start
-                    print(f"\r  [frame {frame}] {seq} calls captured ({elapsed:.1f}s)  ", end="", flush=True)
-                    last_frame, last_seq = frame, seq
-
-                if frame >= args.frames:
-                    break
-            except (ValueError, IndexError):
-                pass
-
-        if not trigger_path.exists() and last_frame < 0:
-            time.sleep(0.5)
-            if not trigger_path.exists():
-                break
-
-        if time.time() - start > 120:
-            print("\n  [timeout] Capture did not complete within 120s")
-            break
-
+    try:
+        problem = _wait_for_capture(trigger_path, progress_path, args.frames)
+    finally:
+        # Left behind, the trigger would start a capture the next time the game runs
+        if trigger_path.exists():
+            trigger_path.unlink()
+            print(f"\n  Trigger file removed: {trigger_path}")
     print()
-    if jsonl_path.exists():
-        size_kb = jsonl_path.stat().st_size / 1024
-        print(f"  Capture complete: {jsonl_path} ({size_kb:.1f} KB)")
-        print(f"  Run: python -m graphics.directx.dx9.tracer analyze \"{jsonl_path}\" --summary")
-    else:
-        print(f"  [warning] Expected output not found: {jsonl_path}")
+
+    if problem is None and not jsonl_path.exists():
+        problem = f"the tracer reported its last frame, but {jsonl_path} is not there"
+    if problem is not None:
+        print(f"  [error] {problem}")
+        sys.exit(1)
+
+    size_kb = jsonl_path.stat().st_size / 1024
+    print(f"  Capture complete: {jsonl_path} ({size_kb:.1f} KB)")
+    print(f"  Run: python -m graphics.directx.dx9.tracer analyze \"{jsonl_path}\" --summary")
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
@@ -137,9 +166,12 @@ def build_parser() -> argparse.ArgumentParser:
     # trigger
     tr = sub.add_parser("trigger", help="Signal trace proxy to capture frames")
     tr.add_argument("--game-dir", "-d", default=None, help="Target directory (default: cwd)")
-    tr.add_argument("--frames", "-n", type=int, default=2, help="Number of frames to capture")
+    tr.add_argument("--frames", "-n", type=int, default=2,
+                    help="Number of frames to capture. The standalone tracer DLL takes the count from "
+                         "[Trace] CaptureFrames in its proxy.ini instead")
     tr.add_argument("--delay", type=int, default=3, help="Countdown seconds before trigger")
-    tr.add_argument("--wait", "-w", action="store_true", help="Wait and show progress")
+    tr.add_argument("--wait", "-w", action="store_true",
+                    help="Follow the capture to its last frame; exit 1 when it was not seen to get there")
     tr.set_defaults(func=cmd_trigger)
 
     # analyze

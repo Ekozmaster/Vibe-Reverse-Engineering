@@ -590,8 +590,7 @@ namespace comp
 	{
 		TRACE_IF_ACTIVE(trace_CreateVertexDeclaration, pVertexElements, ppDecl);
 		auto hr = m_pIDirect3DDevice9->CreateVertexDeclaration(pVertexElements, ppDecl);
-		if (SUCCEEDED(hr) && ppDecl && *ppDecl)
-			if (auto* t = tracer::get(); t && t->is_capturing()) t->record_created_handle(*ppDecl);
+		TRACE_IF_ACTIVE(trace_created, SUCCEEDED(hr) && ppDecl ? *ppDecl : nullptr);
 		return hr;
 	}
 
@@ -624,8 +623,7 @@ namespace comp
 	{
 		TRACE_IF_ACTIVE(trace_CreateVertexShader, pFunction, ppShader);
 		auto hr = m_pIDirect3DDevice9->CreateVertexShader(pFunction, ppShader);
-		if (SUCCEEDED(hr) && ppShader && *ppShader)
-			if (auto* t = tracer::get(); t && t->is_capturing()) t->record_created_handle(*ppShader);
+		TRACE_IF_ACTIVE(trace_created, SUCCEEDED(hr) && ppShader ? *ppShader : nullptr);
 		return hr;
 	}
 
@@ -722,8 +720,7 @@ namespace comp
 	{
 		TRACE_IF_ACTIVE(trace_CreatePixelShader, pFunction, ppShader);
 		auto hr = m_pIDirect3DDevice9->CreatePixelShader(pFunction, ppShader);
-		if (SUCCEEDED(hr) && ppShader && *ppShader)
-			if (auto* t = tracer::get(); t && t->is_capturing()) t->record_created_handle(*ppShader);
+		TRACE_IF_ACTIVE(trace_created, SUCCEEDED(hr) && ppShader ? *ppShader : nullptr);
 		return hr;
 	}
 

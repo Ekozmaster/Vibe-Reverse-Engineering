@@ -4,6 +4,8 @@ Needs Windows, the Visual Studio 2022 C++ tools and a Direct3D 9 device; skipped
 without them. The toy and what its picture means are described in ``proxy_live``.
 """
 
+import json
+import re
 import struct
 import zlib
 
@@ -169,6 +171,33 @@ class TestOverlayIcon:
     def test_a_file_that_is_no_image_is_reported(self, toy):
         frame = toy.frame("no_image", SHIPPED_LAYOUT, files={ICON: b"not an image"})
         assert "Failed to load rtx_comp" in frame.log
+
+
+class TestBuiltInTracer:
+    """A capture of two frames, started by the trigger file the proxy's tracer looks for."""
+
+    @pytest.fixture(scope="class")
+    def capture(self, toy):
+        frame = toy.frame("tracer", SHIPPED_LAYOUT, files={"dxtrace_capture.trigger": b"frames=2"})
+        captures = list((frame.folder / "captures").glob("dxtrace_*.jsonl"))
+        assert len(captures) == 1, frame.log
+        return captures[0].read_text(encoding="utf-8").splitlines()
+
+    def test_every_line_is_one_record(self, capture):
+        broken = []
+        for number, line in enumerate(capture, 1):
+            try:
+                json.loads(line)
+            except ValueError:
+                broken.append((number, line[:80]))
+        assert not broken
+
+    def test_record_of_a_creation_names_the_object_created(self, capture):
+        records = [json.loads(line) for line in capture if line.startswith("{")]
+        creations = [record for record in records if record.get("method") == "CreateVertexDeclaration"]
+        assert creations    # the toy creates one declaration per frame
+        for record in creations:
+            assert re.fullmatch("0x[0-9A-F]{8}", record.get("created_handle", "")), record
 
 
 class TestAlbedoStage:
