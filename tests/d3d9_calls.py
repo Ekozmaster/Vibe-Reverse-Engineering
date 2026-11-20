@@ -33,6 +33,17 @@ def push32(value: int) -> bytes:
     return bytes([0x68]) + struct.pack("<I", value)
 
 
+DEVICE_GLOBAL = 0x9D915C
+
+
+def load_device(global_va: int = DEVICE_GLOBAL) -> bytes:
+    """``mov ecx, [global_va]`` / ``mov edx, [ecx]``: the object held in a global and its vtable.
+
+    Followed by ``push ecx`` and ``call_method``, that is a COM call on the object.
+    """
+    return bytes([0x8B, 0x0D]) + struct.pack("<I", global_va) + bytes([0x8B, 0x11])
+
+
 def call_method(vtable_offset: int, short: bool = False) -> bytes:
     """``call [edx + vtable_offset]``, in the disp8 form when *short*."""
     if short:
@@ -64,6 +75,16 @@ class Code:
         body_start = len(self.data) + 3
         self.calls[label] = TEXT_VA + body_start + sum(len(c) for c in chunks[:-1])
         self.data += function(*chunks)
+        return self
+
+    def add_com_calls(self, object_and_vtable: bytes, param_counts: dict[int, int]) -> "Code":
+        """Add one COM call per vtable offset of *param_counts* on the object *object_and_vtable* loads.
+
+        Each pushes as many zeros as its parameter count, then the object, and
+        is labelled with its offset in hex ("0xE4").
+        """
+        for offset, count in param_counts.items():
+            self.add(f"0x{offset:X}", object_and_vtable, *[push(0)] * count, PUSH_ECX, call_method(offset))
         return self
 
     def add_data(self, label: str, blob: bytes) -> int:

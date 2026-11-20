@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_common import (
     load_binary, load_text_section, print_header,
     scan_vtable_calls, scan_vtable_mov, method_immediates,
-    decode_format, D3DPOOL,
+    split_device_hits, device_origin_summary, decode_format, D3DPOOL,
 )
 
 # Method signatures (vtable offset, name, arg hints)
@@ -56,11 +56,14 @@ def main():
     p.add_argument("binary", help="Path to PE binary (.exe / .dll)")
     p.add_argument("--all", action="store_true",
                    help="Show every call site, not just summaries")
+    p.add_argument("--unconfirmed", action="store_true",
+                   help="List the calls below vtable+0x80 on objects not shown to be the device")
     args = p.parse_args()
 
     data, image_base, sections = load_binary(args.binary)
     text_data, text_va = load_text_section(data, image_base, sections)
     print_header(data, image_base, sections)
+    print(device_origin_summary(text_data, text_va))
 
     all_formats = defaultdict(int)   # format -> count
     rt_formats = defaultdict(int)    # render target formats
@@ -68,17 +71,19 @@ def main():
     tex_formats = defaultdict(int)   # texture formats
 
     for offset, name in sorted(METHODS.items()):
-        direct = scan_vtable_calls(text_data, text_va, offset)
-        indirect = scan_vtable_mov(text_data, text_va, offset)
+        direct = split_device_hits(text_data, text_va, offset, scan_vtable_calls(text_data, text_va, offset))
+        indirect = split_device_hits(text_data, text_va, offset, scan_vtable_mov(text_data, text_va, offset))
 
         print(f"\n=== {name} (vtable+0x{offset:03X}) ===")
-        print(f"  Direct: {len(direct)}, Indirect: {len(indirect)}")
+        print(f"  Direct: {len(direct.confirmed)}, Indirect: {len(indirect.confirmed)}")
+        unconfirmed = sorted(va for va, _ in direct.unconfirmed + indirect.unconfirmed)
+        if unconfirmed:
+            print(f"  Unconfirmed (object not shown to be the device): {len(unconfirmed)}")
+            if args.unconfirmed:
+                for va in unconfirmed:
+                    print(f"    0x{va:08X}")
 
-        all_sites = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
-        if not all_sites:
-            continue
-
-        for va, reg in all_sites:
+        for va, _ in direct.confirmed + indirect.confirmed:
             pushed = method_immediates(text_data, text_va, va, name)
             fmt, size, pool = pushed["Format"], size_text(pushed), pushed.get("Pool")
 

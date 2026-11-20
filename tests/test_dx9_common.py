@@ -105,6 +105,6 @@ class TestD3dxConstantTableOffsets:
         assert find_vtable_calls.D3DX_CONST_TABLE[offset] == method
 
     def test_inherited_buffer_methods_precede_constant_table_methods(self):
-        methods = dx.D3DX_CONSTANT_TABLE_METHODS
-        assert methods[:5] == ("QueryInterface", "AddRef", "Release", "GetBufferPointer", "GetBufferSize")
+        methods = [name for name, _param_count in dx.D3DX_CONSTANT_TABLE_METHODS]
+        assert methods[:5] == ["QueryInterface", "AddRef", "Release", "GetBufferPointer", "GetBufferSize"]
         assert methods.index("GetDesc") == 5

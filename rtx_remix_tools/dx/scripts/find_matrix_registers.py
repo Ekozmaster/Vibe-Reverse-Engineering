@@ -6,9 +6,8 @@ hold transformation matrices:
 1. SetVertexShaderConstantF sites with count=4 (matrix-sized uploads)
 2. Calling-function grouping (same function uploading multiple matrices)
 3. Frequency analysis (per-frame vs per-object upload patterns)
-4. D3DX SetMatrix/SetMatrixArray vtable calls
-5. Embedded shader CTAB parsing (extracts named constants like "WorldViewProj")
-6. SetTransform cross-reference (FFP transform usage reveals matrix roles)
+4. Embedded shader CTAB parsing (extracts named constants like "WorldViewProj")
+5. SetTransform cross-reference (FFP transform usage reveals matrix roles)
 
 Outputs a suggested remix-comp-proxy.ini register layout.
 

@@ -405,10 +405,13 @@ static void trace_on_present(void);
 
 /* ---- Core trace functions ---- */
 
-static void write_progress(void) {
+/* "<frame> <calls>" while capturing. The last write adds " done", once every
+ * captured call is in the JSONL file: "trigger --wait" takes that word for
+ * the capture being complete. */
+static void write_progress(int done) {
     FILE *pf = fopen(g_progressPath, "w");
     if (pf) {
-        fprintf(pf, "%d %d\n", g_currentFrame, g_seq);
+        fprintf(pf, done ? "%d %d done\n" : "%d %d\n", g_currentFrame, g_seq);
         fclose(pf);
     }
 }
@@ -485,7 +488,8 @@ static void trace_post(int slot, DWORD retval, DWORD *args) {
 
         if ((g_seq & FLUSH_INTERVAL_MASK) == 0) {
             fflush(g_jsonlFile);
-            write_progress();
+            if (g_capturing)
+                write_progress(0);
         }
     }
 
@@ -511,30 +515,32 @@ static void trace_on_present(void) {
                 g_frameTarget = g_cfgCaptureFrames;
                 init_code_ranges(); /* refresh: DLLs may have loaded since init */
                 log_str("=== CAPTURE STARTED ===\r\n");
-                write_progress();
+                write_progress(0);
             }
         }
         return;
     }
 
     g_currentFrame++;
-    write_progress();
+    if (g_currentFrame < g_frameTarget) {
+        write_progress(0);
+        return;
+    }
 
-    if (g_currentFrame >= g_frameTarget) {
-        g_capturing = 0;
-        fflush(g_jsonlFile);
+    g_capturing = 0;
+    fflush(g_jsonlFile);
+    /* With init capture on, the file stays open for later Create* calls */
+    if (!g_captureInit) {
+        fclose(g_jsonlFile);
+        g_jsonlFile = NULL;
+    }
+    write_progress(1);
 
-        if (!g_captureInit) {
-            fclose(g_jsonlFile);
-            g_jsonlFile = NULL;
-        }
-
-        log_str("=== CAPTURE DONE ===\r\n");
-        {
-            char buf[64];
-            sprintf(buf, "  Frames: %d  Calls: %d\r\n", g_frameTarget, g_seq);
-            log_str(buf);
-        }
+    log_str("=== CAPTURE DONE ===\r\n");
+    {
+        char buf[64];
+        sprintf(buf, "  Frames: %d  Calls: %d\r\n", g_frameTarget, g_seq);
+        log_str(buf);
     }
 }
 

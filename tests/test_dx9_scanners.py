@@ -16,11 +16,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rtx_remix_tools" / "dx" / "scripts"))
 
-from d3d9_calls import PUSH_EAX, PUSH_ECX, Code, call_method, push, push32, write_pe32, write_pe32_plus
+from d3d9_calls import (
+    PUSH_EAX, PUSH_ECX, Code, call_method, load_device, push, push32, write_pe32, write_pe32_plus,
+)
+import dx9_common
 from proxy_template import ini_section_in, keys_of, keys_the_proxy_reads
 
 # IDirect3DDevice9 vtable offsets
 PRESENT, CREATE_TEXTURE, SET_TRANSFORM, SET_RENDER_STATE = 0x44, 0x5C, 0xB0, 0xE4
+CREATE_RENDER_TARGET, BEGIN_SCENE = 0x70, 0xA4
 CREATE_STATE_BLOCK, SET_TEXTURE, SET_TEXTURE_STAGE_STATE, SET_SAMPLER_STATE = 0xEC, 0x104, 0x10C, 0x114
 CREATE_VERTEX_DECLARATION, SET_FVF, CREATE_VERTEX_SHADER = 0x158, 0x164, 0x16C
 SET_VS_CONSTANT_F, SET_PS_CONSTANT_F = 0x178, 0x1B4
@@ -49,13 +53,16 @@ def known_calls(tmp_path_factory):
     load_local = bytes([0x8B, 0x45, 0x68])                                   # mov eax, [ebp+0x68]
     read_field = bytes([0x8B, 0x86]) + struct.pack("<I", SET_VS_CONSTANT_F)  # mov eax, [esi+0x178]
     call_near = bytes([0xE8, 0, 0, 0, 0])
+    load_render_target = bytes([0x8B, 0x42, CREATE_RENDER_TARGET])          # mov eax, [edx+0x70]
+    call_eax = bytes([0xFF, 0xD0])
+    device = load_device()                          # the device and its vtable, from a global
 
     def state(name, state_id, value):
-        code.add(name, value, push(state_id), PUSH_ECX, call_method(SET_RENDER_STATE))
+        code.add(name, device, value, push(state_id), PUSH_ECX, call_method(SET_RENDER_STATE))
 
-    code.add("matrix", push(4), PUSH_EAX, push(8), PUSH_ECX, call_method(SET_VS_CONSTANT_F))
-    code.add("vec4", push(1), PUSH_EAX, push(4), PUSH_ECX, call_method(SET_VS_CONSTANT_F))
-    code.add("palette", push(60), PUSH_EAX, push(20), PUSH_ECX, call_method(SET_VS_CONSTANT_F))
+    code.add("matrix", device, push(4), PUSH_EAX, push(8), PUSH_ECX, call_method(SET_VS_CONSTANT_F))
+    code.add("vec4", device, push(1), PUSH_EAX, push(4), PUSH_ECX, call_method(SET_VS_CONSTANT_F))
+    code.add("palette", device, push(60), PUSH_EAX, push(20), PUSH_ECX, call_method(SET_VS_CONSTANT_F))
     code.add("field", push(16), push(32), call_near, read_field)
     state("zfunc", D3DRS_ZFUNC, push(8))
     state("srcblend", D3DRS_SRCBLEND, push(5))
@@ -63,20 +70,23 @@ def known_calls(tmp_path_factory):
     state("cull", D3DRS_CULLMODE, load_local + PUSH_EAX)
     state("vertexblend", D3DRS_VERTEXBLEND, push(3))
     state("indexed", D3DRS_INDEXEDVERTEXBLENDENABLE, push(1))
-    code.add("stage_state", push(4), push(1), push(2), PUSH_ECX, call_method(SET_TEXTURE_STAGE_STATE))
-    code.add("sampler", push(2), push(6), push(0), PUSH_ECX, call_method(SET_SAMPLER_STATE))
-    code.add("texture", PUSH_EAX, push(1), PUSH_ECX, call_method(SET_TEXTURE))
-    code.add("ps_constants", push(2), PUSH_EAX, push(10), PUSH_ECX, call_method(SET_PS_CONSTANT_F))
-    code.add("fvf", push32(0x112), PUSH_ECX, call_method(SET_FVF))
-    code.add("skinned_fvf", push(0x1A), PUSH_ECX, call_method(SET_FVF))
-    code.add("view", PUSH_EAX, push(2), PUSH_ECX, call_method(SET_TRANSFORM))
-    code.add("bone_matrix", PUSH_EAX, push32(256 + 3), PUSH_ECX, call_method(SET_TRANSFORM))
-    code.add("state_block", PUSH_EAX, push(1), PUSH_ECX, call_method(CREATE_STATE_BLOCK))
-    code.add("create_texture", push(0), PUSH_EAX, push(1), push(21), push(0), push(1),
+    code.add("stage_state", device, push(4), push(1), push(2), PUSH_ECX, call_method(SET_TEXTURE_STAGE_STATE))
+    code.add("sampler", device, push(2), push(6), push(0), PUSH_ECX, call_method(SET_SAMPLER_STATE))
+    code.add("texture", device, PUSH_EAX, push(1), PUSH_ECX, call_method(SET_TEXTURE))
+    code.add("ps_constants", device, push(2), PUSH_EAX, push(10), PUSH_ECX, call_method(SET_PS_CONSTANT_F))
+    code.add("fvf", device, push32(0x112), PUSH_ECX, call_method(SET_FVF))
+    code.add("skinned_fvf", device, push(0x1A), PUSH_ECX, call_method(SET_FVF))
+    code.add("view", device, PUSH_EAX, push(2), PUSH_ECX, call_method(SET_TRANSFORM))
+    code.add("bone_matrix", device, PUSH_EAX, push32(256 + 3), PUSH_ECX, call_method(SET_TRANSFORM))
+    code.add("state_block", device, PUSH_EAX, push(1), PUSH_ECX, call_method(CREATE_STATE_BLOCK))
+    code.add("create_texture", device, push(0), PUSH_EAX, push(1), push(21), push(0), push(1),
              push32(128), push32(256), PUSH_ECX, call_method(CREATE_TEXTURE, short=True))
-    code.add("present", push(0), push(0), push(0), push(0), PUSH_ECX, call_method(PRESENT, short=True))
-    code.add("vertex_shader", PUSH_EAX, push32(shader_va), PUSH_ECX, call_method(CREATE_VERTEX_SHADER))
-    code.add("vertex_declaration", PUSH_EAX, push32(declaration_va), PUSH_ECX,
+    code.add("present", device, push(0), push(0), push(0), push(0), PUSH_ECX, call_method(PRESENT, short=True))
+    code.add("render_target", device, push(0), PUSH_EAX, push(0), push(0), push(0), push(21), push32(480),
+             push32(640), load_render_target, PUSH_ECX, call_eax)
+    code.add("vertex_shader", device, PUSH_EAX, push32(shader_va), PUSH_ECX, call_method(CREATE_VERTEX_SHADER))
+    code.add("begin_scene", device, PUSH_ECX, call_method(BEGIN_SCENE))
+    code.add("vertex_declaration", device, PUSH_EAX, push32(declaration_va), PUSH_ECX,
              call_method(CREATE_VERTEX_DECLARATION))
     path = write_pe32(tmp_path_factory.mktemp("dx") / "known_calls.exe", code.data)
     return path, code
@@ -235,6 +245,11 @@ class TestOtherDecoders:
 
         assert "256x128" in created and "fmt=A8R8G8B8" in created and "pool=MANAGED" in created
 
+    def test_render_target_through_a_short_method_pointer_load(self, known_calls):
+        text = report("find_surface_formats", known_calls[0])
+
+        assert "640x480 fmt=A8R8G8B8" in text
+
     def test_present_through_a_short_call(self, known_calls):
         text = report("find_device_calls", known_calls[0])
 
@@ -256,6 +271,53 @@ class TestOtherDecoders:
         text = report("find_shader_bytecode", known_calls[0])
 
         assert f"0x{known_calls[1].calls['vs_bytecode']:08X}" in text and "vs_3_0" in text
+
+
+def _texture_creation(object_and_vtable: bytes, fmt: int) -> tuple[bytes, ...]:
+    """CreateTexture(256, 128, 1, 0, fmt, MANAGED, eax, NULL) on the object *object_and_vtable* loads."""
+    return (object_and_vtable, push(0), PUSH_EAX, push(1), push(fmt), push(0), push(1),
+            push32(128), push32(256), PUSH_ECX, call_method(CREATE_TEXTURE))
+
+
+class TestDeviceProvenanceReport:
+    """Calls below vtable+0x80 count only on an object read from where the device was seen to live."""
+
+    _OTHER_GLOBAL = 0x9D9200
+    # BeginScene, EndScene, Clear, SetTransform, SetViewport, SetRenderState, SetTexture,
+    # SetTextureStageState, SetSamplerState, DrawPrimitive, SetFVF, SetStreamSource
+    _DEVICE_METHODS = {offset: dx9_common.DEVICE[offset] for offset in (
+        0xA4, 0xA8, 0xAC, 0xB0, 0xBC, 0xE4, 0x104, 0x10C, 0x114, 0x144, 0x164, 0x190)}
+
+    @staticmethod
+    def _binary(tmp_path, object_and_vtable: bytes) -> tuple[Path, Code]:
+        """Twelve device methods from vtable+0x80 on and a CreateTexture on the object
+        *object_and_vtable* loads, and a CreateTexture on an object read from another global."""
+        code = Code()
+        code.add_com_calls(object_and_vtable, TestDeviceProvenanceReport._DEVICE_METHODS)
+        code.add("device_texture", *_texture_creation(object_and_vtable, fmt=21))
+        code.add("other_texture", *_texture_creation(load_device(TestDeviceProvenanceReport._OTHER_GLOBAL), fmt=40))
+        return write_pe32(tmp_path / "game.exe", code.data), code
+
+    def test_only_the_device_objects_formats_reach_the_summary(self, tmp_path):
+        binary, code = self._binary(tmp_path, load_device())
+
+        text = report("find_surface_formats", binary, "--unconfirmed")
+
+        assert "Device location, learned from the calls at vtable+0x80 and above: [0x009D915C]" in text
+        summary = text.split("Surface Format Summary")[1]
+        assert "A8R8G8B8" in summary and "A8P8" not in summary
+        assert "Unconfirmed (object not shown to be the device): 1" in text
+        assert f"0x{code.calls['other_texture']:08X}" in text
+
+    def test_a_device_held_in_a_field_of_this_leaves_every_low_slot_call_unconfirmed(self, tmp_path):
+        load_field_of_this = bytes([0x8B, 0x49, 0x3C, 0x8B, 0x11])          # mov ecx, [ecx+0x3C] / mov edx, [ecx]
+        binary, _code = self._binary(tmp_path, load_field_of_this)
+
+        text = report("find_surface_formats", binary)
+
+        assert "Device location: none learned" in text
+        assert "Unconfirmed (object not shown to be the device): 2" in text
+        assert "No format arguments decoded" in text
 
 
 class TestInputTheScannersCannotRead:

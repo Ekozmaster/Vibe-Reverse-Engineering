@@ -28,10 +28,10 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 
 def cmd_codegen(args: argparse.Namespace) -> None:
@@ -57,21 +57,39 @@ _POLL_SECONDS = 0.3
 _PROGRESS_GRACE_SECONDS = 2.0
 
 
-def _read_progress(path: Path) -> tuple[int, int] | None:
-    """(frame, calls) from the tracer's progress file; None while there is nothing to read."""
+class _Progress(NamedTuple):
+    """One line of the tracer's progress file: "<frame> <calls>", then " done" on the last.
+
+    Attributes:
+        frame: Frames the capture has finished.
+        calls: Calls it has recorded.
+        done: The capture is over and every recorded call is in the JSONL file.
+    """
+    frame: int
+    calls: int
+    done: bool
+
+
+def _read_progress(path: Path) -> _Progress | None:
+    """The tracer's progress; None while there is nothing to read."""
     try:
-        frame, calls = path.read_text().split()[:2]
-        return int(frame), int(calls)
+        frame, calls, *rest = path.read_text().split()
+        return _Progress(int(frame), int(calls), rest == ["done"])
     except (OSError, ValueError):
         return None
 
 
+def _frames_short(progress: _Progress, frames: int) -> str:
+    return (f"the capture stopped at frame {progress.frame} of {frames}. The standalone tracer captures as many "
+            f"frames as [Trace] CaptureFrames in its proxy.ini says, whatever --frames is")
+
+
 def _wait_for_capture(trigger_path: Path, progress_path: Path, frames: int) -> str | None:
-    """Follow a capture to its last frame.
+    """Follow a capture until the tracer reports it written in full.
 
     Returns:
-        None once the tracer reports frame *frames*; otherwise the reason the
-        capture was not seen to finish.
+        None once the tracer reports the capture done at frame *frames* or
+        later; otherwise the reason the capture was not seen to finish.
     """
     start = time.time()
     taken_at = None
@@ -81,20 +99,24 @@ def _wait_for_capture(trigger_path: Path, progress_path: Path, frames: int) -> s
         seen = _read_progress(progress_path)
         if seen is not None and seen != progress:
             progress = seen
-            print(f"\r  [frame {seen[0]}] {seen[1]} calls captured ({time.time() - start:.1f}s)  ", end="", flush=True)
-        if progress is not None and progress[0] >= frames:
-            return None
+            print(f"\r  [frame {seen.frame}] {seen.calls} calls captured ({time.time() - start:.1f}s)  ",
+                  end="", flush=True)
+        if progress is not None and progress.done:
+            return None if progress.frame >= frames else _frames_short(progress, frames)
         if taken_at is None and not trigger_path.exists():
             taken_at = time.time()
         if taken_at is not None and progress is None and time.time() - taken_at > _PROGRESS_GRACE_SECONDS:
             return ("a tracer took the trigger but reports no progress. The tracer built into "
                     "remix-comp-proxy reports none: look for the capture in its output folder (captures by default)")
 
-    if progress is not None:
-        return (f"the capture stopped at frame {progress[0]} of {frames}. The standalone tracer captures as many "
-                f"frames as [Trace] CaptureFrames in its proxy.ini says, whatever --frames is")
-    return (f"no tracer took the trigger within {_WAIT_TIMEOUT_SECONDS:.0f}s. Is the game running, "
-            f"with the tracer's d3d9.dll in {trigger_path.parent}?")
+    if progress is None:
+        return (f"no tracer took the trigger within {_WAIT_TIMEOUT_SECONDS:.0f}s. Is the game running, "
+                f"with the tracer's d3d9.dll in {trigger_path.parent}?")
+    if progress.frame >= frames:
+        return (f"the tracer reached frame {progress.frame} but never reported the capture file written in full. "
+                f"A d3d9.dll older than that report is in {trigger_path.parent}: copy the current "
+                f"graphics/directx/dx9/tracer/bin/d3d9.dll there")
+    return _frames_short(progress, frames)
 
 
 def cmd_trigger(args: argparse.Namespace) -> None:
@@ -133,8 +155,6 @@ def cmd_trigger(args: argparse.Namespace) -> None:
             print(f"\n  Trigger file removed: {trigger_path}")
     print()
 
-    if problem is None and not jsonl_path.exists():
-        problem = f"the tracer reported its last frame, but {jsonl_path} is not there"
     if problem is not None:
         print(f"  [error] {problem}")
         sys.exit(1)
@@ -171,7 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "[Trace] CaptureFrames in its proxy.ini instead")
     tr.add_argument("--delay", type=int, default=3, help="Countdown seconds before trigger")
     tr.add_argument("--wait", "-w", action="store_true",
-                    help="Follow the capture to its last frame; exit 1 when it was not seen to get there")
+                    help="Follow the capture until the tracer reports it written in full; "
+                         "exit 1 when it was not seen to get there")
     tr.set_defaults(func=cmd_trigger)
 
     # analyze

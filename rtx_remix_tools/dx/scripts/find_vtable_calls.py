@@ -14,7 +14,7 @@ import argparse
 
 from dx9_common import (
     load_binary, load_text_section, scan_all_patterns,
-    D3DX_CONSTANT_TABLE_METHODS,
+    D3DX_CONSTANT_TABLE, D3DX_CONSTANT_TABLE_METHODS,
 )
 
 _REPORTED_CONSTANT_TABLE_METHODS = {
@@ -29,7 +29,7 @@ _REPORTED_CONSTANT_TABLE_METHODS = {
 # ID3DXConstantTable vtable (32-bit, offset = slot * 4)
 D3DX_CONST_TABLE = {
     slot * 4: name
-    for slot, name in enumerate(D3DX_CONSTANT_TABLE_METHODS)
+    for slot, (name, _param_count) in enumerate(D3DX_CONSTANT_TABLE_METHODS)
     if name in _REPORTED_CONSTANT_TABLE_METHODS
 }
 
@@ -61,7 +61,7 @@ def main():
     # --- D3DX Constant Table calls ---
     print("\n=== ID3DXConstantTable vtable calls ===")
     for vtable_off, method_name in sorted(D3DX_CONST_TABLE.items()):
-        results = scan_all_patterns(text_data, text_va, vtable_off)
+        results = scan_all_patterns(text_data, text_va, vtable_off, D3DX_CONSTANT_TABLE)
         if results:
             print(f"\n  {method_name} (vtable+0x{vtable_off:02X}): {len(results)} sites")
             for va, desc in results[:50]:
