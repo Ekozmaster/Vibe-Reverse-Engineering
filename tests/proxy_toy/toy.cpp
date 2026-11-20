@@ -7,11 +7,14 @@
 //
 // The scene is a 3x3 grid of cells with one shape per cell (see draw_scene).
 //
-// toy.exe --out FILE [--view N] [--proj N] [--world N] [--bones N] [--albedo-stage N]
+// toy.exe --out FILE [--view N] [--proj N] [--world N] [--bones N] [--albedo-stage N] [--extra-vertices N]
 //   --view, --proj, --world   first constant register of each 4x4 matrix
 //   --bones                   first register of the bone palette (3 registers per bone)
 //   --albedo-stage            texture stage that holds the green texture; when it is not 0,
 //                             stage 0 holds a blue one
+//   --extra-vertices          added to the NumVertices of every skinned draw, running it past
+//                             the end of the vertex buffer. Only for a run with a proxy that
+//                             converts those draws: Direct3D itself may read the whole range.
 // Other arguments are ignored: the proxy reads its own from the same command line.
 //
 // FILE receives the width and height as two little-endian uint32 values, then the BGRX rows.
@@ -54,6 +57,7 @@ namespace
 		int world = 16;
 		int bones = 20;
 		int albedo_stage = 0;
+		UINT extra_vertices = 0;
 	};
 
 	[[noreturn]] void fail(const char* what, HRESULT hr = E_FAIL)
@@ -81,6 +85,7 @@ namespace
 			else if (arg == "--world") opt.world = std::atoi(value());
 			else if (arg == "--bones") opt.bones = std::atoi(value());
 			else if (arg == "--albedo-stage") opt.albedo_stage = std::atoi(value());
+			else if (arg == "--extra-vertices") opt.extra_vertices = static_cast<UINT>(std::atoi(value()));
 		}
 		if (opt.out.empty()) fail("reading --out");
 		return opt;
@@ -349,6 +354,7 @@ float4 ps_red() : COLOR
 	void draw_scene(const scene& s)
 	{
 		const auto dev = s.dev;
+		const UINT strip_vertices = STRIP_VERTICES + s.opt.extra_vertices;
 		const XMMATRIX view = XMMatrixLookAtLH(XMVectorSet(0.2f, 0.15f, -7.5f, 1), XMVectorSet(0.2f, 0.15f, 0, 1), XMVectorSet(0, 1, 0, 0));
 		const XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(50), 1.0f, 0.5f, 50.0f);
 		set_view_and_projection(s, view, proj);
@@ -373,19 +379,19 @@ float4 ps_red() : COLOR
 
 		bind(s, s.skin3_decl, s.skin3_vb, 0, sizeof(skin3_vertex), s.vs_skinned);
 		set_strip_bones(s, -2, 0, 25);
-		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, STRIP_VERTICES, STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
+		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, strip_vertices, STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
 
 		bind(s, s.skin3_decl, s.skin3_offset_vb, OFFSET_STREAM_VERTICES * sizeof(skin3_vertex), sizeof(skin3_vertex), s.vs_skinned);
 		set_strip_bones(s, 0, 0, -30);
-		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, OFFSET_BASE_VERTEX, OFFSET_MIN_INDEX, STRIP_VERTICES, OFFSET_STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
+		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, OFFSET_BASE_VERTEX, OFFSET_MIN_INDEX, strip_vertices, OFFSET_STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
 
 		bind(s, s.skin4_decl, s.skin4_vb, 0, sizeof(skin4_vertex), s.vs_skinned);
 		set_strip_bones(s, 2, 0, 40);
-		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, STRIP_VERTICES, STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
+		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, strip_vertices, STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
 
 		bind(s, s.skin3_decl, s.skin3_high_vb, 0, sizeof(skin3_vertex), s.vs_skinned);
 		set_strip_bones(s, 0, -2, 35, LARGE_PALETTE);
-		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, STRIP_VERTICES, STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
+		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, strip_vertices, STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
 
 		bind(s, s.rigid_decl, s.rigid_vb, 0, sizeof(rigid_vertex), s.vs_rigid);
 		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");

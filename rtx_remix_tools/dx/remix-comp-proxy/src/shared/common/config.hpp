@@ -82,5 +82,10 @@ namespace shared::common
 		bool loaded_ = false;
 
 		void parse_all();
+
+		// An absent or empty value gives default_val; any other value that is not a decimal
+		// number is logged and gives default_val too.
+		template <typename T>
+		T get_number(const char* section, const char* key, T default_val) const;
 	};
 }

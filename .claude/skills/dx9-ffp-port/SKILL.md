@@ -104,6 +104,8 @@ python rtx_remix_tools/dx/scripts/find_surface_formats.py "<game.exe>"
 
 Scripts are fast first-pass scanners -- surface candidate addresses only. Always follow up with `retools` and `livetools` for deep analysis.
 
+`find_device_calls.py` and `find_surface_formats.py` count a call through one of the first 32 device slots (`Present`, `Reset`, the `Create*` methods) only when its object comes from where the game's high-slot device calls get theirs, usually a device global named in the output's first line. A game that reaches its device only through `this` (`[[esi+4]+0x3C]`) has nothing learned, and those calls are listed with `--unconfirmed` instead; check them there before concluding the game never calls `Present` or creates a render target.
+
 **Alternative: DX9 Tracer capture.** Deploy the tracer proxy (`graphics/directx/dx9/tracer/`) to capture a full frame, then analyze with `--matrix-flow`, `--vtx-formats`, `--shader-map`, and `--const-provenance` to discover the register layout without reverse engineering the binary.
 
 Key things to find:
@@ -220,7 +222,11 @@ WorldStart=16
 WorldEnd=20
 ```
 
-`Start` is the first register of a matrix and `End` is one past its last, so a matrix in c8-c11 is `Start=8`, `End=12`. The proxy reads each matrix as 4 consecutive vec4 registers (16 floats) from its `Start`; `End` bounds the registers whose upload marks the matrix as changed. `find_matrix_registers.py` prints this section with what it could determine and leaves the rest as comments. A range outside c0-c255 makes the proxy log an error in `rtx_comp/console.log` and fall back to the layout above. The log also states the layout in use: `[FFP] Registers: View=c0-c3 Proj=c4-c7 World=c16-c19`.
+`Start` is the first register of a matrix and `End` is one past its last, so a matrix in c8-c11 is `Start=8`, `End=12`. The proxy reads each matrix as 4 consecutive vec4 registers (16 floats) from its `Start`; `End` bounds the registers whose upload marks the matrix as changed. Draws are converted only once all four registers of View and of Projection have been written in one frame, in any order and by any number of uploads. `find_matrix_registers.py` prints this section with what it could determine and leaves the rest as comments. A range outside c0-c255 makes the proxy log an error in `rtx_comp/console.log` and fall back to the layout above. The log also states the layout in use: `[FFP] Registers: View=c0-c3 Proj=c4-c7 World=c16-c19`.
+
+Every number in the INI is decimal and stands alone on its line: `ViewStart=8`, not `c8`, `0x8` or `8 ; view`. A value that is not a number is logged in `rtx_comp/console.log` (`[Config] [FFP.Registers] ViewStart=c8 is not a decimal number; using 0`) and the key keeps its default. Switches such as `Enabled` take `1` or `0`.
+
+FFP draws use the world matrix the game uploaded last to the `World` registers, carried across scenes and frames; until the first upload after device creation or `Reset` they use identity.
 
 Edit `assets/remix-comp-proxy.ini` in the game folder (the build copies it next to `d3d9.dll`) and the copy already deployed beside the game.
 
@@ -240,6 +246,8 @@ BoneMinRegs=3
 ```
 
 Before enabling skinning, run `find_skinning.py`: it suggests `BoneThreshold` and `RegsPerBone`. The proxy takes the most recent upload that starts at or above `BoneThreshold`, covers at least `BoneMinRegs` registers and holds a whole number of bones as the palette for the skinned draws that follow. A game that uploads a small palette per mesh part needs `BoneMinRegs` no larger than its smallest upload. If other constants at or above `BoneThreshold` are mistaken for bones, raise `BoneThreshold`. A game that fills one palette with several uploads at different registers is not handled: only the last upload counts.
+
+`skinning::draw_skinned_dip` leaves a skinned draw to the game's shaders when no upload has matched yet (no palette), when the declaration's blend elements are not on stream 0, when its position is not `FLOAT3`/`FLOAT4`, or when the stream's stride is smaller than the vertex the declaration describes. A draw whose `NumVertices` runs past the end of the vertex buffer is converted for the vertices the buffer holds. The converted vertices are cached per source buffer, range and declaration; each cache entry holds a reference to its source buffer and declaration until it is evicted or the device is `Reset`.
 
 ## INI Config (`remix-comp-proxy.ini`)
 
@@ -299,7 +307,8 @@ ffp.is_enabled() AND ffp.view_proj_valid()?
 +-- NO  -> passthrough with shaders
 +-- YES
     +-- ffp.cur_decl_is_skinned()?
-    |   +-- [Skinning] Enabled=1 -> skinning::draw_skinned_dip() (FFP indexed vertex blending)
+    |   +-- [Skinning] Enabled=1 -> skinning::draw_skinned_dip() (FFP indexed vertex blending;
+    |   |   shaders without a bone palette or with vertices it cannot read)
     |   +-- [Skinning] Enabled=0 -> passthrough with shaders (the default)
     +-- !ffp.cur_decl_has_normal()?
     |   +-- passthrough (HUD/UI)
@@ -333,7 +342,7 @@ AND !ffp.cur_decl_has_pos_t() AND !ffp.cur_decl_is_skinned()?
 - **Matrices look wrong**: D3D9 FFP `SetTransform` expects row-major. `ffp_state::apply_transforms` transposes column-major VS constants. If the game stores matrices row-major in VS constants (uncommon), remove the transpose in `ffp_state::apply_transforms`.
 - **Everything is white/black**: Albedo texture is on stage 1+, not stage 0. Set `AlbedoStage` in `remix-comp-proxy.ini`, or trace `SetTexture` calls to find the correct stage.
 - **Some objects render, others don't**: Check whether missing geometry has NORMAL in its vertex decl. Check `ffp.view_proj_valid()` is true at draw time. DrawPrimitive routes on decl presence + no POSITIONT + not skinned.
-- **Skinned meshes not converted**: Skinned draws pass through with their shaders until `[Skinning] Enabled=1` is set in `remix-comp-proxy.ini`. With it set, verify `boneStart=` and `numBones=` are non-zero in `rtx_comp/diagnostics.log`; if they are zero, no upload matched `BoneThreshold`, `RegsPerBone` and `BoneMinRegs`. Only `DrawIndexedPrimitive` draws are converted, and the bone matrices are used as uploaded: a game whose shader multiplies the blended position by a separate world matrix needs that multiplication added in the game copy's `skinning.cpp`.
+- **Skinned meshes not converted**: Skinned draws pass through with their shaders until `[Skinning] Enabled=1` is set in `remix-comp-proxy.ini`. With it set, verify `boneStart=` and `numBones=` are non-zero in `rtx_comp/diagnostics.log`; if they are zero, no upload matched `BoneThreshold`, `RegsPerBone` and `BoneMinRegs`, and skinned draws stay on the game's shaders. Only `DrawIndexedPrimitive` draws are converted, and the bone matrices are used as uploaded: a game whose shader multiplies the blended position by a separate world matrix needs that multiplication added in the game copy's `skinning.cpp`.
 - **Bones mixed up between NPCs**: Stale WORLDMATRIX slots from a previous object. The game may need a game-specific reset hook at a per-object boundary -- see Skinning Stability below.
 - **Game crashes on startup**: Set `[Remix] Enabled=0` in `remix-comp-proxy.ini` to test without Remix.
 - **Proxy loads but does nothing (two beeps after a wait of 30 seconds or more)**: `WINDOW_CLASS_NAME` in `comp/main.cpp` matched no window, so the modules never loaded. `rtx_comp/console.log` in the game directory lists the class name of every visible window the proxy saw (`> HWND: ... Class: ...`) and ends with `Could not find '...' Window. Not loading RTX Compatibility Mod.` Copy the game window's class name from that file.

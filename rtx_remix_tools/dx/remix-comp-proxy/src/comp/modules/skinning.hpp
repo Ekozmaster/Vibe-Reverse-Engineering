@@ -37,13 +37,20 @@ namespace comp
 	private:
 		static constexpr int SKIN_VTX_SIZE = 48;
 		static constexpr int SKIN_CACHE_SIZE = 64;
-		static constexpr int MAX_BONES = 256;	// D3DTS_WORLDMATRIX takes indices 0-255
 
 		IDirect3DVertexDeclaration9* skin_exp_decl_ = nullptr;
 
+		// Vertices of a source buffer: num_verts of them from first_byte on
+		struct vertex_range
+		{
+			UINT first_byte = 0;
+			UINT num_verts = 0;
+		};
+
 		// The vertices of one draw, in the expanded layout. A buffer is reused for as long as
 		// the same range of the same source buffer is drawn with the same declaration, so the
-		// game is taken not to rewrite a skinned mesh's vertices.
+		// game is taken not to rewrite a skinned mesh's vertices. The entry holds a reference
+		// to its source buffer and declaration until it is evicted.
 		struct expanded_range
 		{
 			IDirect3DVertexBuffer9* source = nullptr;
@@ -59,11 +66,14 @@ namespace comp
 
 		void create_expanded_decl(IDirect3DDevice9* dev);
 		void release_cache();
+		static void evict(expanded_range& entry);
 
-		// Vertex expansion
+		// Vertex expansion. vertices_in_buffer gives the part of num_verts vertices from
+		// first_byte on that src_vb holds, num_verts 0 when none.
+		static vertex_range vertices_in_buffer(IDirect3DVertexBuffer9* src_vb, UINT64 first_byte, UINT num_verts, UINT stride);
 		IDirect3DVertexBuffer9* get_expanded_vb(IDirect3DDevice9* dev,
-			IDirect3DVertexBuffer9* src_vb, UINT first_byte, UINT num_verts, UINT stride);
-		void expand_skin_vertex(unsigned char* dst, const unsigned char* src, UINT stride);
+			IDirect3DVertexBuffer9* src_vb, const vertex_range& range, UINT stride);
+		void expand_skin_vertex(unsigned char* dst, const unsigned char* src);
 
 		// Bone upload
 		void upload_bones(IDirect3DDevice9* dev);

@@ -15,8 +15,10 @@ namespace shared::utils
 	inline D3DMATRIX XM_CALLCONV to_d3dmatrix(DirectX::FXMMATRIX matrix)
 	{
 		static_assert(sizeof(D3DMATRIX) == sizeof(DirectX::XMFLOAT4X4));
+		DirectX::XMFLOAT4X4 stored;
+		DirectX::XMStoreFloat4x4(&stored, matrix);
 		D3DMATRIX out;
-		DirectX::XMStoreFloat4x4(reinterpret_cast<DirectX::XMFLOAT4X4*>(&out), matrix);
+		std::memcpy(&out, &stored, sizeof(out));
 		return out;
 	}
 

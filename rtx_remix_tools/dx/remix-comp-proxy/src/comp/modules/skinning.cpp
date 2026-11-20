@@ -34,21 +34,20 @@ namespace comp
 		if (!skin_exp_decl_)
 			create_expanded_decl(dev);
 
-		if (!skin_exp_decl_)
-		{
-			// Fallback: passthrough with shaders
-			ffp.disengage(dev);
-			return dev->DrawIndexedPrimitive(pt, base_vtx, min_vtx, num_verts, start_idx, prim_count);
-		}
-
-		// Get expanded vertex buffer from cache or create new.
-		// The draw reads num_verts vertices of the stream, from vertex base_vtx + min_vtx on.
+		// The draw reads num_verts vertices of the stream, from vertex base_vtx + min_vtx on
 		auto* src_vb = ffp.stream_vb(0);
-		UINT stride = ffp.stream_stride(0);
+		const UINT stride = ffp.stream_stride(0);
 		const INT first_vtx = base_vtx + static_cast<INT>(min_vtx);
-		auto* exp_vb = first_vtx < 0 ? nullptr
-			: get_expanded_vb(dev, src_vb, ffp.stream_offset(0) + static_cast<UINT>(first_vtx) * stride, num_verts, stride);
+		const bool convertible = skin_exp_decl_ && ffp.num_bones() > 0 && first_vtx >= 0 &&
+			ffp.cur_decl_skin_vertex_bytes() > 0 && stride >= ffp.cur_decl_skin_vertex_bytes();
 
+		const auto source_range = convertible
+			? vertices_in_buffer(src_vb, ffp.stream_offset(0) + static_cast<UINT64>(first_vtx) * stride, num_verts, stride)
+			: vertex_range{};
+		auto* exp_vb = source_range.num_verts ? get_expanded_vb(dev, src_vb, source_range, stride) : nullptr;
+
+		// No bone palette, a layout the expansion cannot read or no vertices inside the buffer:
+		// the game's shaders draw it
 		if (!exp_vb)
 		{
 			ffp.disengage(dev);
@@ -67,7 +66,7 @@ namespace comp
 		dev->SetStreamSource(0, exp_vb, 0, SKIN_VTX_SIZE);
 
 		// Vertex 0 of the expanded buffer is the vertex the index min_vtx names
-		auto hr = dev->DrawIndexedPrimitive(pt, -static_cast<INT>(min_vtx), min_vtx, num_verts, start_idx, prim_count);
+		auto hr = dev->DrawIndexedPrimitive(pt, -static_cast<INT>(min_vtx), min_vtx, source_range.num_verts, start_idx, prim_count);
 
 		// Restore original state
 		dev->SetVertexDeclaration(orig_decl);
@@ -115,19 +114,37 @@ namespace comp
 	void skinning::release_cache()
 	{
 		for (auto& entry : skin_exp_cache_)
-		{
-			if (entry.expanded)
-				entry.expanded->Release();
-			entry = {};
-		}
+			evict(entry);
+	}
+
+	void skinning::evict(expanded_range& entry)
+	{
+		if (entry.expanded) entry.expanded->Release();
+		if (entry.source) entry.source->Release();
+		if (entry.source_decl) entry.source_decl->Release();
+		entry = {};
+	}
+
+	skinning::vertex_range skinning::vertices_in_buffer(IDirect3DVertexBuffer9* src_vb, UINT64 first_byte, UINT num_verts, UINT stride)
+	{
+		D3DVERTEXBUFFER_DESC desc = {};
+		if (!src_vb || FAILED(src_vb->GetDesc(&desc)) || first_byte >= desc.Size)
+			return {};
+
+		// A loose NumVertices may run past the end of the buffer; the vertices the indices reach lie inside it
+		const UINT64 vertex_bytes = shared::common::ffp_state::get().cur_decl_skin_vertex_bytes();
+		const UINT64 room = desc.Size - first_byte;
+		const UINT64 fitting = room < vertex_bytes ? 0 : (room - vertex_bytes) / stride + 1;
+		return { static_cast<UINT>(first_byte), static_cast<UINT>((std::min)(static_cast<UINT64>(num_verts), fitting)) };
 	}
 
 	IDirect3DVertexBuffer9* skinning::get_expanded_vb(IDirect3DDevice9* dev,
-		IDirect3DVertexBuffer9* src_vb, UINT first_byte, UINT num_verts, UINT stride)
+		IDirect3DVertexBuffer9* src_vb, const vertex_range& range, UINT stride)
 	{
-		if (!src_vb || stride == 0 || num_verts == 0) return nullptr;
-
-		auto* src_decl = shared::common::ffp_state::get().last_decl();
+		auto& ffp = shared::common::ffp_state::get();
+		auto* src_decl = ffp.last_decl();
+		const UINT first_byte = range.first_byte;
+		const UINT num_verts = range.num_verts;
 
 		unsigned int hash = static_cast<unsigned int>(reinterpret_cast<uintptr_t>(src_vb));
 		hash ^= first_byte * 0x9E3779B9u;
@@ -141,14 +158,12 @@ namespace comp
 			entry.first_byte == first_byte && entry.num_verts == num_verts && entry.stride == stride)
 			return entry.expanded;
 
-		// Cache miss: evict and create
-		if (entry.expanded)
-			entry.expanded->Release();
-		entry = {};
+		evict(entry);
 
-		// Lock source VB
+		// The last vertex needs only the bytes the expansion reads, which vertices_in_buffer kept inside the buffer
+		const UINT locked_bytes = (num_verts - 1) * stride + ffp.cur_decl_skin_vertex_bytes();
 		unsigned char* src_data = nullptr;
-		if (FAILED(src_vb->Lock(first_byte, num_verts * stride, reinterpret_cast<void**>(&src_data), D3DLOCK_READONLY)))
+		if (FAILED(src_vb->Lock(first_byte, locked_bytes, reinterpret_cast<void**>(&src_data), D3DLOCK_READONLY)))
 			return nullptr;
 
 		// Create expanded VB
@@ -170,17 +185,21 @@ namespace comp
 		}
 
 		for (UINT v = 0; v < num_verts; v++)
-			expand_skin_vertex(&dst_data[v * SKIN_VTX_SIZE], &src_data[v * stride], stride);
+			expand_skin_vertex(&dst_data[v * SKIN_VTX_SIZE], &src_data[v * stride]);
 
 		exp_vb->Unlock();
 		src_vb->Unlock();
 
+		// Holding the source buffer and declaration keeps a new object from taking either address
+		// while the entry names it
+		src_vb->AddRef();
+		if (src_decl) src_decl->AddRef();
 		entry = { src_vb, src_decl, first_byte, num_verts, stride, exp_vb };
 
 		return exp_vb;
 	}
 
-	void skinning::expand_skin_vertex(unsigned char* dst, const unsigned char* src, UINT /*stride*/)
+	void skinning::expand_skin_vertex(unsigned char* dst, const unsigned char* src)
 	{
 		auto& ffp = shared::common::ffp_state::get();
 		auto* out = reinterpret_cast<float*>(dst);
@@ -259,25 +278,25 @@ namespace comp
 	{
 		auto& ffp = shared::common::ffp_state::get();
 
-		int bone_start = ffp.bone_start_reg();
-		int num_bones = ffp.num_bones();
-		if (bone_start < ffp.reg_bone_threshold() || num_bones <= 0) return;
-
+		const int bone_start = ffp.bone_start_reg();
+		const int num_bones = ffp.num_bones();
 		const float* vs_const = ffp.vs_const_data();
-		int regs_per_bone = ffp.regs_per_bone();
-		int max_bones = (num_bones > MAX_BONES) ? MAX_BONES : num_bones;
+		const int regs_per_bone = ffp.regs_per_bone();
 
-		for (int i = 0; i < max_bones; i++)
+		for (int i = 0; i < num_bones; i++)
 		{
 			const float* src = &vs_const[(bone_start + i * regs_per_bone) * 4];
 			float bone44[16];
 
 			if (regs_per_bone == 3)
 			{
-				// 4x3 packed -> 4x4 (transpose and expand)
-				shared::common::ffp_state::mat4_transpose(bone44, src);
-				// The 4th column of a 4x3 is implicitly [0,0,0,1]
-				bone44[3] = 0.0f; bone44[7] = 0.0f; bone44[11] = 0.0f; bone44[15] = 1.0f;
+				// Register c holds column c of the row-vector matrix; the fourth column is [0,0,0,1]
+				for (int row = 0; row < 4; row++)
+				{
+					for (int column = 0; column < 3; column++)
+						bone44[row * 4 + column] = src[column * 4 + row];
+					bone44[row * 4 + 3] = row == 3 ? 1.0f : 0.0f;
+				}
 			}
 			else
 			{

@@ -104,6 +104,10 @@ namespace shared::common
 		int cur_decl_normal_type() const { return cur_decl_normal_type_; }
 		int cur_decl_texcoord_off() const { return cur_decl_texcoord_off_; }
 
+		// Bytes of a stream-0 vertex the skinning module reads: the stride has to be at least
+		// this. 0 when the skinning module cannot rebuild this declaration's vertices.
+		UINT cur_decl_skin_vertex_bytes() const { return cur_decl_skin_vertex_bytes_; }
+
 		void increment_draw_count() { draw_call_count_++; }
 
 		// --- Utility ---
@@ -148,6 +152,7 @@ namespace shared::common
 		int cur_decl_pos_off_ = 0;
 		int cur_decl_normal_off_ = 0;
 		int cur_decl_normal_type_ = -1;
+		UINT cur_decl_skin_vertex_bytes_ = 0;
 
 		// Bone detection
 		int bone_start_reg_ = 0;
@@ -170,10 +175,8 @@ namespace shared::common
 		// VS constant write log (for diagnostics: which registers have been written)
 		int vs_const_write_log_[256] = {};
 
-		// Cached config
-		const config::ffp_settings* cfg_ = nullptr;
-
 		// Internal helpers
+		bool matrix_written(int first_reg) const;
 		void apply_transforms(IDirect3DDevice9* dev);
 		void setup_lighting(IDirect3DDevice9* dev);
 		void setup_texture_stages(IDirect3DDevice9* dev);

@@ -3,6 +3,27 @@
 
 namespace shared::common
 {
+	namespace
+	{
+		// Bytes a vertex element of this D3DDECLTYPE takes; 0 for D3DDECLTYPE_UNUSED
+		UINT decl_type_size(BYTE type)
+		{
+			switch (type)
+			{
+			case D3DDECLTYPE_FLOAT1:    return 4;
+			case D3DDECLTYPE_FLOAT2:    return 8;
+			case D3DDECLTYPE_FLOAT3:    return 12;
+			case D3DDECLTYPE_FLOAT4:    return 16;
+			case D3DDECLTYPE_SHORT4:
+			case D3DDECLTYPE_SHORT4N:
+			case D3DDECLTYPE_USHORT4N:
+			case D3DDECLTYPE_FLOAT16_4: return 8;
+			case D3DDECLTYPE_UNUSED:    return 0;
+			default:                    return 4;	// D3DCOLOR, UBYTE4(N), SHORT2(N), USHORT2N, UDEC3, DEC3N, FLOAT16_2
+			}
+		}
+	}
+
 	ffp_state& ffp_state::get()
 	{
 		static ffp_state instance;
@@ -11,12 +32,12 @@ namespace shared::common
 
 	void ffp_state::init(IDirect3DDevice9* /*real_device*/)
 	{
-		cfg_ = &config::get().ffp;
-		enabled_ = cfg_->enabled;
+		const auto& ffp = config::get().ffp;
+		enabled_ = ffp.enabled;
 		create_tick_ = GetTickCount();
 
 		log("FFP", std::format("State tracker initialized, FFP={}", enabled_ ? "ON" : "OFF"));
-		const auto& regs = cfg_->registers;
+		const auto& regs = ffp.registers;
 		log("FFP", std::format("Registers: View=c{}-c{} Proj=c{}-c{} World=c{}-c{}",
 			regs.view_start, regs.view_end - 1,
 			regs.proj_start, regs.proj_end - 1,
@@ -50,27 +71,13 @@ namespace shared::common
 			world_written_ = true;
 		}
 
-		// Mark View+Proj valid once both ranges have been written
-		auto view_start = static_cast<UINT>(regs.view_start);
-		auto proj_start = static_cast<UINT>(regs.proj_start);
-		auto proj_end = static_cast<UINT>(regs.proj_end);
-
-		if (start_reg <= view_start && end_reg >= proj_end)
-		{
-			// Single write spans both View and Proj ranges
-			view_proj_valid_ = true;
-		}
-		else if (start_reg == view_start && count >= 4 && vs_const_write_log_[proj_start])
-		{
-			view_proj_valid_ = true;
-		}
-		else if (start_reg == proj_start && count >= 4 && vs_const_write_log_[view_start])
-		{
-			view_proj_valid_ = true;
-		}
-
 		for (UINT i = 0; i < count; i++)
 			vs_const_write_log_[start_reg + i] = 1;
+
+		// View+Proj become valid once all four registers of each have been written in one frame,
+		// in any order and by any number of uploads
+		if (!view_proj_valid_ && matrix_written(regs.view_start) && matrix_written(regs.proj_start))
+			view_proj_valid_ = true;
 
 		// Bone palette detection (for skinning module)
 		if (skinning.enabled &&
@@ -81,6 +88,13 @@ namespace shared::common
 			bone_start_reg_ = static_cast<int>(start_reg);
 			num_bones_ = static_cast<int>(count) / skinning.regs_per_bone;
 		}
+	}
+
+	bool ffp_state::matrix_written(int first_reg) const
+	{
+		for (int r = first_reg; r < first_reg + 4; r++)
+			if (!vs_const_write_log_[r]) return false;
+		return true;
 	}
 
 	void ffp_state::on_set_ps_const_f(UINT start_reg, const float* data, UINT count)
@@ -138,6 +152,7 @@ namespace shared::common
 		cur_decl_pos_off_ = 0;
 		cur_decl_normal_off_ = 0;
 		cur_decl_normal_type_ = -1;
+		cur_decl_skin_vertex_bytes_ = 0;
 
 		if (!decl) return;
 
@@ -150,6 +165,16 @@ namespace shared::common
 
 		bool has_blend_weight = false;
 		bool has_blend_indices = false;
+		bool blend_on_stream_0 = true;
+		int pos_type = -1;
+
+		// Bytes from the start of a stream-0 vertex to the end of the last element the
+		// skinning module reads
+		UINT skin_vertex_bytes = 0;
+		const auto read_by_skinning = [&](const D3DVERTEXELEMENT9& el)
+		{
+			skin_vertex_bytes = (std::max)(skin_vertex_bytes, static_cast<UINT>(el.Offset) + decl_type_size(el.Type));
+		};
 
 		for (UINT e = 0; e < num_elems; e++)
 		{
@@ -162,28 +187,39 @@ namespace shared::common
 				cur_decl_has_pos_t_ = true;
 				break;
 
+			// Blend elements on any stream mark the declaration as skinned; the skinning
+			// module only rebuilds vertices whose blend elements are on stream 0
 			case D3DDECLUSAGE_BLENDWEIGHT:
 				has_blend_weight = true;
+				blend_on_stream_0 &= el.Stream == 0;
 				cur_decl_blend_weight_off_ = el.Offset;
 				cur_decl_blend_weight_type_ = el.Type;
+				read_by_skinning(el);
 				break;
 
 			case D3DDECLUSAGE_BLENDINDICES:
 				has_blend_indices = true;
+				blend_on_stream_0 &= el.Stream == 0;
 				cur_decl_blend_indices_off_ = el.Offset;
+				read_by_skinning(el);
 				break;
 
 			case D3DDECLUSAGE_POSITION:
-				if (el.Stream == 0)
+				if (el.Stream == 0 && el.UsageIndex == 0)
+				{
+					pos_type = el.Type;
 					cur_decl_pos_off_ = el.Offset;
+					read_by_skinning(el);
+				}
 				break;
 
 			case D3DDECLUSAGE_NORMAL:
-				if (el.Stream == 0)
+				if (el.Stream == 0 && el.UsageIndex == 0)
 				{
 					cur_decl_has_normal_ = true;
 					cur_decl_normal_off_ = el.Offset;
 					cur_decl_normal_type_ = el.Type;
+					read_by_skinning(el);
 				}
 				break;
 
@@ -193,6 +229,7 @@ namespace shared::common
 					cur_decl_has_texcoord_ = true;
 					cur_decl_texcoord_type_ = el.Type;
 					cur_decl_texcoord_off_ = el.Offset;
+					read_by_skinning(el);
 				}
 				break;
 
@@ -205,6 +242,11 @@ namespace shared::common
 		if (has_blend_weight && has_blend_indices)
 		{
 			cur_decl_is_skinned_ = true;
+
+			// The skinning module reads a FLOAT3 position and four index bytes
+			const bool expandable = blend_on_stream_0 &&
+				(pos_type == D3DDECLTYPE_FLOAT3 || pos_type == D3DDECLTYPE_FLOAT4);
+			cur_decl_skin_vertex_bytes_ = expandable ? skin_vertex_bytes : 0;
 
 			switch (cur_decl_blend_weight_type_)
 			{
@@ -234,6 +276,10 @@ namespace shared::common
 	{
 		ffp_setup_ = false;
 		scene_count_++;
+
+		// The world matrix uploaded last stays in force across scenes and frames. BeginScene
+		// leaves D3DTS_WORLD at identity (comp.cpp), so the next FFP draw sends it again.
+		world_dirty_ = world_written_;
 	}
 
 	void ffp_state::on_reset()
@@ -271,6 +317,7 @@ namespace shared::common
 		cur_decl_pos_off_ = 0;
 		cur_decl_normal_off_ = 0;
 		cur_decl_normal_type_ = -1;
+		cur_decl_skin_vertex_bytes_ = 0;
 
 		std::memset(vs_const_write_log_, 0, sizeof(vs_const_write_log_));
 
@@ -281,7 +328,7 @@ namespace shared::common
 
 	void ffp_state::engage(IDirect3DDevice9* dev)
 	{
-		if (!cfg_ || !enabled_ || !dev) return;
+		if (!enabled_ || !dev) return;
 
 		if (!ffp_active_)
 		{
@@ -311,9 +358,9 @@ namespace shared::common
 
 	void ffp_state::setup_albedo_texture(IDirect3DDevice9* dev)
 	{
-		if (!cfg_ || !dev) return;
+		if (!dev) return;
 
-		int as = cfg_->albedo_stage;
+		int as = config::get().ffp.albedo_stage;
 		auto* albedo = (as >= 0 && as < 8) ? cur_texture_[as] : cur_texture_[0];
 
 		dev->SetTexture(0, albedo);
@@ -333,7 +380,7 @@ namespace shared::common
 	{
 		if (!dev) return;
 
-		// Until the game uploads a world matrix, FFP draws use the identity set at BeginScene
+		// Until the game uploads a world matrix (since device creation or Reset), FFP draws use identity
 		if (!world_written_)
 		{
 			dev->SetTransform(D3DTS_WORLD, &shared::globals::IDENTITY);

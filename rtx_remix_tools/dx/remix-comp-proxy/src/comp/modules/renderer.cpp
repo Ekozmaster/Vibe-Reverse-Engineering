@@ -132,7 +132,8 @@ namespace comp
 		 *   +-- NO  -> passthrough with shaders
 		 *   +-- YES
 		 *       +-- curDeclIsSkinned?
-		 *       |   +-- [Skinning] Enabled=1 -> skinning::draw_skinned_dip()
+		 *       |   +-- [Skinning] Enabled=1 -> skinning::draw_skinned_dip(), which leaves the
+		 *       |   |   draw to the shaders without a bone palette or with vertices it cannot read
 		 *       |   +-- [Skinning] Enabled=0 -> passthrough with shaders
 		 *       +-- !curDeclHasNormal?
 		 *       |   +-- passthrough (HUD/UI)
@@ -150,7 +151,7 @@ namespace comp
 		}
 		else if (ffp.cur_decl_is_skinned() && skinning::is_available())
 		{
-			// Skinned mesh: FFP indexed vertex blending
+			// Skinned mesh: FFP indexed vertex blending where the skinning module can convert it
 			hr = skinning::get()->draw_skinned_dip(dev, PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
 			im->m_stats._drawcall_indexed_prim.track_single();
 		}

@@ -13,7 +13,7 @@ import pefile
 import pytest
 
 import proxy_live
-from proxy_live import CELLS, MOVED_LAYOUT, PROJECTION_FIRST_LAYOUT, SHIPPED_LAYOUT
+from proxy_live import CELLS, MOVED_LAYOUT, PROJECTION_FIRST_LAYOUT, SHIPPED_LAYOUT, Layout
 
 RIGID = ["rigid quad", "rigid triangle", "rigid quad after the strips"]
 SKINNED = [name for name in CELLS if name.startswith("skinned strip")]
@@ -160,6 +160,48 @@ class TestProjectionBeforeView:
     @pytest.mark.parametrize("shape", RIGID + SKINNED)
     def test_draw_is_converted(self, frame, reference, shape):
         assert_drawn_by(frame, reference, shape, "green")
+
+
+class TestProjectionWithoutView:
+    """Projection uploaded below the View registers the INI names, and nothing ever uploaded there."""
+
+    def test_every_draw_keeps_its_shaders(self, toy, reference):
+        layout_with_view_elsewhere = Layout(view=32, proj=PROJECTION_FIRST_LAYOUT.proj, world=24, bones=40)
+        frame = toy.frame("projection_without_view", layout_with_view_elsewhere,
+                          ini=_merged(PROJECTION_FIRST_LAYOUT.ini, SKINNING_ON))
+        for shape in CELLS:
+            assert_drawn_by(frame, reference, shape, "red")
+
+
+class TestSkinnedDrawWithoutPalette:
+    """Skinning on, but no upload qualifies as a bone palette."""
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def frame(cls, toy):
+        return toy.frame("no_palette", MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON, {"Skinning": {"BoneThreshold": 230}}))
+
+    @pytest.mark.parametrize("shape", SKINNED)
+    def test_skinned_draw_keeps_its_shaders(self, frame, reference, shape):
+        assert_drawn_by(frame, reference, shape, "red")
+
+    @pytest.mark.parametrize("shape", RIGID)
+    def test_rigid_draw_is_converted(self, frame, reference, shape):
+        assert_drawn_by(frame, reference, shape, "green")
+
+
+class TestSkinnedDrawPastTheEndOfItsBuffer:
+    def test_only_the_vertices_in_the_buffer_are_converted(self, toy, reference):
+        frame = toy.frame("loose_vertex_count", MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON), extra_vertices=100_000)
+        for shape in SKINNED:
+            assert_drawn_by(frame, reference, shape, "green")
+
+
+class TestIniValueThatIsNoNumber:
+    def test_the_default_is_kept_and_the_log_says_so(self, toy, reference):
+        frame = toy.frame("register_prefix", SHIPPED_LAYOUT, ini={"FFP.Registers": {"WorldStart": "c16"}})
+        assert "[FFP.Registers] WorldStart=c16 is not a decimal number; using 16" in frame.log
+        assert_drawn_by(frame, reference, "rigid quad", "green")
 
 
 class TestRegistersOutOfRange:

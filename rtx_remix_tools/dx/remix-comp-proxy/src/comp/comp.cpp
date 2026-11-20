@@ -35,11 +35,14 @@ namespace comp
 
 			const auto view_matrix = shared::utils::to_d3dmatrix(DirectX::XMMatrixMultiply(rotation, translation));
 
+			// Values typed into the sliders can leave their range; XMMatrixPerspectiveFovLH asserts on
+			// a zero field of view or aspect, a near plane at or behind the camera and near == far
+			const float fov = std::clamp(im->m_dbg_camera_fov, 1.0f, 179.0f);
+			const float aspect = (std::max)(im->m_dbg_camera_aspect, 0.01f);
+			const float near_plane = (std::max)(im->m_dbg_camera_near_plane, 0.001f);
+			const float far_plane = (std::max)(im->m_dbg_camera_far_plane, near_plane * 1.01f + 0.01f);
 			const auto proj_matrix = shared::utils::to_d3dmatrix(DirectX::XMMatrixPerspectiveFovLH(
-				DEG2RAD(im->m_dbg_camera_fov),
-				im->m_dbg_camera_aspect,
-				im->m_dbg_camera_near_plane,
-				im->m_dbg_camera_far_plane));
+				DEG2RAD(fov), aspect, near_plane, far_plane));
 
 			shared::globals::d3d_device->SetTransform(D3DTS_WORLD, &shared::globals::IDENTITY);
 			shared::globals::d3d_device->SetTransform(D3DTS_VIEW, &view_matrix);
@@ -47,9 +50,8 @@ namespace comp
 		}
 
 
-		// Safe because ffp_state::apply_transforms overwrites WORLD per-draw when world_dirty_.
-		// Games that write world constants every frame (the common case) will never see this identity.
-		// Remove if your game sets world constants once and reuses across frames.
+		// Identity until the first FFP draw of the scene: ffp_state sends the world matrix the game
+		// uploaded last, once it has uploaded one, before that draw.
 		shared::globals::d3d_device->SetTransform(D3DTS_WORLD, &shared::globals::IDENTITY);
 
 		// Example: if you found a game struct with view/proj matrices, apply them here

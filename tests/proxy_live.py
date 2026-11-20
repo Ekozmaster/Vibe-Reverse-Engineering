@@ -180,7 +180,7 @@ class ProxyToy:
         return subprocess.run(["cmd", "/c", str(script), config], cwd=self._template_copy, capture_output=True, text=True, env=env)
 
     def frame(self, name: str, layout: Layout, *, ini: dict | None = None, proxy: bool = True, albedo_stage: int = 0,
-              files: dict[str, bytes] | None = None) -> Frame:
+              extra_vertices: int = 0, files: dict[str, bytes] | None = None) -> Frame:
         """Run the toy in a folder of its own and return what it drew.
 
         Args:
@@ -190,6 +190,8 @@ class ProxyToy:
             proxy: Put the built proxy and its INI beside the toy. Without it the toy
                 uses the system d3d9.dll.
             albedo_stage: Texture stage the toy binds its green texture to.
+            extra_vertices: Added to the NumVertices of each skinned draw, past the end of
+                its vertex buffer.
             files: {path inside the folder: content} to put there before the run.
 
         Raises:
@@ -211,7 +213,8 @@ class ProxyToy:
         # A hidden console of its own: the proxy opens a console window when the process has none
         hidden = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW, wShowWindow=subprocess.SW_HIDE)
         done = subprocess.run(
-            [str(folder / "toy.exe"), "--out", "frame.raw", *layout.toy_arguments, "--albedo-stage", str(albedo_stage), "-nobeep"],
+            [str(folder / "toy.exe"), "--out", "frame.raw", *layout.toy_arguments, "--albedo-stage", str(albedo_stage),
+             "--extra-vertices", str(extra_vertices), "-nobeep"],
             cwd=folder, capture_output=True, text=True, timeout=120,
             startupinfo=hidden, creationflags=subprocess.CREATE_NEW_CONSOLE)
         if done.returncode != 0:

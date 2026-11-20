@@ -1,6 +1,8 @@
 #include "std_include.hpp"
 #include "config.hpp"
 
+#include <charconv>
+
 namespace shared::common
 {
 	namespace
@@ -24,7 +26,7 @@ namespace shared::common
 	{
 		ini_path_ = path;
 
-		// Check if the INI file actually exists — GetPrivateProfileInt silently
+		// Check if the INI file actually exists — GetPrivateProfileString silently
 		// returns defaults for missing files, making it look like settings are ignored.
 		if (GetFileAttributesA(ini_path_.c_str()) == INVALID_FILE_ATTRIBUTES)
 		{
@@ -38,12 +40,6 @@ namespace shared::common
 		parse_all();
 	}
 
-	int config::get_int(const char* section, const char* key, int default_val) const
-	{
-		if (!loaded_) return default_val;
-		return GetPrivateProfileIntA(section, key, default_val, ini_path_.c_str());
-	}
-
 	std::string config::get_string(const char* section, const char* key, const char* default_val) const
 	{
 		if (!loaded_) return default_val;
@@ -52,12 +48,34 @@ namespace shared::common
 		return buf;
 	}
 
+	template <typename T>
+	T config::get_number(const char* section, const char* key, T default_val) const
+	{
+		const auto text = get_string(section, key, "");
+		const auto first = text.find_first_not_of(" \t");
+		if (first == std::string::npos) return default_val;
+		const auto last = text.find_last_not_of(" \t");
+
+		// The whole value has to be a decimal number: "c8", "0x10" or "8 ; comment" keep the default
+		T value{};
+		const char* begin = text.data() + first;
+		const char* end = text.data() + last + 1;
+		const auto [stop, error] = std::from_chars(begin, end, value);
+		if (error == std::errc() && stop == end) return value;
+
+		log("Config", std::format("[{}] {}={} is not a decimal number; using {}", section, key, text, default_val),
+			LOG_TYPE::LOG_TYPE_ERROR, true);
+		return default_val;
+	}
+
+	int config::get_int(const char* section, const char* key, int default_val) const
+	{
+		return get_number(section, key, default_val);
+	}
+
 	float config::get_float(const char* section, const char* key, float default_val) const
 	{
-		auto str = get_string(section, key, "");
-		if (str.empty()) return default_val;
-		try { return std::stof(str); }
-		catch (...) { return default_val; }
+		return get_number(section, key, default_val);
 	}
 
 	bool config::get_bool(const char* section, const char* key, bool default_val) const
