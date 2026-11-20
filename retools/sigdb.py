@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from capstone import x86_const as x86
 from common import Binary
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "signatures.db"
@@ -149,12 +150,19 @@ class Match:
 # Signature extraction
 # ---------------------------------------------------------------------------
 
-def extract_byte_sig(b: Binary, va: int) -> tuple[bytes, bytes, int, int] | None:
+def extract_byte_sig(
+    b: Binary, va: int, func_size: int | None = None,
+) -> tuple[bytes, bytes, int, int] | None:
     """Extract a 32-byte pattern + mask from the function at *va*.
 
     Wildcards bytes 1-4 after E8 (CALL rel32) and E9 (JMP rel32) opcodes
-    since the rel32 operand is position-dependent. Computes a FLIRT-style
-    tail CRC over the last 32 bytes, and estimates function size.
+    since the rel32 operand is position-dependent, and every byte past the
+    end of a function shorter than 32 bytes, which belongs to whatever the
+    linker placed next. Computes a tail CRC32 over the last 32 bytes.
+
+    Args:
+        func_size: The function's size when known (from a map); estimated
+            from the disassembly otherwise.
 
     Returns:
         (pattern, mask, tail_crc, func_size) or None if unreadable.
@@ -177,8 +185,11 @@ def extract_byte_sig(b: Binary, va: int) -> tuple[bytes, bytes, int, int] | None
         else:
             i += 1
 
-    # Estimate function size from disassembly
-    func_size = _estimate_func_size(b, va)
+    if func_size is None:
+        func_size = _estimate_func_size(b, va)
+    for i in range(max(func_size, 0), 32):
+        mask[i] = 0x00
+        pattern[i] = 0x00
 
     # Tail CRC: CRC32 of last 32 bytes (or whatever is available)
     tail_offset = max(0, func_size - 32)
@@ -186,6 +197,51 @@ def extract_byte_sig(b: Binary, va: int) -> tuple[bytes, bytes, int, int] | None
     tail_crc = zlib.crc32(tail_bytes) & 0xFFFFFFFF if tail_bytes else 0
 
     return bytes(pattern), bytes(mask), tail_crc, func_size
+
+
+def extract_flirt_crc(b: Binary, va: int, func_size: int) -> tuple[int, int]:
+    """FLIRT CRC16 span for the function at *va*: (crc_len, crc16).
+
+    The span starts after the 32-byte prefix and ends at the function's end,
+    after 255 bytes, or at the first instruction whose bytes depend on where
+    the code was linked: a call, a branch leaving the function, an absolute
+    memory operand, or an immediate that looks like an address. The same
+    library function linked into another game at another address still
+    passes, as FLIRT's relocation-masked CRC does.
+
+    Returns:
+        (0, 0) when no byte after the prefix qualifies.
+    """
+    stop = min(func_size, 32 + _MAX_CRC_LEN)
+    if stop <= 32:
+        return 0, 0
+    for insn in b.iter_disasm(va, max_bytes=stop):
+        offset = insn.address - va
+        if offset >= stop:
+            break
+        if offset + insn.size > 32 and _depends_on_layout(b, insn, va, func_size):
+            stop = offset
+            break
+    if stop <= 32:
+        return 0, 0
+    return stop - 32, flirt_crc16(b.read_va(va + 32, stop - 32))
+
+
+def _depends_on_layout(b: Binary, insn, va: int, func_size: int) -> bool:
+    if insn.group(x86.X86_GRP_CALL):
+        return True
+    for op in insn.operands:
+        if op.type == x86.X86_OP_IMM:
+            if insn.group(x86.X86_GRP_JUMP):
+                if not va <= op.imm < va + func_size:
+                    return True
+            elif b.abs_imm_refs(insn):
+                return True
+        elif op.type == x86.X86_OP_MEM:
+            mem = op.mem
+            if mem.base in (0, x86.X86_REG_RIP, x86.X86_REG_EIP) and mem.index == 0:
+                return True
+    return False
 
 
 def _estimate_func_size(b: Binary, va: int) -> int:
@@ -804,7 +860,11 @@ class SignatureDB:
 # Build pipeline
 # ---------------------------------------------------------------------------
 
-def build_from_manifest(db: SignatureDB, manifest: dict) -> None:
+_MIN_SIG_FUNC_SIZE = 16
+_MIN_FIXED_BYTES = 12
+
+
+def build_from_manifest(db: SignatureDB, manifest: dict) -> collections.Counter:
     """Ingest signatures from a JSON manifest.
 
     Manifest format::
@@ -815,13 +875,21 @@ def build_from_manifest(db: SignatureDB, manifest: dict) -> None:
                     "type": "binary_with_map",
                     "binary": "path/to/file.dll",
                     "map": "path/to/map.csv",
-                    "compiler": "msvc"
+                    "compiler": "msvc2008"
                 }
             ]
         }
 
-    The CSV must have ``address`` and ``name`` columns.
+    The CSV must have ``address`` and ``name`` columns; an optional ``size``
+    column replaces the estimated function size. Functions under 16 bytes
+    are skipped. Byte signatures carry a FLIRT CRC16 (extract_flirt_crc) and
+    go through the same prefix checks as import_pat.
+
+    Returns:
+        Counts of added and skipped byte signatures by reason.
     """
+    stats: collections.Counter = collections.Counter()
+    by_prefix: dict[tuple[bytes, bytes], dict[str, tuple]] = collections.defaultdict(dict)
     for source in manifest.get("sources", []):
         if source.get("type") != "binary_with_map":
             continue
@@ -839,26 +907,31 @@ def build_from_manifest(db: SignatureDB, manifest: dict) -> None:
             print(f"sigdb: failed to load {binary_path}: {e}", file=sys.stderr)
             continue
 
+        source_name = Path(binary_path).name
         with open(map_path, newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
+            for row in csv.DictReader(f):
                 va = int(row["address"], 0)
                 name = row["name"]
                 category = _categorize_name(name)
-                source_name = Path(binary_path).name
+                size = int(row["size"], 0) if row.get("size") else None
 
-                # Byte sig
-                bsig = extract_byte_sig(b, va)
-                if bsig is not None:
-                    pattern, mask, tail_crc, func_size = bsig
-                    db.add_byte_sig(
-                        name=name, pattern=pattern, mask=mask,
-                        func_size=func_size, tail_crc=tail_crc,
-                        compiler=compiler, source=source_name,
-                        category=category,
-                    )
+                bsig = extract_byte_sig(b, va, size)
+                if bsig is None:
+                    stats["unreadable"] += 1
+                    continue
+                pattern, mask, tail_crc, func_size = bsig
+                if func_size < _MIN_SIG_FUNC_SIZE:
+                    stats["too_small"] += 1
+                    continue
+                if sum(1 for m in mask if m) < _MIN_FIXED_BYTES:
+                    stats["too_few_fixed_bytes"] += 1
+                else:
+                    crc_len, crc16 = extract_flirt_crc(b, va, func_size)
+                    by_prefix[(pattern, mask)].setdefault(name, (
+                        name, pattern, mask, func_size, tail_crc, crc_len, crc16,
+                        compiler, source_name, category,
+                    ))
 
-                # Structural sig
                 ssig = extract_structural_sig(b, va)
                 if ssig is not None:
                     db.add_structural_sig(
@@ -867,9 +940,32 @@ def build_from_manifest(db: SignatureDB, manifest: dict) -> None:
                         **ssig,
                     )
 
+    _insert_unique_byte_sigs(db, by_prefix, stats)
+    return stats
 
-_PAT_MIN_FUNC_SIZE = 16
-_PAT_MIN_FIXED_BYTES = 12
+
+def _insert_unique_byte_sigs(
+    db: SignatureDB, by_prefix: dict[tuple[bytes, bytes], dict[str, tuple]],
+    stats: collections.Counter,
+) -> None:
+    """Insert one byte_sigs row per prefix that names exactly one function.
+
+    A prefix given more than one name cannot tell those functions apart, and
+    a prefix the database already holds would only repeat or contradict it.
+    """
+    existing = set(db._conn.execute("SELECT pattern, mask FROM byte_sigs"))
+    rows = []
+    for prefix, rows_by_name in by_prefix.items():
+        if len(rows_by_name) > 1:
+            stats["ambiguous_prefix"] += 1
+        elif prefix in existing:
+            stats["already_in_db"] += 1
+        else:
+            rows.extend(rows_by_name.values())
+    db._insert_byte_sigs(rows)
+    stats["added"] += len(rows)
+
+
 _PAT_PUBLIC_RE = re.compile(r":([0-9A-Fa-f]{4,8})@? (\S+)")
 _PAT_LOCAL_NAME_RE = re.compile(r"^(\.|\$|_LN\d+$)")
 
@@ -927,9 +1023,9 @@ def parse_pat_line(line: str) -> PatSig | None:
 def _pat_skip_reason(sig: PatSig) -> str | None:
     if _PAT_LOCAL_NAME_RE.match(sig.name) or "CrtImplementationDetails" in sig.name:
         return "local_or_managed"
-    if sig.length < _PAT_MIN_FUNC_SIZE:
+    if sig.length < _MIN_SIG_FUNC_SIZE:
         return "too_small"
-    if sum(1 for i in range(min(32, sig.length)) if sig.mask[i]) < _PAT_MIN_FIXED_BYTES:
+    if sum(1 for i in range(min(32, sig.length)) if sig.mask[i]) < _MIN_FIXED_BYTES:
         return "too_few_fixed_bytes"
     return None
 
@@ -945,7 +1041,7 @@ def import_pat(db: SignatureDB, path: str, compiler: str, source: str) -> collec
         Counts of added and skipped lines by reason.
     """
     stats: collections.Counter = collections.Counter()
-    by_prefix: dict[tuple[bytes, bytes], dict[str, PatSig]] = collections.defaultdict(dict)
+    by_prefix: dict[tuple[bytes, bytes], dict[str, tuple]] = collections.defaultdict(dict)
     with open(path, errors="replace") as f:
         for line in f:
             sig = parse_pat_line(line.rstrip("\n"))
@@ -956,21 +1052,11 @@ def import_pat(db: SignatureDB, path: str, compiler: str, source: str) -> collec
             if reason:
                 stats[reason] += 1
                 continue
-            by_prefix[(sig.pattern, sig.mask)].setdefault(sig.name, sig)
-
-    existing = set(db._conn.execute("SELECT pattern, mask FROM byte_sigs"))
-    rows = []
-    for prefix, sigs in by_prefix.items():
-        if len(sigs) > 1:
-            stats["ambiguous_prefix"] += 1
-        elif prefix in existing:
-            stats["already_in_db"] += 1
-        else:
-            (sig,) = sigs.values()
-            rows.append((sig.name, sig.pattern, sig.mask, sig.length, 0, sig.crc_len, sig.crc16,
-                         compiler, source, _categorize_name(sig.name)))
-    db._insert_byte_sigs(rows)
-    stats["added"] = len(rows)
+            by_prefix[(sig.pattern, sig.mask)].setdefault(sig.name, (
+                sig.name, sig.pattern, sig.mask, sig.length, 0, sig.crc_len, sig.crc16,
+                compiler, source, _categorize_name(sig.name),
+            ))
+    _insert_unique_byte_sigs(db, by_prefix, stats)
     return stats
 
 
@@ -1098,12 +1184,14 @@ def _dispatch(args: argparse.Namespace) -> None:
         with open(args.manifest) as f:
             manifest = json.load(f)
         db = SignatureDB(args.output)
-        build_from_manifest(db, manifest)
+        stats = build_from_manifest(db, manifest)
         cur = db._conn.execute("SELECT COUNT(*) FROM byte_sigs")
         bc = cur.fetchone()[0]
         cur = db._conn.execute("SELECT COUNT(*) FROM structural_sigs")
         sc = cur.fetchone()[0]
         print(f"Built {args.output}: {bc} byte sigs, {sc} structural sigs")
+        for reason, count in sorted(stats.items()):
+            print(f"  {reason}: {count}")
         db.close()
 
     elif args.command == "import-pat":

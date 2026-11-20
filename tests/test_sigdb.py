@@ -139,19 +139,8 @@ class TestByteExtraction:
 
         mock_b = MagicMock()
         mock_b.read_va.return_value = bytes(code)
-        # Mock disasm to return enough instructions to estimate func size
-        mock_insn = MagicMock()
-        mock_insn.mnemonic = "ret"
-        mock_insn.address = 0x1000 + 50
-        mock_insn.size = 1
-        mock_insn.op_str = ""
-        nop_insn = MagicMock()
-        nop_insn.mnemonic = "nop"
-        nop_insn.address = 0x1000 + 51
-        nop_insn.size = 1
-        mock_b.disasm.return_value = [mock_insn, nop_insn, nop_insn, nop_insn]
 
-        result = extract_byte_sig(mock_b, 0x1000)
+        result = extract_byte_sig(mock_b, 0x1000, func_size=51)
         assert result is not None
         pattern, mask, tail_crc, func_size = result
         # Bytes 1-4 (E8 operand) should be wildcarded
@@ -801,6 +790,58 @@ class TestTailCrc:
         pattern, mask, tail_crc, size = extract_byte_sig(b, CODE_VA)
         assert size == 40
         assert tail_crc == zlib.crc32(body[8:40]) & 0xFFFFFFFF
+
+
+class TestBuildSafeguards:
+    def _build(self, tmp_path, text, rows):
+        from sigdb import SignatureDB, build_from_manifest
+        image = pe_image(tmp_path / "lib.dll", text)
+        lines = ["address,name,size"] + [f"0x{CODE_VA + off:X},{name},{size}" for off, name, size in rows]
+        (tmp_path / "map.csv").write_text("\n".join(lines) + "\n")
+        db = SignatureDB(":memory:")
+        stats = build_from_manifest(db, {"sources": [{"type": "binary_with_map", "binary": str(image),
+                                                      "map": str(tmp_path / "map.csv"), "compiler": "msvc2008"}]})
+        return db, stats
+
+    def _rows(self, db):
+        return db._conn.execute("SELECT name, mask, crc_len, crc16 FROM byte_sigs ORDER BY name").fetchall()
+
+    def test_bytes_past_a_short_function_are_wildcards(self, tmp_path):
+        text = bytes(range(1, 20)) + b"\xc3" + b"\x77" * 60
+        db, _ = self._build(tmp_path, text, [(0, "short", 20)])
+        ((name, mask, crc_len, _),) = self._rows(db)
+        assert mask[:20] == b"\xff" * 20 and mask[20:] == b"\0" * 12 and crc_len == 0
+
+    def test_functions_under_16_bytes_are_skipped(self, tmp_path):
+        db, stats = self._build(tmp_path, bytes(range(1, 64)), [(0, "tiny", 8)])
+        assert self._rows(db) == [] and stats["too_small"] == 1
+
+    def test_a_prefix_with_two_names_is_dropped(self, tmp_path):
+        body = bytes(range(1, 40)) + b"\xc3"
+        db, stats = self._build(tmp_path, body + body, [(0, "a", 40), (40, "b", 40)])
+        assert self._rows(db) == [] and stats["ambiguous_prefix"] == 1
+
+    def test_crc_covers_the_bytes_after_the_prefix_up_to_the_first_call(self, tmp_path):
+        from sigdb import flirt_crc16
+        text = b"\x90" * 40 + b"\xe8\x00\x00\x00\x00" + b"\x90" * 14 + b"\xc3"
+        db, _ = self._build(tmp_path, text, [(0, "f", len(text))])
+        ((_, _, crc_len, crc16),) = self._rows(db)
+        assert (crc_len, crc16) == (8, flirt_crc16(b"\x90" * 8))
+
+    def test_crc_runs_to_the_function_end_without_layout_dependent_code(self, tmp_path):
+        from sigdb import flirt_crc16
+        text = b"\x90" * 47 + b"\xc3"
+        db, _ = self._build(tmp_path, text, [(0, "f", 48)])
+        ((_, _, crc_len, crc16),) = self._rows(db)
+        assert (crc_len, crc16) == (16, flirt_crc16(text[32:48]))
+
+    def test_a_function_linked_elsewhere_still_matches(self, tmp_path):
+        from common import Binary
+        text = b"\x90" * 40 + b"\xe8\x00\x00\x00\x00" + b"\x90" * 14 + b"\xc3"
+        db, _ = self._build(tmp_path, text, [(0, "lib_func", len(text))])
+        moved = text[:41] + b"\x10\x20\x00\x00" + text[45:]
+        other = Binary(str(pe_image(tmp_path / "game.exe", moved)))
+        assert db.identify(other, CODE_VA).name == "lib_func"
 
 
 def _rich_stub(entries):

@@ -143,7 +143,7 @@ What each decompiler takes from kb.h:
 | `sigdb.py fingerprint $B` | Identify compiler version (Rich header + markers + imports) | `sigdb.py fingerprint game.exe` |
 | `context.py assemble $B $VA --project $P` | Gather full analysis context for a function. Includes forward constant propagation by default (`--no-dataflow` to skip); on a 64-bit binary that section is a `[dataflow] skipped` line, since dataflow models x86 registers only | `context.py assemble game.exe 0x401500 --project patches/Warband` |
 | `context.py postprocess $B $VA --project $P` | Mechanically rename/annotate decompiler output (pipe) | `decompiler.py ... \| context.py postprocess ...` |
-| `sigdb.py build $MANIFEST` | Build/extend signature DB from manifest | `sigdb.py build sources.json` |
+| `sigdb.py build $MANIFEST` | Build/extend signature DB from manifest (binary + `address,name[,size]` CSV): skips functions under 16 bytes and prefixes with more than one name, wildcards prefix bytes past a short function's end, stores a FLIRT CRC16 up to the first call, outside branch or address operand | `sigdb.py build sources.json` |
 | `sigdb.py import-pat $PAT -d $DB --compiler $C --source $S` | Add a FLIRT `.pat` file (e.g. rizin `sigdb-source`) to a DB: offset-0 names only, keeps each line's CRC16, drops local labels, functions under 16 bytes and prefixes with more than one name | `sigdb.py import-pat VisualStudio2008.pat -d sigs.db --compiler msvc2008 --source rizin_vs2008` |
 | `sigdb.py pull` | Download signature DB from HuggingFace (`--revision` picks an HF branch, tag or commit; default `main`) | `sigdb.py pull`, `sigdb.py pull --sources` or `sigdb.py pull --revision schema-v2` |
 
