@@ -14,7 +14,10 @@ Examples:
 """
 import argparse
 import struct
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, find_text_section, va_to_offset
 from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
 

@@ -336,6 +336,14 @@ class TestMethodPointerLoadScan:
 
         assert calls.scan_vtable_mov(code.data, TEXT_VA, draw_primitive) == []
 
+    def test_a_write_to_part_of_the_method_register_ends_the_path(self):
+        load_method = bytes([0x8B, 0x42, PRESENT])                                 # mov eax, [edx+0x44]
+        overwrite_al = bytes([0xB0, 0x00])                                         # mov al, 0
+        code = Code().add("partly_overwritten", *_NO_PRESENT_ARGUMENTS, load_method, overwrite_al, PUSH_ECX,
+                          _CALL_EAX)
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, PRESENT) == []
+
     def test_a_field_read_that_is_not_called_is_not_a_method_pointer_load(self):
         read_field = bytes([0x8B, 0x46, PRESENT])                                  # mov eax, [esi+0x44]
         code = Code().add("field", read_field, PUSH_EAX, _CALL_NEAR)
@@ -424,6 +432,14 @@ class TestComThis:
 
         assert _found_calls(code, SET_RENDER_STATE) == []
 
+    def test_register_whose_low_word_was_copied_from_the_object_is_not_this(self):
+        # mov eax, [esi] / mov di, si / push edi / call [eax+0x44]: edi keeps its own high word
+        mov_di_si = bytes([0x66, 0x8B, 0xFE])
+        code = Code().add("low_word", _LOAD_VTABLE_FROM_ESI, mov_di_si, *_NO_PRESENT_ARGUMENTS, _PUSH_EDI,
+                          _CALL_PRESENT_THROUGH_EAX)
+
+        assert _found_calls(code, PRESENT) == []
+
     def test_this_the_code_does_not_show_keeps_the_call(self):
         code = Code().add("unsettled", _CALL_NEAR, _LOAD_VTABLE_FROM_ESI, *_NO_PRESENT_ARGUMENTS, _PUSH_EDI,
                           _CALL_PRESENT_THROUGH_EAX)
@@ -492,6 +508,17 @@ class TestArgumentCount:
                           call_method(SET_RENDER_STATE))
 
         assert _found_calls(code, SET_RENDER_STATE) == []
+
+    def test_lea_of_esp_moves_the_slots_like_add_and_sub(self):
+        lea_esp_padding = bytes([0x8D, 0x64, 0x24, 0x00])                  # lea esp, [esp]
+        lea_esp_reserve = bytes([0x8D, 0x64, 0x24, 0xF8])                  # lea esp, [esp-8]
+        code = (Code().add("padded", _CALL_NEAR, *_NO_PRESENT_ARGUMENTS, lea_esp_padding, PUSH_ECX,
+                           call_method(PRESENT))
+                .add("reserved", _CALL_NEAR, push(0), push(0), lea_esp_reserve, _store(4, 0), _STORE_ECX_AT_ESP,
+                     call_method(SET_RENDER_STATE)))
+
+        assert _found_calls(code, PRESENT) == [code.calls["padded"]]
+        assert _found_calls(code, SET_RENDER_STATE) == [code.calls["reserved"]]
 
     def test_offset_the_interface_has_no_method_at_is_not_counted(self):
         beyond_the_constant_table = 0x6C
@@ -569,6 +596,20 @@ class TestDeviceProvenance:
 
         assert calls.object_origin(code.data, TEXT_VA, code.calls["clobbered"]) is None
 
+    def test_object_whose_low_byte_is_overwritten_has_no_origin(self):
+        # mov ecx, [g] / mov cl, 0 / mov edx, [ecx] / push ecx / call [edx+0x44]
+        load_then_overwrite_cl = bytes([0x8B, 0x0D]) + _DEVICE_GLOBAL + bytes([0xB1, 0x00, 0x8B, 0x11])
+        code = Code().add("partly_overwritten", *_present_on(load_then_overwrite_cl))
+
+        assert calls.object_origin(code.data, TEXT_VA, code.calls["partly_overwritten"]) is None
+
+    def test_object_whose_low_byte_is_loaded_from_a_global_has_no_origin(self):
+        # mov ecx, [ecx+0x3C] / mov cl, [g] / mov edx, [ecx] / push ecx / call [edx+0x44]
+        load_cl_from_global = bytes([0x8B, 0x49, 0x3C, 0x8A, 0x0D]) + _DEVICE_GLOBAL + bytes([0x8B, 0x11])
+        code = Code().add("low_byte", *_present_on(load_cl_from_global))
+
+        assert calls.object_origin(code.data, TEXT_VA, code.calls["low_byte"]) is None
+
     def test_object_in_a_field_of_a_global_object(self):
         # mov eax, [g] / mov ecx, [eax+0x1C] / mov edx, [ecx] / push ecx / call [edx+0x44]
         load_field_of_global = bytes([0xA1]) + _DEVICE_GLOBAL + bytes([0x8B, 0x48, 0x1C, 0x8B, 0x11])
@@ -613,6 +654,15 @@ class TestLoadBinary:
             dx9_pe.load_binary(path)
 
         assert "64-bit" in str(refusal.value)
+
+    def test_section_table_cut_short_is_refused(self, tmp_path):
+        path = write_pe32(tmp_path / "cut.exe", Code().data)
+        path.write_bytes(path.read_bytes()[:0x140])                 # the .text header starts at 0x138
+
+        with pytest.raises(SystemExit) as refusal:
+            dx9_pe.load_binary(path)
+
+        assert "cut.exe" in str(refusal.value) and "section table" in str(refusal.value)
 
     def test_file_that_is_not_a_pe_is_refused(self, tmp_path):
         path = tmp_path / "notes.txt"

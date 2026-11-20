@@ -80,6 +80,19 @@ class TestNoTracerAnswers:
         _trigger(stale_folder)
         assert not (stale_folder / "dxtrace_capture.trigger").exists()
 
+    def test_trigger_taken_between_the_check_and_the_removal_is_not_an_error(self, stale_folder, monkeypatch):
+        exists = Path.exists
+
+        def taken_once_seen(path, **kwargs):
+            if path.name == "dxtrace_capture.trigger":
+                path.unlink(missing_ok=True)
+                return True
+            return exists(path, **kwargs)
+
+        monkeypatch.setattr(Path, "exists", taken_once_seen)
+
+        assert _trigger(stale_folder) == 1
+
     def test_without_wait_the_trigger_file_stays_for_the_tracer(self, stale_folder):
         assert _trigger(stale_folder, wait=False) == 0
         assert (stale_folder / "dxtrace_capture.trigger").read_text() == "frames=2\n"

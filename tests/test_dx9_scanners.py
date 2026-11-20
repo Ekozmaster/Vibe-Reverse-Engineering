@@ -9,6 +9,7 @@ import importlib
 import io
 import re
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -349,3 +350,20 @@ class TestInputTheScannersCannotRead:
             report(script, text_file)
 
         assert "notes.txt" in str(refusal.value)
+
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "rtx_remix_tools" / "dx" / "scripts"
+
+
+class TestRunAsAScript:
+    """Each script finds its sibling modules itself, not through the directory Python was started in."""
+
+    @pytest.mark.parametrize("script", sorted(
+        path.name for path in _SCRIPTS_DIR.glob("*.py") if not path.name.startswith("dx9_")))
+    def test_help_runs_from_another_directory_by_path(self, script, tmp_path):
+        # runpy, unlike "python script.py", leaves the script's own directory off sys.path
+        run_by_path = "import runpy, sys; path = sys.argv[1]; sys.argv = [path, '--help']; runpy.run_path(path, run_name='__main__')"
+        result = subprocess.run([sys.executable, "-c", run_by_path, str(_SCRIPTS_DIR / script)],
+                                cwd=tmp_path, capture_output=True, text=True, errors="replace", timeout=60)
+
+        assert result.returncode == 0, result.stderr

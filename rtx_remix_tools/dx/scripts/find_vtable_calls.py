@@ -11,7 +11,10 @@ Usage:
     python find_vtable_calls.py <game.exe>
 """
 import argparse
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section
 from dx9_calls import scan_all_patterns, D3DX_CONSTANT_TABLE, D3DX_CONSTANT_TABLE_METHODS
 

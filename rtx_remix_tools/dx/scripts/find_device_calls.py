@@ -14,7 +14,9 @@ to find all code that reads the device pointer global.
 import argparse
 import sys
 import struct
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, find_text_section
 from dx9_calls import scan_vtable_calls, scan_vtable_mov, split_device_hits, device_origin_summary
 

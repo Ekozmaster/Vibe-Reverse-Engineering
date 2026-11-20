@@ -12,6 +12,37 @@ Usage:
 import argparse
 import sys
 
+_EXECUTABLE = 0x20000000
+_CALL_INDIRECT = b'\xFF\x15'      # call [abs32] on x86, call [rip+rel32] on x64
+_CALL_INDIRECT_SIZE = 6
+
+
+def iat_call_sites(pe, iat_va, is_64):
+    """Addresses of the ``call [iat_va]`` instructions in the executable sections.
+
+    x86 code names the IAT slot by its absolute address; x64 code by its
+    distance from the end of the call. A REX-prefixed x64 call is reported
+    at its FF 15 opcode, one byte past the prefix.
+    """
+    image_base = pe.OPTIONAL_HEADER.ImageBase
+    pattern = _CALL_INDIRECT if is_64 else _CALL_INDIRECT + iat_va.to_bytes(4, 'little')
+    for section in pe.sections:
+        if not section.Characteristics & _EXECUTABLE:
+            continue
+        data = section.get_data()
+        section_va = image_base + section.VirtualAddress
+        idx = data.find(pattern)
+        while idx != -1:
+            call_va = section_va + idx
+            if not is_64:
+                yield call_va
+            else:
+                rel32 = int.from_bytes(data[idx + 2:idx + _CALL_INDIRECT_SIZE], 'little', signed=True)
+                if call_va + _CALL_INDIRECT_SIZE + rel32 == iat_va:
+                    yield call_va
+            idx = data.find(pattern, idx + 1)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("binary", help="Path to PE binary (.exe / .dll)")
@@ -28,17 +59,17 @@ def main():
     except (OSError, pefile.PEFormatError) as exc:
         sys.exit(f"ERROR: {args.binary}: {exc}")
     image_base = pe.OPTIONAL_HEADER.ImageBase
+    is_64 = pe.PE_TYPE == pefile.OPTIONAL_HEADER_MAGIC_PE_PLUS
     print(f"ImageBase: 0x{image_base:08X}")
     print(f"Machine: 0x{pe.FILE_HEADER.Machine:04X}")
 
     # --- IAT entries ---
     print("\n=== D3D-related IAT entries ===")
-    d3d9_iat_va = None
-    if not hasattr(pe, 'DIRECTORY_ENTRY_IMPORT'):
+    imports = getattr(pe, 'DIRECTORY_ENTRY_IMPORT', [])
+    if not imports:
         print("  (no import directory found — binary may be packed or obfuscated)")
-        print("\n--- DONE ---")
-        return
-    for entry in pe.DIRECTORY_ENTRY_IMPORT:
+    d3d9_iat_va = None
+    for entry in imports:
         dll = entry.dll.decode()
         if "d3d" in dll.lower():
             print(f"\nDLL: {dll}")
@@ -66,52 +97,26 @@ def main():
     if d3d9_iat_va is None:
         print("  (Direct3DCreate9 not found in IAT — may be loaded via GetProcAddress)")
     else:
-        iat_bytes = d3d9_iat_va.to_bytes(4, 'little')
-        call_pattern = b'\xFF\x15' + iat_bytes
         print(f"  IAT entry at 0x{d3d9_iat_va:08X}")
         call_count = 0
-        for section in pe.sections:
-            if section.Characteristics & 0x20000000:
-                data = section.get_data()
-                section_va = image_base + section.VirtualAddress
-                pos = 0
-                while True:
-                    idx = data.find(call_pattern, pos)
-                    if idx == -1:
-                        break
-                    call_va = section_va + idx
-                    print(f"  0x{call_va:08X}: call [Direct3DCreate9]")
-                    call_count += 1
-                    pos = idx + 1
+        for call_va in iat_call_sites(pe, d3d9_iat_va, is_64):
+            print(f"  0x{call_va:08X}: call [Direct3DCreate9]")
+            call_count += 1
         if call_count == 0:
             print("  (0 call sites found — may use indirect/dynamic dispatch)")
 
     # --- D3DX shader function call sites ---
     print("\n=== D3DX shader/vertex function call sites ===")
     d3dx_call_count = 0
-    for entry in pe.DIRECTORY_ENTRY_IMPORT:
+    for entry in imports:
         dll = entry.dll.decode()
         if "d3dx" in dll.lower():
             for imp in entry.imports:
                 name = imp.name.decode() if imp.name else ""
                 if any(k in name for k in ["Shader", "Vertex", "Pixel", "Constant", "Effect"]):
-                    iat_va2 = imp.address
-                    iat_bytes2 = iat_va2.to_bytes(4, 'little')
-                    call_pat2 = b'\xFF\x15' + iat_bytes2
-
-                    for section in pe.sections:
-                        if section.Characteristics & 0x20000000:
-                            data = section.get_data()
-                            section_va = image_base + section.VirtualAddress
-                            pos = 0
-                            while True:
-                                idx = data.find(call_pat2, pos)
-                                if idx == -1:
-                                    break
-                                call_va = section_va + idx
-                                print(f"  0x{call_va:08X}: call [{name}]")
-                                d3dx_call_count += 1
-                                pos = idx + 1
+                    for call_va in iat_call_sites(pe, imp.address, is_64):
+                        print(f"  0x{call_va:08X}: call [{name}]")
+                        d3dx_call_count += 1
     if d3dx_call_count == 0:
         print("  (no D3DX shader/vertex call sites found — D3DX may not be used)")
 

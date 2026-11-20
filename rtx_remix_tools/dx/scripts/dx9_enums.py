@@ -394,8 +394,8 @@ def decode_format(val):
         try:
             cc = struct.pack('<I', val).decode('ascii', errors='replace')
             return f"FourCC('{cc}')"
-        except Exception:
-            pass
+        except struct.error:
+            pass  # wider than a dword: no FourCC
     return f"UNKNOWN(0x{val:X})"
 
 

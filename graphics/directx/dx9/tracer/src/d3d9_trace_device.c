@@ -407,7 +407,9 @@ static void trace_on_present(void);
 
 /* "<frame> <calls>" while capturing. The last write adds " done", once every
  * captured call is in the JSONL file: "trigger --wait" takes that word for
- * the capture being complete. */
+ * the capture being complete. The file is rewritten in place rather than
+ * replaced by a rename: a reader holding it open blocks a rename, which would
+ * lose the final line, while a half-written read is retried by the reader. */
 static void write_progress(int done) {
     FILE *pf = fopen(g_progressPath, "w");
     if (pf) {
@@ -520,11 +522,13 @@ static void trace_on_present(void) {
         DWORD attr = GetFileAttributesA(g_triggerPath);
         if (attr != INVALID_FILE_ATTRIBUTES) {
             int frames = trigger_frames();
-            DeleteFileA(g_triggerPath);
 
+            /* The capture file exists before the trigger goes: "trigger --wait"
+             * takes a missing trigger for a capture under way */
             if (!g_jsonlFile) {
                 g_jsonlFile = fopen(g_jsonlPath, "w");
             }
+            DeleteFileA(g_triggerPath);
             if (g_jsonlFile) {
                 g_capturing = 1;
                 g_currentFrame = 0;

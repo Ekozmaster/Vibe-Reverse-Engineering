@@ -12,7 +12,10 @@ Usage:
     python find_vs_constants.py <game.exe>
 """
 import argparse
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section
 from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_args, arg_text
 

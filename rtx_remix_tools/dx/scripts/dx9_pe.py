@@ -20,7 +20,8 @@ def parse_pe(data):
     Each section: dict with name, va, raw, rawsz, vsz, chars.
 
     Raises:
-        ValueError: *data* is not a PE file, or is not a 32-bit one.
+        ValueError: *data* is not a PE file, is not a 32-bit one, or its
+            section table runs past the end of the file.
     """
     if len(data) < 0x40 or data[:2] != b"MZ":
         raise ValueError("not a PE file (no MZ header)")
@@ -37,6 +38,8 @@ def parse_pe(data):
     num_sections = struct.unpack_from("<H", data, pe_sig_off + 6)[0]
     opt_hdr_size = struct.unpack_from("<H", data, pe_sig_off + 20)[0]
     section_start = pe_sig_off + 24 + opt_hdr_size
+    if section_start + num_sections * 40 > len(data):
+        raise ValueError(f"section table of {num_sections} sections runs past the end of the file")
     sections = []
     for i in range(num_sections):
         off = section_start + i * 40

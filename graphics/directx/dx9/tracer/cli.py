@@ -166,8 +166,11 @@ def cmd_trigger(args: argparse.Namespace) -> None:
         problem = _wait_for_capture(trigger_path, progress_path, args.frames)
     finally:
         # Left behind, the trigger would start a capture the next time the game runs
-        if trigger_path.exists():
+        try:
             trigger_path.unlink()
+        except FileNotFoundError:
+            pass  # the tracer took it
+        else:
             print(f"\n  Trigger file removed: {trigger_path}")
     print()
 

@@ -161,6 +161,18 @@ _MAX_INSN = 15          # longest x86 instruction
 _SWEEP_BATCH_INSNS = 4096  # instructions per capstone call in the section sweep
 # Registers a called function returns unchanged, in every x86 calling convention
 _CALLEE_SAVED = frozenset((x86.X86_REG_EBX, x86.X86_REG_ESI, x86.X86_REG_EDI, x86.X86_REG_EBP))
+# Capstone names the part of a register an instruction writes (al, cx); a write
+# to any part changes the 32-bit register that holds it
+_ENCLOSING_REGISTER = {part: whole for whole, parts in {
+    x86.X86_REG_EAX: (x86.X86_REG_AL, x86.X86_REG_AH, x86.X86_REG_AX),
+    x86.X86_REG_ECX: (x86.X86_REG_CL, x86.X86_REG_CH, x86.X86_REG_CX),
+    x86.X86_REG_EDX: (x86.X86_REG_DL, x86.X86_REG_DH, x86.X86_REG_DX),
+    x86.X86_REG_EBX: (x86.X86_REG_BL, x86.X86_REG_BH, x86.X86_REG_BX),
+    x86.X86_REG_ESP: (x86.X86_REG_SP,),
+    x86.X86_REG_EBP: (x86.X86_REG_BP,),
+    x86.X86_REG_ESI: (x86.X86_REG_SI,),
+    x86.X86_REG_EDI: (x86.X86_REG_DI,),
+}.items() for part in parts}
 _LOOKAHEAD = 64         # bytes after a method-pointer load searched for the call through it
 
 _END_GROUPS = (CS_GRP_RET, CS_GRP_INT, CS_GRP_IRET)
@@ -291,7 +303,7 @@ def _path_to_call(text_data, text_va, site_va):
                 return None
         if flow is _Flow.END:
             return None
-        if method_reg in insn.regs_access()[1]:
+        if _writes(insn, method_reg):
             return None
         path.append(insn)
     return None
@@ -406,7 +418,7 @@ def _walk_stack(insns, count, jump_targets):
             continue    # the call is on its fall-through path
         if flow is not _Flow.STRAIGHT:
             return _StackWalk(slots, bounded=True)
-        if x86.X86_REG_ESP in insn.regs_access()[1]:
+        if _writes(insn, x86.X86_REG_ESP):
             popped = _dwords_released(insn)
             if popped is None:
                 return _StackWalk(slots, bounded=True)
@@ -421,12 +433,20 @@ def _walk_stack(insns, count, jump_targets):
 
 
 def _dwords_released(insn):
-    """How many dwords *insn* takes off the stack: pop reg, add esp, imm or sub esp, imm (negative).
+    """How many dwords *insn* takes off the stack: pop reg, add esp, imm, sub esp, imm (negative)
+    or lea esp, [esp+disp].
 
     None for any other write to esp, or a constant that is not whole dwords.
     """
     if insn.id == x86.X86_INS_POP and insn.operands[0].type == x86.X86_OP_REG:
         return 1
+    if insn.id == x86.X86_INS_LEA:
+        target, address = insn.operands
+        mem = address.mem
+        if (target.reg != x86.X86_REG_ESP or mem.base != x86.X86_REG_ESP
+                or mem.index != x86.X86_REG_INVALID or mem.disp % 4):
+            return None
+        return mem.disp // 4
     if insn.id not in (x86.X86_INS_ADD, x86.X86_INS_SUB):
         return None
     target, amount = insn.operands
@@ -559,13 +579,18 @@ def _holds_object(insns, load_index, obj, index, operand, jump_targets):
     return obj_value == operand_value
 
 
+def _is_whole_register_mov(insn):
+    """A mov that sets all 32 bits of its destination; a mov into al or cx leaves the rest as it was."""
+    return insn.id == x86.X86_INS_MOV and insn.operands[0].size == 4
+
+
 def _is_register_copy(insn):
-    return insn.id == x86.X86_INS_MOV and insn.operands[1].type == x86.X86_OP_REG
+    return _is_whole_register_mov(insn) and insn.operands[1].type == x86.X86_OP_REG
 
 
 def _object_of_vtable_load(insn):
     """obj when *insn* is mov reg, [obj]; None for any other instruction."""
-    if insn.id != x86.X86_INS_MOV or insn.operands[1].type != x86.X86_OP_MEM:
+    if not _is_whole_register_mov(insn) or insn.operands[1].type != x86.X86_OP_MEM:
         return None
     mem = insn.operands[1].mem
     if mem.disp or mem.index != x86.X86_REG_INVALID or mem.base in (x86.X86_REG_INVALID, x86.X86_REG_ESP):
@@ -594,7 +619,9 @@ def _straight_line_start(insns, index, jump_targets):
 
 
 def _writes(insn, reg):
-    return reg in insn.regs_access()[1]
+    """Whether *insn* writes *reg*, or any part of the 32-bit register that holds it."""
+    whole = _ENCLOSING_REGISTER.get(reg, reg)
+    return any(_ENCLOSING_REGISTER.get(written, written) == whole for written in insn.regs_access()[1])
 
 
 def _last_write(insns, index, reg, jump_targets):
@@ -623,7 +650,7 @@ def _register_value(insns, index, reg, jump_targets):
         insn = insns[k]
         if not _writes(insn, reg):
             continue
-        if insn.id == x86.X86_INS_MOV and insn.operands[1].type != x86.X86_OP_IMM:
+        if _is_whole_register_mov(insn) and insn.operands[1].type != x86.X86_OP_IMM:
             return _operand_value(insns, k, insn.operands[1], jump_targets)
         return ("written by", insn.address)
     return ("on entry", reg) if entered else _UNKNOWN
@@ -693,7 +720,7 @@ def _esp_offset(insns, index):
             dwords += 1
         elif _flow(insn) is _Flow.CALL:
             return None
-        elif x86.X86_REG_ESP in insn.regs_access()[1]:
+        elif _writes(insn, x86.X86_REG_ESP):
             released = _dwords_released(insn)
             if released is None:
                 return None
@@ -801,7 +828,6 @@ _MIN_DEVICE_METHODS = 12
 
 _PROVENANCE_REACH = 512         # bytes before a hit that the object's origin is followed back
 _MAX_FIELD_HOPS = 2             # [[[g]+a]+b]: fields followed from the global to the object
-_CALLEE_SAVED = frozenset((x86.X86_REG_EBX, x86.X86_REG_ESI, x86.X86_REG_EDI, x86.X86_REG_EBP))
 
 
 def _instructions_back_from(text_data, text_va, site_va):
@@ -846,7 +872,7 @@ def _global_load_chain(back, reg, jump_targets):
             return None
         if not _writes(insn, reg):
             continue
-        if insn.id != x86.X86_INS_MOV:
+        if not _is_whole_register_mov(insn):
             return None
         source = insn.operands[1]
         if source.type == x86.X86_OP_REG:
