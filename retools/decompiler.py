@@ -133,7 +133,7 @@ def _load_types(r2, types_arg: str) -> None:
         if parameters != -1:
             # afs takes a signature only when its function name is a plain identifier.
             # It also renames the function, so the name from the kb is set after it.
-            before_name = fn.signature[:parameters].rstrip()[:-len(fn.name)]
+            before_name = fn.signature[:parameters].rstrip().removesuffix(fn.name)
             r2.cmd(f"{at}afs {before_name}{_NOT_IN_IDENTIFIER.sub('_', fn.name)}{fn.signature[parameters:]}")
         r2.cmd(f"{at}afn {fn.name}")
     for g in kb.globals:

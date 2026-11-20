@@ -159,6 +159,26 @@ def _dataflow_section(b: Binary, start: int, func_size: int) -> list[str]:
     return ["[dataflow]", *constants] if constants else []
 
 
+def _similar_section(b: Binary, start: int, db_path: str) -> list[str]:
+    """The best structural match for the function at *start* in the signature DB."""
+    db = SignatureDB.open_existing(db_path)
+    try:
+        sig = extract_structural_sig(b, start)
+        if not sig:
+            return []
+        matches = db.match_structural(
+            sig["block_count"], sig["edge_count"], sig["call_count"],
+            sig["mnemonic_hash"], sig["constants"],
+        )
+    finally:
+        db.close()
+    if not matches:
+        return []
+    m = matches[0]
+    return [f"[similar] {m.source}: {m.name} "
+            f"(block_count={sig['block_count']}, call_count={sig['call_count']})"]
+
+
 def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
              project_dir_for_kb: str | None = None, no_dataflow: bool = False) -> str:
     """Gather structured analysis context for a function.
@@ -167,12 +187,15 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
         b: Loaded PE binary.
         va: Virtual address of the function (or address inside it).
         project_dir: Project directory path.
-        db_path: Optional path to sigdb database.
+        db_path: Optional path to an existing sigdb database.
         project_dir_for_kb: Optional override directory containing kb.h.
         no_dataflow: If True, skip forward constant propagation in output.
 
     Returns:
         Formatted text block with context sections.
+
+    Raises:
+        FileNotFoundError: *db_path* is given but no file is there.
     """
     w = 16 if b.is_64 else 8
     start = find_start(b, va) or va
@@ -284,26 +307,9 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
     if not no_dataflow:
         lines.extend(_dataflow_section(b, start, func_size))
 
-    # -- Sigdb structural match (best-effort) --
+    # -- Sigdb structural match --
     if db_path:
-        try:
-            db = SignatureDB.open_existing(db_path)
-            sig = extract_structural_sig(b, start)
-            if sig:
-                matches = db.match_structural(
-                    sig["block_count"], sig["edge_count"], sig["call_count"],
-                    sig["mnemonic_hash"], sig["constants"],
-                )
-                if matches:
-                    m = matches[0]
-                    lines.append(
-                        f"[similar] {m.source}: {m.name} "
-                        f"(block_count={sig['block_count']}, "
-                        f"call_count={sig['call_count']})"
-                    )
-            db.close()
-        except Exception:
-            pass
+        lines.extend(_similar_section(b, start, db_path))
 
     return "\n".join(lines) + "\n"
 
@@ -339,8 +345,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "assemble":
         b = Binary(args.binary)
         va = int(args.va, 16)
-        result = assemble(b, va, args.project, db_path=args.db,
-                          no_dataflow=args.no_dataflow)
+        try:
+            result = assemble(b, va, args.project, db_path=args.db,
+                              no_dataflow=args.no_dataflow)
+        except FileNotFoundError as e:
+            print(f"context: {e}", file=sys.stderr)
+            sys.exit(1)
         print(result, end="")
 
     elif args.command == "postprocess":

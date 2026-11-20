@@ -234,3 +234,11 @@ class TestPe32Plus:
         b = Binary(str(pe_image(tmp_path / "a.exe", code, is_64=True)))
         (movabs,) = b.disasm(self.TEXT64, count=1)
         assert b.rip_rel_refs(movabs) == []
+
+
+class TestDisasmBatches:
+    def test_a_batch_size_below_one_is_rejected_at_the_call(self):
+        from common import disasm_batches
+        cs = Cs(CS_ARCH_X86, CS_MODE_32)
+        with pytest.raises(ValueError):
+            disasm_batches(cs, b"\x90" * 4, 0x1000, 0)

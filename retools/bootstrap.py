@@ -461,9 +461,9 @@ def bootstrap(
         except Exception as e:
             print(f"Could not download signature DB: {e}", file=sys.stderr)
 
-    pe = pefile.PE(binary_path, fast_load=False)
+    b = Binary(binary_path)
 
-    if _is_packed(pe):
+    if _is_packed(b.pe):
         report = (
             "Bootstrap Report\n"
             "================\n\n"
@@ -478,7 +478,6 @@ def bootstrap(
             Path(kb_path).write_text("// Auto-generated KB -- packed binary, no data\n")
         return {"packed": True, "functions_identified": 0}
 
-    b = Binary(binary_path)
     from kb import parse_kb, read_existing_addresses
     known_addresses = read_existing_addresses(kb_path)
     if os.path.isfile(kb_path):
@@ -506,7 +505,7 @@ def bootstrap(
     sig_results, sig_entries = _scan_signatures(b, db_path, comp["compiler"])
     stats["sigdb_matches"] = len(sig_results)
 
-    rtti_count, rtti_entries = _scan_rtti(pe)
+    rtti_count, rtti_entries = _scan_rtti(b.pe)
     stats["rtti_classes"] = rtti_count
 
     imports = _analyze_imports(b)

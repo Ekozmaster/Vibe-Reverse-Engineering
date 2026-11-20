@@ -7,7 +7,7 @@ Provides a SQLite-backed signature database with:
 - Compiler fingerprinting (Rich header, CRT imports, marker patterns)
 - Multi-tier matching: byte-exact -> structural fallback
 - Build pipeline from JSON manifest + CSV address maps, or FLIRT .pat files
-- CLI with build, import-pat, scan, identify, fingerprint subcommands
+- CLI with build, import-pat, scan, identify, fingerprint, pull subcommands
 
 Usage:
     python retools/sigdb.py build manifest.json -o sigs.db
@@ -15,6 +15,7 @@ Usage:
     python retools/sigdb.py scan binary.exe -d sigs.db
     python retools/sigdb.py identify binary.exe 0x401000 -d sigs.db
     python retools/sigdb.py fingerprint binary.exe
+    python retools/sigdb.py pull
 """
 
 from __future__ import annotations
@@ -204,7 +205,8 @@ def extract_flirt_crc(b: Binary, va: int, func_size: int) -> tuple[int, int]:
     passes, as FLIRT's relocation-masked CRC does.
 
     Returns:
-        (0, 0) when no byte after the prefix qualifies.
+        (0, 0) when no byte after the prefix qualifies. A span running past
+        the end of its section ends there.
     """
     stop = min(func_size, 32 + _MAX_CRC_LEN)
     if stop <= 32:
@@ -218,7 +220,10 @@ def extract_flirt_crc(b: Binary, va: int, func_size: int) -> tuple[int, int]:
             break
     if stop <= 32:
         return 0, 0
-    return stop - 32, flirt_crc16(b.read_va(va + 32, stop - 32))
+    data = b.read_va(va + 32, stop - 32)
+    if not data:
+        return 0, 0
+    return len(data), flirt_crc16(data)
 
 
 def _wildcard_rel32(pattern: bytearray, mask: bytearray) -> None:
@@ -601,10 +606,7 @@ class SignatureDB:
 
     def close(self) -> None:
         if self._conn is not None:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
+            self._conn.close()
             self._conn = None
 
     # -- Insertion ---------------------------------------------------------
@@ -617,9 +619,12 @@ class SignatureDB:
 
         The migration adds whichever schema-2 columns are missing in one
         transaction, so a file left half-migrated is finished, not rejected.
+        Statements still pending on the connection are committed first: neither
+        a journal mode change nor BEGIN can run inside an open transaction.
         """
         if self._schema_writable:
             return
+        self._conn.commit()
         self._conn.execute("PRAGMA journal_mode=WAL")
         missing = [col for col in _V2_BYTE_COLUMNS if col not in self._byte_columns()]
         with self._conn:
@@ -1051,6 +1056,9 @@ def parse_pat_line(line: str) -> PatSig | None:
     public at offset 0 starts at the prefix, so the others are ignored. The
     sigdb E8/E9 rel32 wildcards are applied on top of the relocation ones.
 
+    Prefix bytes past the end of a function shorter than 32 bytes are
+    wildcards, as extract_byte_sig makes them.
+
     Returns:
         The parsed signature, or None for "---", malformed lines and lines
         with no public at offset 0.
@@ -1065,14 +1073,20 @@ def parse_pat_line(line: str) -> PatSig | None:
         return None
     pattern = bytearray(32)
     mask = bytearray(32)
-    for i in range(32):
-        pair = hexpat[2 * i:2 * i + 2]
-        if pair != "..":
-            pattern[i] = int(pair, 16)
-            mask[i] = 0xFF
+    try:
+        for i in range(32):
+            pair = hexpat[2 * i:2 * i + 2]
+            if pair != "..":
+                pattern[i] = int(pair, 16)
+                mask[i] = 0xFF
+        length, crc_len, crc16 = int(length_hex, 16), int(crc_len_hex, 16), int(crc_hex, 16)
+    except ValueError:
+        return None
+    if length < 32:
+        pattern[length:] = bytes(32 - length)
+        mask[length:] = bytes(32 - length)
     _wildcard_rel32(pattern, mask)
-    return PatSig(name, bytes(pattern), bytes(mask), int(length_hex, 16),
-                  int(crc_len_hex, 16), int(crc_hex, 16))
+    return PatSig(name, bytes(pattern), bytes(mask), length, crc_len, crc16)
 
 
 def _pat_skip_reason(sig: PatSig) -> str | None:

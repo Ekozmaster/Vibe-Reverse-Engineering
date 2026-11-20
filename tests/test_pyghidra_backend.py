@@ -993,3 +993,42 @@ class TestIterXrefRows:
             {"from_ea": 0x401030, "to_ea": 0x500000, "type": "data", "is_code": 0, "from_func": 0x401000},
             {"from_ea": 0x402010, "to_ea": 0x401000, "type": "call", "is_code": 1, "from_func": 0x402000},
         ]
+
+
+class TestKbApplyUnparsedPrototype:
+    def test_a_prototype_the_parser_returns_nothing_for_is_skipped(self, monkeypatch):
+        import sys
+        import types
+        from pyghidra_backend import _kb_apply_program
+        from kb import parse_kb
+
+        for name in ("ghidra", "ghidra.program", "ghidra.program.model", "ghidra.program.model.symbol",
+                     "ghidra.app", "ghidra.app.util", "ghidra.app.util.parser", "ghidra.util",
+                     "ghidra.util.task", "ghidra.app.cmd", "ghidra.app.cmd.function"):
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+        commands = []
+
+        class Parser:
+            def __init__(self, dtm, service): pass
+            def parse(self, original, text): return None
+
+        class Program:
+            def getAddressFactory(self):
+                space = types.SimpleNamespace(getAddress=lambda off: off)
+                return types.SimpleNamespace(getDefaultAddressSpace=lambda: space)
+            def getListing(self):
+                func = types.SimpleNamespace(setName=lambda name, src: None, getSignature=lambda: None)
+                return types.SimpleNamespace(getFunctionContaining=lambda addr: func)
+            def getSymbolTable(self): return None
+            def getDataTypeManager(self): return None
+
+        monkeypatch.setattr(sys.modules["ghidra.program.model.symbol"], "SourceType",
+                            types.SimpleNamespace(USER_DEFINED=object()), raising=False)
+        monkeypatch.setattr(sys.modules["ghidra.app.util.parser"], "FunctionSignatureParser", Parser, raising=False)
+        monkeypatch.setattr(sys.modules["ghidra.util.task"], "ConsoleTaskMonitor", lambda: None, raising=False)
+        monkeypatch.setattr(sys.modules["ghidra.app.cmd.function"], "ApplyFunctionSignatureCmd",
+                            lambda *args: commands.append(args), raising=False)
+
+        counts = _kb_apply_program(Program(), parse_kb("@ 0x401000 void Foo(int a);\n"), apply_types=False)
+        assert commands == []
+        assert (counts["functions"], counts["prototypes"], counts["skipped"]) == (1, 0, 1)

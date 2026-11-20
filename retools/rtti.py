@@ -204,7 +204,6 @@ def scan_all_rtti(pe: pefile.PE) -> list[RttiClass]:
             continue
         sec_rva = section.VirtualAddress
         sec_size = section.SizeOfRawData
-        sec_off = section.PointerToRawData
         data = pe.get_data(sec_rva, min(sec_size, section.Misc_VirtualSize))
 
         for i in range(0, len(data) - pointer_size + 1, pointer_size):

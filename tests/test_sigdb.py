@@ -1240,3 +1240,52 @@ class TestVs2015RichHeader:
             (0x0001 << 16 | 0, 120),       # imports
         ])
         assert msvc_toolchains(binary_from_sections(raw, [])) == {"14+"}
+
+
+class TestReviewFixes:
+    def test_crc_span_stops_where_the_section_ends(self):
+        from sigdb import extract_flirt_crc, flirt_crc16
+        code = b"\x90" * 40
+        assert extract_flirt_crc(binary_over(code), CODE_VA, 100) == (8, flirt_crc16(code[32:]))
+
+    @pytest.mark.parametrize("line", [
+        "zz" + "90" * 31 + " 00 0000 0030 :0000 _f",
+        "90" * 32 + " 00 zzzz 0030 :0000 _f",
+        "90" * 32 + " 00 0000 00g0 :0000 _f",
+    ])
+    def test_a_pat_line_with_bad_hex_is_unparsed(self, line):
+        from sigdb import parse_pat_line
+        assert parse_pat_line(line) is None
+
+    def test_pat_prefix_bytes_past_a_short_function_are_wildcards(self):
+        from sigdb import parse_pat_line
+        sig = parse_pat_line("90" * 32 + " 00 0000 0010 :0000 _f")
+        assert sig.mask == b"\xff" * 16 + b"\0" * 16
+        assert sig.pattern == b"\x90" * 16 + b"\0" * 16
+
+    def test_a_failed_migration_leaves_the_db_unmigrated(self, tmp_path):
+        from sigdb import SignatureDB
+        path = _v1_db(str(tmp_path / "v1.db"))
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TRIGGER no_update BEFORE UPDATE ON schema_version "
+                     "BEGIN SELECT RAISE(ABORT, 'refused'); END")
+        conn.commit()
+        conn.close()
+        db = SignatureDB(path)
+        with pytest.raises(sqlite3.IntegrityError):
+            db.add_byte_sig(name="new", pattern=b"\x56" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0)
+        assert "crc_len" not in db._byte_columns() and "crc16" not in db._byte_columns()
+        assert db._conn.execute("SELECT version FROM schema_version").fetchone()[0] == 1
+        db.close()
+
+    def test_migration_runs_after_a_statement_left_a_transaction_open(self, tmp_path):
+        from sigdb import SignatureDB, SCHEMA_VERSION
+        db = SignatureDB(_v1_db(str(tmp_path / "v1.db")))
+        db._conn.execute("INSERT INTO byte_sigs (name, pattern, mask, func_size) VALUES ('pending', ?, ?, 40)",
+                         (b"\x57" * 32, b"\xff" * 32))
+        assert db._conn.in_transaction
+        db.add_byte_sig(name="new", pattern=b"\x56" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0)
+        assert db._conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+        assert [r[0] for r in db._conn.execute("SELECT name FROM byte_sigs ORDER BY id")] == [
+            "old", "pending", "new"]
+        db.close()

@@ -592,8 +592,31 @@ class TestAssembleSimilar:
             result, _ = _assemble(_bare_binary(), tmp_path, db_path="sigs.db")
         assert "[similar]" not in result
 
+    def test_missing_db_is_refused_without_creating_it(self, tmp_path):
+        missing = tmp_path / "missing.db"
+        with pytest.raises(FileNotFoundError, match="no signature database"):
+            _assemble(_bare_binary(), tmp_path, db_path=str(missing))
+        assert not missing.exists()
+
+    def test_db_is_closed_when_matching_fails(self, tmp_path):
+        with patch("context.SignatureDB") as db_cls, \
+             patch("context.extract_structural_sig", side_effect=ValueError("bad bytes")):
+            with pytest.raises(ValueError, match="bad bytes"):
+                _assemble(_bare_binary(), tmp_path, db_path="sigs.db")
+        db_cls.open_existing.return_value.close.assert_called_once_with()
+
 
 class TestCli:
+    def test_assemble_with_missing_db_exits_with_message(self, tmp_path, capsys):
+        from context import main
+        missing = tmp_path / "missing.db"
+        with patch("context.Binary"), \
+             patch("context.assemble", side_effect=FileNotFoundError(f"no signature database at {missing}")):
+            with pytest.raises(SystemExit) as exc:
+                main(["assemble", "game.exe", "401000", "--project", str(tmp_path), "--db", str(missing)])
+        assert exc.value.code == 1
+        assert f"context: no signature database at {missing}" in capsys.readouterr().err
+
     def test_assemble_prints_identity_and_named_callees_from_the_projects_kb(self, tmp_path, capsys):
         import struct
         from context import main

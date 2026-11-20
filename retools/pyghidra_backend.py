@@ -502,6 +502,9 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
                 # The parser takes neither a calling convention nor a closing ';'
                 convention = _CALLING_CONVENTION.search(fn.signature)
                 definition = sig_parser.parse(func.getSignature(), _CALLING_CONVENTION.sub("", fn.signature))
+                if definition is None:
+                    _skip("prototype", fn.signature, "the signature parser returned nothing")
+                    continue
                 if convention:
                     definition.setCallingConvention(convention.group())
                 cmd = ApplyFunctionSignatureCmd(addr, definition, SourceType.USER_DEFINED)

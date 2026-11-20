@@ -47,8 +47,16 @@ def disasm_batches(cs: Cs, code: bytes, va: int, batch_insns: int, lite: bool = 
 
     Capstone decodes the whole buffer it is given before yielding the first
     instruction, so the batches bound the memory one call takes.
+
+    Raises:
+        ValueError: *batch_insns* is below 1, raised by the call itself.
     """
-    decode = cs.disasm_lite if lite else cs.disasm
+    if batch_insns <= 0:
+        raise ValueError("batch_insns must be positive")
+    return _disasm_batches(cs.disasm_lite if lite else cs.disasm, code, va, batch_insns, lite)
+
+
+def _disasm_batches(decode, code: bytes, va: int, batch_insns: int, lite: bool):
     pos = 0
     while pos < len(code):
         decoded = 0
