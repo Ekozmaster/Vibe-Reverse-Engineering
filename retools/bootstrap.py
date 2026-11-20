@@ -453,8 +453,9 @@ def bootstrap(
         db_path = str(DEFAULT_DB_PATH)
     if not os.path.isfile(db_path):
         try:
-            from sigdb import _download_file, _HF_REPO_DEFAULT, _HF_URL_TEMPLATE
-            url = _HF_URL_TEMPLATE.format(repo=_HF_REPO_DEFAULT, path="signatures.db")
+            from sigdb import _download_file, _HF_REPO_DEFAULT, _HF_REVISION_DEFAULT, _HF_URL_TEMPLATE
+            url = _HF_URL_TEMPLATE.format(repo=_HF_REPO_DEFAULT, revision=_HF_REVISION_DEFAULT,
+                                          path="signatures.db")
             print(f"Signature DB not found. Downloading from HuggingFace...")
             _download_file(url, db_path)
         except Exception as e:

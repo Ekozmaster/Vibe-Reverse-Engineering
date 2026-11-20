@@ -6,11 +6,12 @@ Provides a SQLite-backed signature database with:
 - Structural signatures (CFG shape + mnemonic hash)
 - Compiler fingerprinting (Rich header, CRT imports, marker patterns)
 - Multi-tier matching: byte-exact -> structural fallback
-- Build pipeline from JSON manifest + CSV address maps
-- CLI with build, scan, identify, fingerprint subcommands
+- Build pipeline from JSON manifest + CSV address maps, or FLIRT .pat files
+- CLI with build, import-pat, scan, identify, fingerprint subcommands
 
 Usage:
     python retools/sigdb.py build manifest.json -o sigs.db
+    python retools/sigdb.py import-pat VisualStudio2008.pat -d sigs.db --compiler msvc2008 --source rizin_vs2008
     python retools/sigdb.py scan binary.exe -d sigs.db
     python retools/sigdb.py identify binary.exe 0x401000 -d sigs.db
     python retools/sigdb.py fingerprint binary.exe
@@ -19,9 +20,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
 import itertools
 import json
+import re
 import sqlite3
 import struct
 import sys
@@ -37,9 +40,13 @@ from common import Binary
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "signatures.db"
 
 _HF_REPO_DEFAULT = "RTX-Remix/Vibe-Reverse-Engineering-Signature-DB"
-_HF_URL_TEMPLATE = "https://huggingface.co/{repo}/resolve/main/{path}"
+_HF_REVISION_DEFAULT = "main"
+_HF_URL_TEMPLATE = "https://huggingface.co/{repo}/resolve/{revision}/{path}"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# Longest run of bytes after the 32-byte prefix a FLIRT CRC16 can cover.
+_MAX_CRC_LEN = 0xFF
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -53,6 +60,8 @@ CREATE TABLE IF NOT EXISTS byte_sigs (
     mask      BLOB    NOT NULL,
     func_size INTEGER NOT NULL,
     tail_crc  INTEGER NOT NULL DEFAULT 0,
+    crc_len   INTEGER NOT NULL DEFAULT 0,
+    crc16     INTEGER NOT NULL DEFAULT 0,
     compiler  TEXT    NOT NULL DEFAULT '',
     source    TEXT    NOT NULL DEFAULT '',
     category  TEXT    NOT NULL DEFAULT ''
@@ -317,6 +326,88 @@ def detect_crt_import(b: Binary) -> str | None:
     return None
 
 
+# Rich header build number -> MSVC toolchain version. Build 50727 is shared by
+# VS2005 (8.0) and VS2012 (11.0); the product id tells them apart.
+_RICH_BUILD_TOOLCHAIN: dict[int, str] = {
+    8168: "6.0", 8447: "6.0", 8797: "6.0", 8799: "6.0", 8804: "6.0", 8966: "6.0", 9044: "6.0",
+    9466: "7.0", 9955: "7.0",
+    3052: "7.1", 3077: "7.1", 4035: "7.1", 6030: "7.1",
+    21022: "9.0", 30729: "9.0",
+    30319: "10.0", 40219: "10.0",
+    51025: "11.0", 51106: "11.0", 60315: "11.0", 60610: "11.0", 61030: "11.0",
+    21005: "12.0", 30501: "12.0", 31101: "12.0", 40629: "12.0",
+}
+_VS2012_FIRST_PRODID = 0xC7
+_VS2015_FIRST_PRODID = 0x100
+
+_LABEL_YEAR_TOOLCHAIN = {
+    "2002": "7.0", "2003": "7.1", "2005": "8.0", "2008": "9.0", "2010": "10.0",
+    "2012": "11.0", "2013": "12.0", "2015": "14+", "2017": "14+", "2019": "14+", "2022": "14+",
+}
+_LABEL_VERSION_RE = re.compile(r"^\d+\.\d+$")
+
+
+def msvc_toolchains(b: Binary) -> frozenset[str]:
+    """MSVC versions that contributed objects to *b*, from its Rich header.
+
+    Statically linked library code can only come from a toolchain listed here,
+    so signatures labelled with any other MSVC version cannot match correctly.
+
+    Returns:
+        Versions such as {"9.0", "8.0"}; empty when the binary has no Rich
+        header or none of its build numbers is known.
+    """
+    found: set[str] = set()
+    for entry in parse_rich_header(b):
+        tool_id, build = entry["tool_id"], entry["minor_version"]
+        if tool_id >= _VS2015_FIRST_PRODID:
+            found.add("14+")
+        elif build == 50727:
+            found.add("11.0" if tool_id >= _VS2012_FIRST_PRODID else "8.0")
+        elif build in _RICH_BUILD_TOOLCHAIN:
+            found.add(_RICH_BUILD_TOOLCHAIN[build])
+    return frozenset(found)
+
+
+def label_toolchains(compiler: str) -> frozenset[str]:
+    """MSVC versions named by a signature's compiler label.
+
+    Understands ``msvc2008``, ``msvc6.0`` and ``_``-joined lists such as
+    ``msvc2003_2005``.
+
+    Returns:
+        The named versions, or an empty set when the label names no specific
+        MSVC version (``msvc``, ``gcc``, ``""``).
+    """
+    if not compiler.startswith("msvc"):
+        return frozenset()
+    found: set[str] = set()
+    for part in compiler[4:].lstrip("-").split("_"):
+        if part in _LABEL_YEAR_TOOLCHAIN:
+            found.add(_LABEL_YEAR_TOOLCHAIN[part])
+        elif _LABEL_VERSION_RE.match(part):
+            found.add(part)
+        else:
+            return frozenset()
+    return frozenset(found)
+
+
+def _toolchain_allows(compiler: str, toolchains: frozenset[str]) -> bool:
+    named = label_toolchains(compiler)
+    return not (named and toolchains) or bool(named & toolchains)
+
+
+def flirt_crc16(data: bytes) -> int:
+    """CRC16 as stored in FLIRT .pat lines (CRC-16/X-25, byte-swapped)."""
+    crc = 0xFFFF
+    for byte in data:
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0x8408 if (crc ^ byte) & 1 else crc >> 1
+            byte >>= 1
+    crc = ~crc & 0xFFFF
+    return ((crc << 8) | (crc >> 8)) & 0xFFFF
+
+
 def _categorize_name(name: str) -> str:
     """Heuristic category from a function name.
 
@@ -354,6 +445,33 @@ def _categorize_name(name: str) -> str:
 # SignatureDB
 # ---------------------------------------------------------------------------
 
+_INDEX_KEY_LEN = 4
+
+
+class _ByteIndex:
+    """In-memory byte_sigs rows bucketed by their first four pattern bytes.
+
+    A signature whose first four bytes are all fixed can only match code that
+    starts with exactly those bytes, so a lookup reads one bucket plus the
+    signatures that wildcard any of those bytes.
+    """
+
+    def __init__(self, rows):
+        self._buckets: dict[bytes, list[tuple]] = collections.defaultdict(list)
+        self._wildcard_start: list[tuple] = []
+        full = b"\xff" * _INDEX_KEY_LEN
+        for row in rows:
+            pattern, mask = row[1], row[2]
+            if mask[:_INDEX_KEY_LEN] == full:
+                self._buckets[pattern[:_INDEX_KEY_LEN]].append(row)
+            else:
+                self._wildcard_start.append(row)
+
+    def candidates(self, code32: bytes):
+        yield from self._buckets.get(code32[:_INDEX_KEY_LEN], ())
+        yield from self._wildcard_start
+
+
 class SignatureDB:
     """SQLite-backed signature database.
 
@@ -364,6 +482,7 @@ class SignatureDB:
     def __init__(self, path: str = ":memory:"):
         self._conn = sqlite3.connect(path)
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._byte_index: _ByteIndex | None = None
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -382,7 +501,8 @@ class SignatureDB:
                     f"Database schema version {row[0]} is newer than "
                     f"code version {SCHEMA_VERSION}. Update the code."
                 )
-            # Existing DB with compatible version -- nothing to create
+            if row and row[0] < 2:
+                self._migrate_to_v2()
             return
 
         self._conn.executescript(_SCHEMA_SQL)
@@ -402,18 +522,38 @@ class SignatureDB:
 
     # -- Insertion ---------------------------------------------------------
 
+    def _migrate_to_v2(self) -> None:
+        """Add the FLIRT CRC16 columns that schema version 2 introduced."""
+        self._conn.execute("ALTER TABLE byte_sigs ADD COLUMN crc_len INTEGER NOT NULL DEFAULT 0")
+        self._conn.execute("ALTER TABLE byte_sigs ADD COLUMN crc16 INTEGER NOT NULL DEFAULT 0")
+        self._conn.execute("UPDATE schema_version SET version = 2")
+        self._conn.commit()
+
     def add_byte_sig(
         self, *, name: str, pattern: bytes, mask: bytes,
-        func_size: int, tail_crc: int,
+        func_size: int, tail_crc: int, crc_len: int = 0, crc16: int = 0,
         compiler: str = "", source: str = "", category: str = "",
     ) -> None:
-        self._conn.execute(
+        """Store one byte signature.
+
+        Args:
+            crc_len: Number of bytes after the 32-byte prefix covered by
+                *crc16*; 0 when the signature carries no FLIRT CRC.
+            crc16: FLIRT CRC16 of those bytes (see flirt_crc16).
+        """
+        self._insert_byte_sigs([
+            (name, pattern, mask, func_size, tail_crc, crc_len, crc16, compiler, source, category),
+        ])
+
+    def _insert_byte_sigs(self, rows: list[tuple]) -> None:
+        self._conn.executemany(
             "INSERT INTO byte_sigs "
-            "(name, pattern, mask, func_size, tail_crc, compiler, source, category) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (name, pattern, mask, func_size, tail_crc, compiler, source, category),
+            "(name, pattern, mask, func_size, tail_crc, crc_len, crc16, compiler, source, category) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
         )
         self._conn.commit()
+        self._byte_index = None
 
     def add_structural_sig(
         self, *, name: str, block_count: int, edge_count: int,
@@ -435,31 +575,50 @@ class SignatureDB:
     def match_bytes(
         self, code: bytes, func_size: int,
         preferred_compiler: str, func_tail_crc: int,
+        toolchains: frozenset[str] = frozenset(),
     ) -> list[Match]:
-        """Find byte-pattern matches for *code* (first 32 bytes of function).
+        """Find byte-pattern matches for the function starting with *code*.
+
+        Args:
+            code: The function's first bytes: 32 for the prefix, plus the
+                bytes after it that signatures with a FLIRT CRC16 verify.
+            func_size: Estimated size of the function.
+            preferred_compiler: Compiler label that earns a small boost.
+            func_tail_crc: CRC32 of the function's last 32 bytes.
+            toolchains: MSVC versions in the binary (msvc_toolchains); a
+                signature labelled with only other versions is skipped.
 
         Matching tiers:
-          1. Masked byte comparison against all stored patterns.
-          2. Size disambiguation: exact size match scores higher.
-          3. Tail CRC disambiguation: matching tail_crc scores higher.
-          4. Preferred compiler boost.
+          1. Masked comparison of the 32-byte prefix.
+          2. FLIRT CRC16 over the following bytes, when the signature has
+             one: a mismatch rejects, a match scores higher.
+          3. Size disambiguation: exact size match scores higher.
+          4. Tail CRC disambiguation: matching tail_crc scores higher.
+          5. Preferred compiler boost.
         """
         if len(code) < 32:
             return []
         code32 = code[:32]
 
-        # TODO: Full-table scan. Add prefix index on first non-wildcarded
-        # bytes when the database grows large enough to matter.
-        cur = self._conn.execute(
-            "SELECT name, pattern, mask, func_size, tail_crc, "
-            "compiler, source, category FROM byte_sigs"
-        )
+        if self._byte_index is None:
+            self._byte_index = _ByteIndex(self._conn.execute(
+                "SELECT name, pattern, mask, func_size, tail_crc, crc_len, crc16, "
+                "compiler, source, category FROM byte_sigs"
+            ))
         candidates: list[tuple[Match, float]] = []
 
-        for name, pattern, mask, db_size, db_tail_crc, compiler, source, category in cur:
+        for (name, pattern, mask, db_size, db_tail_crc, crc_len, crc16,
+             compiler, source, category) in self._byte_index.candidates(code32):
+            if not _toolchain_allows(compiler, toolchains):
+                continue
             if not _masked_eq(code32, pattern, mask):
                 continue
             score = 0.7  # base confidence for byte match
+            if crc_len:
+                following = code[32:32 + crc_len]
+                if len(following) < crc_len or flirt_crc16(following) != crc16:
+                    continue
+                score += 0.15
             if db_size == func_size:
                 score += 0.15
             elif db_size > 0 and abs(db_size - func_size) / max(db_size, func_size) < 0.1:
@@ -484,11 +643,13 @@ class SignatureDB:
     def match_structural(
         self, block_count: int, edge_count: int, call_count: int,
         mnemonic_hash: int, constants: str,
+        toolchains: frozenset[str] = frozenset(),
     ) -> list[Match]:
         """Find structural matches by CFG shape and mnemonic hash.
 
         Requires exact mnemonic_hash match plus CFG shape (block_count,
-        edge_count). call_count and constants refine the score.
+        edge_count). call_count and constants refine the score. Signatures
+        labelled with MSVC versions absent from *toolchains* are skipped.
 
         Skips trivially small functions (< 3 blocks) -- their structural
         signatures are too generic to produce meaningful matches.
@@ -506,6 +667,8 @@ class SignatureDB:
         candidates: list[tuple[Match, float]] = []
         for (name, db_bc, db_ec, db_cc, db_mh, db_consts,
              compiler, source, category) in cur:
+            if not _toolchain_allows(compiler, toolchains):
+                continue
             score = 0.6  # base for structural match
             if db_cc == call_count:
                 score += 0.15
@@ -528,19 +691,27 @@ class SignatureDB:
 
     def identify(
         self, b: Binary, va: int, preferred_compiler: str = "",
+        toolchains: frozenset[str] | None = None,
     ) -> Match | None:
         """Identify a function by trying byte-exact, then structural fallback.
 
+        Args:
+            toolchains: MSVC versions in *b*; read from its Rich header
+                when None.
+
         Returns the best Match, or None.
         """
+        if toolchains is None:
+            toolchains = msvc_toolchains(b)
+
         # Tier 1: byte signature
-        code = b.read_va(va, 64)
+        code = b.read_va(va, 32 + _MAX_CRC_LEN)
         if len(code) >= 32:
             func_size = _estimate_func_size(b, va)
             tail_offset = max(0, func_size - 32)
             tail_bytes = b.read_va(va + tail_offset, 32)
             tail_crc = zlib.crc32(tail_bytes) & 0xFFFFFFFF if tail_bytes else 0
-            matches = self.match_bytes(code[:32], func_size, preferred_compiler, tail_crc)
+            matches = self.match_bytes(code, func_size, preferred_compiler, tail_crc, toolchains)
             if matches:
                 return matches[0]
 
@@ -549,7 +720,7 @@ class SignatureDB:
         if sig is not None:
             matches = self.match_structural(
                 sig["block_count"], sig["edge_count"], sig["call_count"],
-                sig["mnemonic_hash"], sig["constants"],
+                sig["mnemonic_hash"], sig["constants"], toolchains,
             )
             if matches:
                 return matches[0]
@@ -561,15 +732,21 @@ class SignatureDB:
     ) -> dict[int, Match]:
         """Bulk-scan all functions in the binary.
 
+        A name that is the best match at more than one address is dropped
+        everywhere: one library function links once, so repeats mean the
+        signature is too generic to tell those functions apart.
+
         Returns:
             Dict mapping function VA to best Match.
         """
+        toolchains = msvc_toolchains(b)
         results: dict[int, Match] = {}
         for va in b.func_table:
-            m = self.identify(b, va, preferred_compiler)
+            m = self.identify(b, va, preferred_compiler, toolchains)
             if m is not None:
                 results[va] = m
-        return results
+        hits_per_name = collections.Counter(m.name for m in results.values())
+        return {va: m for va, m in results.items() if hits_per_name[m.name] == 1}
 
     # -- Compiler fingerprinting -------------------------------------------
 
@@ -691,6 +868,112 @@ def build_from_manifest(db: SignatureDB, manifest: dict) -> None:
                     )
 
 
+_PAT_MIN_FUNC_SIZE = 16
+_PAT_MIN_FIXED_BYTES = 12
+_PAT_PUBLIC_RE = re.compile(r":([0-9A-Fa-f]{4,8})@? (\S+)")
+_PAT_LOCAL_NAME_RE = re.compile(r"^(\.|\$|_LN\d+$)")
+
+
+@dataclass(frozen=True, slots=True)
+class PatSig:
+    """The offset-0 function of one FLIRT .pat line."""
+    name: str
+    pattern: bytes
+    mask: bytes
+    length: int
+    crc_len: int
+    crc16: int
+
+
+def parse_pat_line(line: str) -> PatSig | None:
+    """Parse a FLIRT .pat line into the signature of its offset-0 public.
+
+    A line is: 64 hex chars for the first 32 bytes ("..": relocated byte),
+    CRC16 length, CRC16, module length, then ":OFFSET name" publics. Only the
+    public at offset 0 starts at the prefix, so the others are ignored. The
+    sigdb E8/E9 rel32 wildcards are applied on top of the relocation ones.
+
+    Returns:
+        The parsed signature, or None for "---", malformed lines and lines
+        with no public at offset 0.
+    """
+    parts = line.split(" ", 4)
+    if len(parts) < 5 or len(parts[0]) != 64:
+        return None
+    hexpat, crc_len_hex, crc_hex, length_hex, rest = parts
+    publics = rest.split(" ^", 1)[0]
+    name = next((sym for off, sym in _PAT_PUBLIC_RE.findall(publics) if int(off, 16) == 0), None)
+    if name is None:
+        return None
+    pattern = bytearray(32)
+    mask = bytearray(32)
+    for i in range(32):
+        pair = hexpat[2 * i:2 * i + 2]
+        if pair != "..":
+            pattern[i] = int(pair, 16)
+            mask[i] = 0xFF
+    i = 0
+    while i < 28:
+        if mask[i] and pattern[i] in (0xE8, 0xE9):
+            pattern[i + 1:i + 5] = b"\0\0\0\0"
+            mask[i + 1:i + 5] = b"\0\0\0\0"
+            i += 5
+        else:
+            i += 1
+    return PatSig(name, bytes(pattern), bytes(mask), int(length_hex, 16),
+                  int(crc_len_hex, 16), int(crc_hex, 16))
+
+
+def _pat_skip_reason(sig: PatSig) -> str | None:
+    if _PAT_LOCAL_NAME_RE.match(sig.name) or "CrtImplementationDetails" in sig.name:
+        return "local_or_managed"
+    if sig.length < _PAT_MIN_FUNC_SIZE:
+        return "too_small"
+    if sum(1 for i in range(min(32, sig.length)) if sig.mask[i]) < _PAT_MIN_FIXED_BYTES:
+        return "too_few_fixed_bytes"
+    return None
+
+
+def import_pat(db: SignatureDB, path: str, compiler: str, source: str) -> collections.Counter:
+    """Add the byte signatures of a FLIRT .pat file to *db*.
+
+    Skips local labels, functions under 16 bytes, prefixes with fewer than 12
+    fixed bytes, prefixes the file gives more than one name, and prefixes the
+    database already holds.
+
+    Returns:
+        Counts of added and skipped lines by reason.
+    """
+    stats: collections.Counter = collections.Counter()
+    by_prefix: dict[tuple[bytes, bytes], dict[str, PatSig]] = collections.defaultdict(dict)
+    with open(path, errors="replace") as f:
+        for line in f:
+            sig = parse_pat_line(line.rstrip("\n"))
+            if sig is None:
+                stats["unparsed"] += 1
+                continue
+            reason = _pat_skip_reason(sig)
+            if reason:
+                stats[reason] += 1
+                continue
+            by_prefix[(sig.pattern, sig.mask)].setdefault(sig.name, sig)
+
+    existing = set(db._conn.execute("SELECT pattern, mask FROM byte_sigs"))
+    rows = []
+    for prefix, sigs in by_prefix.items():
+        if len(sigs) > 1:
+            stats["ambiguous_prefix"] += 1
+        elif prefix in existing:
+            stats["already_in_db"] += 1
+        else:
+            (sig,) = sigs.values()
+            rows.append((sig.name, sig.pattern, sig.mask, sig.length, 0, sig.crc_len, sig.crc16,
+                         compiler, source, _categorize_name(sig.name)))
+    db._insert_byte_sigs(rows)
+    stats["added"] = len(rows)
+    return stats
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -729,15 +1012,15 @@ def _download_file(url: str, dest: str) -> None:
     print(f"  {dest_path.name} ({len(data):,} bytes)")
 
 
-def _pull_sources(repo: str, dest_dir: str) -> None:
-    """Download source files listed in the HF repo's manifest.json."""
-    manifest_url = _HF_URL_TEMPLATE.format(repo=repo, path="manifest.json")
+def _pull_sources(repo: str, dest_dir: str, revision: str = _HF_REVISION_DEFAULT) -> None:
+    """Download source files listed in the HF repo's manifest.json at *revision*."""
+    manifest_url = _HF_URL_TEMPLATE.format(repo=repo, revision=revision, path="manifest.json")
     req = urllib.request.Request(manifest_url)
     with urllib.request.urlopen(req, timeout=60) as resp:
         manifest = json.loads(resp.read())
 
     for rel_path in manifest.get("sources", []):
-        url = _HF_URL_TEMPLATE.format(repo=repo, path=rel_path)
+        url = _HF_URL_TEMPLATE.format(repo=repo, revision=revision, path=rel_path)
         dest = Path(dest_dir) / rel_path.removeprefix("sources/")
         try:
             _download_file(url, str(dest))
@@ -761,6 +1044,14 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("manifest", help="JSON manifest file")
     s.add_argument("-o", "--output", default="sigs.db",
                    help="Output database path (default: sigs.db)")
+
+    # -- import-pat --------------------------------------------------------
+    s = sub.add_parser("import-pat", help="Add a FLIRT .pat file to a signature DB")
+    s.add_argument("pat", help="FLIRT .pat file")
+    s.add_argument("-d", "--db", required=True, help="Signature DB path (created if missing)")
+    s.add_argument("--compiler", required=True,
+                   help="Compiler label for every signature, e.g. msvc2008 or msvc6.0")
+    s.add_argument("--source", required=True, help="Source label, e.g. rizin_vs2008")
 
     # -- scan --------------------------------------------------------------
     s = sub.add_parser("scan", help="Scan a binary for known functions")
@@ -789,7 +1080,9 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--sources", action="store_true",
                    help="Also download source CSVs/TOMLs")
     s.add_argument("--repo", default=_HF_REPO_DEFAULT,
-                   help=f"HuggingFace dataset repo (default: {_HF_REPO_DEFAULT})")
+                   help=f"HuggingFace repo (default: {_HF_REPO_DEFAULT})")
+    s.add_argument("--revision", default=_HF_REVISION_DEFAULT,
+                   help="Branch, tag or commit to download (default: %(default)s)")
 
     args = p.parse_args(argv)
 
@@ -812,6 +1105,13 @@ def _dispatch(args: argparse.Namespace) -> None:
         sc = cur.fetchone()[0]
         print(f"Built {args.output}: {bc} byte sigs, {sc} structural sigs")
         db.close()
+
+    elif args.command == "import-pat":
+        db = SignatureDB(args.db)
+        stats = import_pat(db, args.pat, args.compiler, args.source)
+        db.close()
+        for reason, count in sorted(stats.items()):
+            print(f"  {reason}: {count}")
 
     elif args.command == "scan":
         db = SignatureDB(args.db)
@@ -852,11 +1152,11 @@ def _dispatch(args: argparse.Namespace) -> None:
 
     elif args.command == "pull":
         data_dir = DEFAULT_DB_PATH.parent
-        db_url = _HF_URL_TEMPLATE.format(repo=args.repo, path="signatures.db")
-        print(f"Downloading from {args.repo}...")
+        db_url = _HF_URL_TEMPLATE.format(repo=args.repo, revision=args.revision, path="signatures.db")
+        print(f"Downloading from {args.repo}@{args.revision}...")
         _download_file(db_url, str(data_dir / "signatures.db"))
         if args.sources:
-            _pull_sources(args.repo, str(data_dir / "sources"))
+            _pull_sources(args.repo, str(data_dir / "sources"), args.revision)
         print("Done.")
 
 
