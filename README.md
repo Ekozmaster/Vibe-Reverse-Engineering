@@ -25,7 +25,7 @@ pip install -r requirements.txt
 python verify_install.py
 ```
 
-`verify_install.py` checks the Git LFS files, the Python packages and radare2, and reports what is missing. Add `--setup` to download the optional Ghidra decompiler backend (JDK 21 + Ghidra, about 600 MB). The signature database is fetched separately with `python -m retools.sigdb pull`.
+`verify_install.py` checks the Git LFS files, radare2 and r2ghidra, the Python packages, the retools modules and the signature database, and reports the optional Ghidra backend (Java, Ghidra, pyghidra) as warnings when it is missing. Add `--setup` to download the optional Ghidra decompiler backend (JDK 21 + Ghidra, about 600 MB). The signature database is fetched separately with `python -m retools.sigdb pull`.
 
 ## Tools
 

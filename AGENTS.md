@@ -68,7 +68,7 @@ Update the KB when you: identify a function's purpose, reconstruct a struct, ide
 
 ## Working Method
 
-- **Check the install before first use.** Run `python verify_install.py` from the repo root: it reports missing Git LFS files (radare2 under `tools/`), Python packages and Java. `python verify_install.py --setup` downloads the Ghidra backend.
+- **Check the install before first use.** Run `python verify_install.py` from the repo root: it reports missing Git LFS files (radare2 under `tools/`), Python packages and the signature database, and warns when the optional Ghidra backend (Java, Ghidra, pyghidra) is missing. `python verify_install.py --setup` downloads the Ghidra backend.
 - **Delegate heavy static analysis.** If your harness supports custom agents, use the `static-analyzer` agent for decompilation, xrefs, searches, and bulk scans instead of running `retools` commands in the main conversation. Only the fast (<5s) commands listed in `.claude/rules/tool-dispatch.md` run inline. If you're about to run a second retools command in the same turn, delegate.
 - **Live tools confirm static findings.** When static analysis returns addresses or candidates, follow up with `livetools` (trace, breakpoint, mem read/write) rather than more static analysis. Static analysis finds clues; live tools confirm and act on them. Don't sit idle while background analysis runs.
 - **D3D9 questions go to the DX scripts first.** The scanners under `rtx_remix_tools/dx/scripts/` answer questions about device calls, shader constants, render states and vertex formats faster than `retools`. They read 32-bit binaries only (the tool catalog names the one exception), as does `retools.dataflow`.
