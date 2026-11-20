@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 namespace comp
 {
 	/*
@@ -26,8 +28,10 @@ namespace comp
 			return p_this != nullptr;
 		}
 
-		// Called from renderer when cur_decl_is_skinned
-		HRESULT draw_skinned_dip(IDirect3DDevice9* dev,
+		// Called from renderer when cur_decl_is_skinned. Draws with FFP indexed vertex blending
+		// and returns the result of the draw, or returns nullopt without drawing when the draw
+		// has to be left to the game's shaders.
+		std::optional<HRESULT> draw_skinned_dip(IDirect3DDevice9* dev,
 			D3DPRIMITIVETYPE pt, INT base_vtx, UINT min_vtx, UINT num_verts,
 			UINT start_idx, UINT prim_count);
 
@@ -59,7 +63,13 @@ namespace comp
 			UINT num_verts = 0;
 			UINT stride = 0;
 			IDirect3DVertexBuffer9* expanded = nullptr;
+			BYTE max_blend_index = 0;	// highest bone index the blend reads in these vertices
 		};
+
+		// Memory cost: up to SKIN_CACHE_SIZE default-pool buffers of SKIN_VTX_SIZE bytes per
+		// converted vertex, and each entry keeps a game vertex buffer and declaration alive after
+		// the game releases them. An entry is replaced when another range hashes to its slot;
+		// all are released on Reset and when the module is destroyed.
 		expanded_range skin_exp_cache_[SKIN_CACHE_SIZE] = {};
 
 		bool initialized_ = false;
@@ -71,9 +81,11 @@ namespace comp
 		// Vertex expansion. vertices_in_buffer gives the part of num_verts vertices from
 		// first_byte on that src_vb holds, num_verts 0 when none.
 		static vertex_range vertices_in_buffer(IDirect3DVertexBuffer9* src_vb, UINT64 first_byte, UINT num_verts, UINT stride);
-		IDirect3DVertexBuffer9* get_expanded_vb(IDirect3DDevice9* dev,
+		// The cache entry for the range, expanded now if it was not cached; nullptr on failure
+		const expanded_range* get_expanded_vb(IDirect3DDevice9* dev,
 			IDirect3DVertexBuffer9* src_vb, const vertex_range& range, UINT stride);
-		void expand_skin_vertex(unsigned char* dst, const unsigned char* src);
+		// Writes one vertex in the expanded layout; returns the highest bone index its blend reads
+		BYTE expand_skin_vertex(unsigned char* dst, const unsigned char* src);
 
 		// Bone upload
 		void upload_bones(IDirect3DDevice9* dev);

@@ -18,6 +18,7 @@ namespace comp
 			if (release)
 			{
 				if (tex_addons::icon) tex_addons::icon->Release();
+				tex_addons::icon = nullptr;
 				return;
 			}
 
@@ -132,8 +133,9 @@ namespace comp
 		 *   +-- NO  -> passthrough with shaders
 		 *   +-- YES
 		 *       +-- curDeclIsSkinned?
-		 *       |   +-- [Skinning] Enabled=1 -> skinning::draw_skinned_dip(), which leaves the
-		 *       |   |   draw to the shaders without a bone palette or with vertices it cannot read
+		 *       |   +-- [Skinning] Enabled=1 -> skinning::draw_skinned_dip(); passthrough with
+		 *       |   |   shaders when it cannot convert the draw (no bone palette, vertices it
+		 *       |   |   cannot read, a bone index past the palette)
 		 *       |   +-- [Skinning] Enabled=0 -> passthrough with shaders
 		 *       +-- !curDeclHasNormal?
 		 *       |   +-- passthrough (HUD/UI)
@@ -149,19 +151,24 @@ namespace comp
 			im->m_stats._drawcall_indexed_prim.track_single();
 			im->m_stats._drawcall_indexed_prim_using_vs.track_single();
 		}
-		else if (ffp.cur_decl_is_skinned() && skinning::is_available())
-		{
-			// Skinned mesh: FFP indexed vertex blending where the skinning module can convert it
-			hr = skinning::get()->draw_skinned_dip(dev, PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
-			im->m_stats._drawcall_indexed_prim.track_single();
-		}
 		else if (ffp.cur_decl_is_skinned())
 		{
-			// Skinned mesh with the skinning module off: passthrough with shaders
-			ffp.disengage(dev);
-			hr = dev->DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+			// Skinned mesh: FFP indexed vertex blending where the skinning module is on and can
+			// convert it, passthrough with shaders otherwise
+			const auto skinned = skinning::is_available()
+				? skinning::get()->draw_skinned_dip(dev, PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount)
+				: std::nullopt;
+			if (skinned)
+			{
+				hr = *skinned;
+			}
+			else
+			{
+				ffp.disengage(dev);
+				hr = dev->DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+				im->m_stats._drawcall_indexed_prim_using_vs.track_single();
+			}
 			im->m_stats._drawcall_indexed_prim.track_single();
-			im->m_stats._drawcall_indexed_prim_using_vs.track_single();
 		}
 		else if (!ffp.cur_decl_has_normal())
 		{

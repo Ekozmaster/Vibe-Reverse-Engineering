@@ -44,15 +44,10 @@ namespace comp
 			const auto proj_matrix = shared::utils::to_d3dmatrix(DirectX::XMMatrixPerspectiveFovLH(
 				DEG2RAD(fov), aspect, near_plane, far_plane));
 
-			shared::globals::d3d_device->SetTransform(D3DTS_WORLD, &shared::globals::IDENTITY);
+			// D3DTS_WORLD belongs to ffp_state, which keeps each object's world matrix in place
 			shared::globals::d3d_device->SetTransform(D3DTS_VIEW, &view_matrix);
 			shared::globals::d3d_device->SetTransform(D3DTS_PROJECTION, &proj_matrix);
 		}
-
-
-		// Identity until the first FFP draw of the scene: ffp_state sends the world matrix the game
-		// uploaded last, once it has uploaded one, before that draw.
-		shared::globals::d3d_device->SetTransform(D3DTS_WORLD, &shared::globals::IDENTITY);
 
 		// Example: if you found a game struct with view/proj matrices, apply them here
 		//if (const auto viewport = game::vp; viewport)

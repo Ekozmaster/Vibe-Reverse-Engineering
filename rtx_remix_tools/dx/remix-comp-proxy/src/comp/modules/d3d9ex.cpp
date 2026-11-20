@@ -12,6 +12,11 @@
 
 using comp::tracer;
 #include "tracer_dispatch.inc"
+
+// Records a call that creates an object, once the driver has returned it. The tracer keeps one
+// record open at a time, so the record is begun and ended with no driver call in between.
+#define TRACE_CREATION_IF_ACTIVE(fn, created, ...) \
+	do { if (auto trace_lock = comp::tracer::lock_if_active()) { fn(comp::tracer::ref(), __VA_ARGS__); trace_created(comp::tracer::ref(), created); } } while(0)
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/config.hpp"
 
@@ -588,9 +593,8 @@ namespace comp
 
 	HRESULT d3d9ex::D3D9Device::CreateVertexDeclaration(CONST D3DVERTEXELEMENT9* pVertexElements, IDirect3DVertexDeclaration9** ppDecl)
 	{
-		TRACE_IF_ACTIVE(trace_CreateVertexDeclaration, pVertexElements, ppDecl);
-		auto hr = m_pIDirect3DDevice9->CreateVertexDeclaration(pVertexElements, ppDecl);
-		TRACE_IF_ACTIVE(trace_created, SUCCEEDED(hr) && ppDecl ? *ppDecl : nullptr);
+		const auto hr = m_pIDirect3DDevice9->CreateVertexDeclaration(pVertexElements, ppDecl);
+		TRACE_CREATION_IF_ACTIVE(trace_CreateVertexDeclaration, SUCCEEDED(hr) && ppDecl ? *ppDecl : nullptr, pVertexElements, ppDecl);
 		return hr;
 	}
 
@@ -621,9 +625,8 @@ namespace comp
 
 	HRESULT d3d9ex::D3D9Device::CreateVertexShader(CONST DWORD* pFunction, IDirect3DVertexShader9** ppShader)
 	{
-		TRACE_IF_ACTIVE(trace_CreateVertexShader, pFunction, ppShader);
-		auto hr = m_pIDirect3DDevice9->CreateVertexShader(pFunction, ppShader);
-		TRACE_IF_ACTIVE(trace_created, SUCCEEDED(hr) && ppShader ? *ppShader : nullptr);
+		const auto hr = m_pIDirect3DDevice9->CreateVertexShader(pFunction, ppShader);
+		TRACE_CREATION_IF_ACTIVE(trace_CreateVertexShader, SUCCEEDED(hr) && ppShader ? *ppShader : nullptr, pFunction, ppShader);
 		return hr;
 	}
 
@@ -718,9 +721,8 @@ namespace comp
 
 	HRESULT d3d9ex::D3D9Device::CreatePixelShader(CONST DWORD* pFunction, IDirect3DPixelShader9** ppShader)
 	{
-		TRACE_IF_ACTIVE(trace_CreatePixelShader, pFunction, ppShader);
-		auto hr = m_pIDirect3DDevice9->CreatePixelShader(pFunction, ppShader);
-		TRACE_IF_ACTIVE(trace_created, SUCCEEDED(hr) && ppShader ? *ppShader : nullptr);
+		const auto hr = m_pIDirect3DDevice9->CreatePixelShader(pFunction, ppShader);
+		TRACE_CREATION_IF_ACTIVE(trace_CreatePixelShader, SUCCEEDED(hr) && ppShader ? *ppShader : nullptr, pFunction, ppShader);
 		return hr;
 	}
 

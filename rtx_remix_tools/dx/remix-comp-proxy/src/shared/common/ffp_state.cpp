@@ -167,6 +167,7 @@ namespace shared::common
 		bool has_blend_indices = false;
 		bool blend_on_stream_0 = true;
 		int pos_type = -1;
+		int blend_indices_type = -1;
 
 		// Bytes from the start of a stream-0 vertex to the end of the last element the
 		// skinning module reads
@@ -201,6 +202,7 @@ namespace shared::common
 				has_blend_indices = true;
 				blend_on_stream_0 &= el.Stream == 0;
 				cur_decl_blend_indices_off_ = el.Offset;
+				blend_indices_type = el.Type;
 				read_by_skinning(el);
 				break;
 
@@ -243,20 +245,26 @@ namespace shared::common
 		{
 			cur_decl_is_skinned_ = true;
 
-			// The skinning module reads a FLOAT3 position and four index bytes
-			const bool expandable = blend_on_stream_0 &&
-				(pos_type == D3DDECLTYPE_FLOAT3 || pos_type == D3DDECLTYPE_FLOAT4);
-			cur_decl_skin_vertex_bytes_ = expandable ? skin_vertex_bytes : 0;
-
+			// The weights a vertex stores explicitly; the blend derives one more from them. A fourth
+			// stored weight is left out, as fixed-function blending takes at most three. 0 for a
+			// format the skinning module cannot read.
 			switch (cur_decl_blend_weight_type_)
 			{
 			case D3DDECLTYPE_FLOAT1:  cur_decl_num_weights_ = 1; break;
 			case D3DDECLTYPE_FLOAT2:  cur_decl_num_weights_ = 2; break;
-			case D3DDECLTYPE_FLOAT3:  cur_decl_num_weights_ = 3; break;
-			case D3DDECLTYPE_FLOAT4:  cur_decl_num_weights_ = 3; break;
+			case D3DDECLTYPE_FLOAT3:
+			case D3DDECLTYPE_FLOAT4:
 			case D3DDECLTYPE_UBYTE4N: cur_decl_num_weights_ = 3; break;
-			default:                  cur_decl_num_weights_ = 3; break;
+			default:                  cur_decl_num_weights_ = 0; break;
 			}
+
+			// The skinning module reads a FLOAT3 position, weights it can decode and four index
+			// bytes. D3DCOLOR indices are taken in memory order, the order D3DCOLORtoUBYTE4 gives
+			// a shader.
+			const bool readable_indices = blend_indices_type == D3DDECLTYPE_UBYTE4 || blend_indices_type == D3DDECLTYPE_D3DCOLOR;
+			const bool expandable = blend_on_stream_0 && readable_indices && cur_decl_num_weights_ > 0 &&
+				(pos_type == D3DDECLTYPE_FLOAT3 || pos_type == D3DDECLTYPE_FLOAT4);
+			cur_decl_skin_vertex_bytes_ = expandable ? skin_vertex_bytes : 0;
 		}
 	}
 
@@ -276,10 +284,6 @@ namespace shared::common
 	{
 		ffp_setup_ = false;
 		scene_count_++;
-
-		// The world matrix uploaded last stays in force across scenes and frames. BeginScene
-		// leaves D3DTS_WORLD at identity (comp.cpp), so the next FFP draw sends it again.
-		world_dirty_ = world_written_;
 	}
 
 	void ffp_state::on_reset()

@@ -21,7 +21,7 @@ namespace shared::common
 			int albedo_stage = 0;
 
 			// Vertex shader constant registers the game uploads each matrix to.
-			// An end is one past the last register of the matrix.
+			// A matrix is four registers, so an end is always its start + 4.
 			struct register_layout
 			{
 				int view_start = 0;
@@ -83,8 +83,8 @@ namespace shared::common
 
 		void parse_all();
 
-		// An absent or empty value gives default_val; any other value that is not a decimal
-		// number is logged and gives default_val too.
+		// An inline ";" comment is ignored. An absent or empty value gives default_val; any other
+		// value that is not a decimal number is logged and gives default_val too.
 		template <typename T>
 		T get_number(const char* section, const char* key, T default_val) const;
 	};

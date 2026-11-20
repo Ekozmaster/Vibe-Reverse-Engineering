@@ -39,15 +39,23 @@ namespace shared::utils
 			hr = pixels->GetSize(&width, &height);
 			if (FAILED(hr)) return hr;
 
-			ComPtr<IDirect3DTexture9> created;
-			hr = device->CreateTexture(width, height, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &created, nullptr);
+			// Decoded into system memory and copied into the default pool: a Direct3D 9Ex device has
+			// no managed pool. The caller releases the texture before Reset and creates it again after.
+			ComPtr<IDirect3DTexture9> staging;
+			hr = device->CreateTexture(width, height, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &staging, nullptr);
 			if (FAILED(hr)) return hr;
 
 			D3DLOCKED_RECT locked;
-			hr = created->LockRect(0, &locked, nullptr, 0);
+			hr = staging->LockRect(0, &locked, nullptr, 0);
 			if (FAILED(hr)) return hr;
 			hr = pixels->CopyPixels(nullptr, locked.Pitch, locked.Pitch * height, static_cast<BYTE*>(locked.pBits));
-			created->UnlockRect(0);
+			staging->UnlockRect(0);
+			if (FAILED(hr)) return hr;
+
+			ComPtr<IDirect3DTexture9> created;
+			hr = device->CreateTexture(width, height, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &created, nullptr);
+			if (FAILED(hr)) return hr;
+			hr = device->UpdateTexture(staging.Get(), created.Get());
 			if (FAILED(hr)) return hr;
 
 			*texture = created.Detach();

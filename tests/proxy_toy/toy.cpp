@@ -8,6 +8,7 @@
 // The scene is a 3x3 grid of cells with one shape per cell (see draw_scene).
 //
 // toy.exe --out FILE [--view N] [--proj N] [--world N] [--bones N] [--albedo-stage N] [--extra-vertices N]
+//         [--variant NAME] [--d3d9ex]
 //   --view, --proj, --world   first constant register of each 4x4 matrix
 //   --bones                   first register of the bone palette (3 registers per bone)
 //   --albedo-stage            texture stage that holds the green texture; when it is not 0,
@@ -15,6 +16,10 @@
 //   --extra-vertices          added to the NumVertices of every skinned draw, running it past
 //                             the end of the vertex buffer. Only for a run with a proxy that
 //                             converts those draws: Direct3D itself may read the whole range.
+//   --variant                 how the strip in the last cell is drawn (see VARIANTS); a plain
+//                             skinned strip without it
+//   --d3d9ex                  create the device through Direct3DCreate9Ex, whose devices have
+//                             no managed pool, and keep every resource out of that pool
 // Other arguments are ignored: the proxy reads its own from the same command line.
 //
 // FILE receives the width and height as two little-endian uint32 values, then the BGRX rows.
@@ -24,6 +29,7 @@
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -58,7 +64,15 @@ namespace
 		int bones = 20;
 		int albedo_stage = 0;
 		UINT extra_vertices = 0;
+		std::string variant;
+		bool d3d9ex = false;
 	};
+
+	// Variants of the strip in the last cell. Each draws the same picture through the toy's shaders.
+	//   color-indices    blend indices in a D3DCOLOR element, decoded with D3DCOLORtoUBYTE4
+	//   ushort-weights   blend weights in a USHORT4N element
+	//   partial-palette  after the palette, bone 0 alone is uploaded again in an upload of its own
+	const char* const VARIANTS[] = { "color-indices", "ushort-weights", "partial-palette" };
 
 	[[noreturn]] void fail(const char* what, HRESULT hr = E_FAIL)
 	{
@@ -86,8 +100,12 @@ namespace
 			else if (arg == "--bones") opt.bones = std::atoi(value());
 			else if (arg == "--albedo-stage") opt.albedo_stage = std::atoi(value());
 			else if (arg == "--extra-vertices") opt.extra_vertices = static_cast<UINT>(std::atoi(value()));
+			else if (arg == "--variant") opt.variant = value();
+			else if (arg == "--d3d9ex") opt.d3d9ex = true;
 		}
 		if (opt.out.empty()) fail("reading --out");
+		if (!opt.variant.empty() && std::find(std::begin(VARIANTS), std::end(VARIANTS), opt.variant) == std::end(VARIANTS))
+			fail("reading --variant");
 		return opt;
 	}
 
@@ -99,6 +117,7 @@ namespace
 	struct flat_vertex { float pos[3]; float uv[2]; };
 	struct skin3_vertex { float pos[3]; float normal[3]; float uv[2]; BYTE indices[4]; float weights[3]; };
 	struct skin4_vertex { float pos[3]; float weights[4]; BYTE indices[4]; float normal[3]; float uv[2]; };
+	struct skin_ushort_vertex { float pos[3]; float normal[3]; float uv[2]; BYTE indices[4]; USHORT weights[4]; };
 
 	const D3DVERTEXELEMENT9 RIGID_DECL[] = {
 		{ 0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
@@ -117,6 +136,22 @@ namespace
 		{ 0, 24, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
 		{ 0, 32, D3DDECLTYPE_UBYTE4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0 },
 		{ 0, 36, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
+		D3DDECL_END()
+	};
+	const D3DVERTEXELEMENT9 SKIN3_COLOR_DECL[] = {
+		{ 0,  0, D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+		{ 0, 12, D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 },
+		{ 0, 24, D3DDECLTYPE_FLOAT2,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+		{ 0, 32, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0 },
+		{ 0, 36, D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
+		D3DDECL_END()
+	};
+	const D3DVERTEXELEMENT9 SKIN_USHORT_DECL[] = {
+		{ 0,  0, D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+		{ 0, 12, D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 },
+		{ 0, 24, D3DDECLTYPE_FLOAT2,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+		{ 0, 32, D3DDECLTYPE_UBYTE4,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0 },
+		{ 0, 36, D3DDECLTYPE_USHORT4N, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
 		D3DDECL_END()
 	};
 	const D3DVERTEXELEMENT9 SKIN4_DECL[] = {
@@ -191,6 +226,16 @@ namespace
 		return v;
 	}
 
+	// The strip's weights are multiples of 1/5, which USHORT4N holds exactly
+	skin_ushort_vertex skin_ushort_from(const strip_point& p)
+	{
+		skin_ushort_vertex v = { { p.x, p.y, 0 }, { 0, 0, -1 }, { 0, 0 }, {}, {} };
+		std::memcpy(v.indices, p.indices, sizeof(v.indices));
+		for (int i = 0; i < 3; i++)
+			v.weights[i] = static_cast<USHORT>(p.weights[i] * 65535.0f + 0.5f);
+		return v;
+	}
+
 	skin4_vertex skin4_from(const strip_point& p)
 	{
 		skin4_vertex v = { { p.x, p.y, 0 }, {}, {}, { 0, 0, -1 }, { 0, 0 } };
@@ -235,6 +280,11 @@ float4 vs_skinned(float3 pos : POSITION, float4 weights : BLENDWEIGHT, float4 in
 	return to_clip(float4(world, 1));
 }
 
+float4 vs_skinned_color(float3 pos : POSITION, float4 weights : BLENDWEIGHT, float4 indices : BLENDINDICES) : POSITION
+{
+	return vs_skinned(pos, weights, D3DCOLORtoUBYTE4(indices));
+}
+
 float4 ps_red() : COLOR
 {
 	return float4(1, 0, 0, 1);
@@ -264,12 +314,14 @@ float4 ps_red() : COLOR
 
 		IDirect3DVertexShader9* vs_rigid = nullptr;
 		IDirect3DVertexShader9* vs_skinned = nullptr;
+		IDirect3DVertexShader9* vs_skinned_color = nullptr;
 		IDirect3DPixelShader9* ps_red = nullptr;
 
 		IDirect3DVertexDeclaration9* rigid_decl = nullptr;
 		IDirect3DVertexDeclaration9* flat_decl = nullptr;
 		IDirect3DVertexDeclaration9* skin3_decl = nullptr;
 		IDirect3DVertexDeclaration9* skin4_decl = nullptr;
+		IDirect3DVertexDeclaration9* variant_decl = nullptr;
 
 		IDirect3DVertexBuffer9* rigid_vb = nullptr;
 		IDirect3DVertexBuffer9* flat_vb = nullptr;
@@ -277,6 +329,8 @@ float4 ps_red() : COLOR
 		IDirect3DVertexBuffer9* skin3_offset_vb = nullptr;
 		IDirect3DVertexBuffer9* skin3_high_vb = nullptr;
 		IDirect3DVertexBuffer9* skin4_vb = nullptr;
+		IDirect3DVertexBuffer9* variant_vb = nullptr;
+		UINT variant_stride = 0;
 		IDirect3DIndexBuffer9* ib = nullptr;
 
 		IDirect3DTexture9* green = nullptr;
@@ -312,8 +366,9 @@ float4 ps_red() : COLOR
 	}
 
 	// Uploads a palette whose last three bones put a strip in the cell centred on (x, y) and
-	// bend it. The bones in front of them, if any, lead far out of the picture.
-	void set_strip_bones(const scene& s, float x, float y, float bend_degrees, int palette_size = BONES_PER_STRIP)
+	// bend it. The bones in front of them, if any, lead far out of the picture. Returns the
+	// registers uploaded.
+	std::vector<float> set_strip_bones(const scene& s, float x, float y, float bend_degrees, int palette_size = BONES_PER_STRIP)
 	{
 		std::vector<XMFLOAT4X4> bones(palette_size - BONES_PER_STRIP);
 		for (auto& bone : bones)
@@ -335,6 +390,7 @@ float4 ps_red() : COLOR
 					registers.push_back(bone.m[row][column]);
 
 		check(s.dev->SetVertexShaderConstantF(s.opt.bones, registers.data(), palette_size * REGISTERS_PER_BONE), "SetVertexShaderConstantF");
+		return registers;
 	}
 
 	void bind(const scene& s, IDirect3DVertexDeclaration9* decl, IDirect3DVertexBuffer9* vb, UINT offset, UINT stride, IDirect3DVertexShader9* vs)
@@ -349,8 +405,8 @@ float4 ps_red() : COLOR
 	// Cells, left to right and top to bottom:
 	//   rigid quad, indexed            rigid triangle, not indexed     quad without a normal
 	//   skinned strip                  skinned strip behind offsets    skinned strip, four weights
-	//   rigid quad whose world matrix  skinned strip on the last       (empty)
-	//     was set before the strips      bones of a large palette
+	//   rigid quad whose world matrix  skinned strip on the last       skinned strip, drawn as
+	//     was set before the strips      bones of a large palette        --variant says
 	void draw_scene(const scene& s)
 	{
 		const auto dev = s.dev;
@@ -393,16 +449,28 @@ float4 ps_red() : COLOR
 		set_strip_bones(s, 0, -2, 35, LARGE_PALETTE);
 		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, strip_vertices, STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
 
+		bind(s, s.variant_decl, s.variant_vb, 0, s.variant_stride, s.opt.variant == "color-indices" ? s.vs_skinned_color : s.vs_skinned);
+		const auto variant_bones = set_strip_bones(s, 2, -2, -20);
+		if (s.opt.variant == "partial-palette")
+			check(dev->SetVertexShaderConstantF(s.opt.bones, variant_bones.data(), REGISTERS_PER_BONE), "SetVertexShaderConstantF");
+		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, strip_vertices, STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
+
 		bind(s, s.rigid_decl, s.rigid_vb, 0, sizeof(rigid_vertex), s.vs_rigid);
 		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");
 	}
 
+	// A device created through Direct3DCreate9Ex has no managed pool
+	D3DPOOL buffer_pool(const scene& s)
+	{
+		return s.opt.d3d9ex ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED;
+	}
+
 	template <typename T>
-	IDirect3DVertexBuffer9* make_vertex_buffer(IDirect3DDevice9* dev, const std::vector<T>& vertices)
+	IDirect3DVertexBuffer9* make_vertex_buffer(const scene& s, const std::vector<T>& vertices)
 	{
 		const UINT bytes = static_cast<UINT>(vertices.size() * sizeof(T));
 		IDirect3DVertexBuffer9* vb = nullptr;
-		check(dev->CreateVertexBuffer(bytes, 0, 0, D3DPOOL_MANAGED, &vb, nullptr), "CreateVertexBuffer");
+		check(s.dev->CreateVertexBuffer(bytes, 0, 0, buffer_pool(s), &vb, nullptr), "CreateVertexBuffer");
 		void* data = nullptr;
 		check(vb->Lock(0, bytes, &data, 0), "IDirect3DVertexBuffer9::Lock");
 		std::memcpy(data, vertices.data(), bytes);
@@ -410,18 +478,24 @@ float4 ps_red() : COLOR
 		return vb;
 	}
 
+	// Filled in system memory and copied into the default pool, which every device has
 	IDirect3DTexture9* make_texture(IDirect3DDevice9* dev, D3DCOLOR color)
 	{
-		IDirect3DTexture9* tex = nullptr;
-		check(dev->CreateTexture(2, 2, 1, 0, D3DFMT_X8R8G8B8, D3DPOOL_MANAGED, &tex, nullptr), "CreateTexture");
+		IDirect3DTexture9* staging = nullptr;
+		check(dev->CreateTexture(2, 2, 1, 0, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &staging, nullptr), "CreateTexture");
 		D3DLOCKED_RECT rect;
-		check(tex->LockRect(0, &rect, nullptr, 0), "IDirect3DTexture9::LockRect");
+		check(staging->LockRect(0, &rect, nullptr, 0), "IDirect3DTexture9::LockRect");
 		for (int y = 0; y < 2; y++)
 		{
 			auto* row = reinterpret_cast<D3DCOLOR*>(static_cast<BYTE*>(rect.pBits) + y * rect.Pitch);
 			row[0] = row[1] = color;
 		}
-		tex->UnlockRect(0);
+		staging->UnlockRect(0);
+
+		IDirect3DTexture9* tex = nullptr;
+		check(dev->CreateTexture(2, 2, 1, 0, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &tex, nullptr), "CreateTexture");
+		check(dev->UpdateTexture(staging, tex), "UpdateTexture");
+		staging->Release();
 		return tex;
 	}
 
@@ -439,6 +513,9 @@ float4 ps_red() : COLOR
 		code = compile(source, "vs_skinned", "vs_2_0");
 		check(dev->CreateVertexShader(static_cast<const DWORD*>(code->GetBufferPointer()), &s.vs_skinned), "CreateVertexShader");
 		code->Release();
+		code = compile(source, "vs_skinned_color", "vs_2_0");
+		check(dev->CreateVertexShader(static_cast<const DWORD*>(code->GetBufferPointer()), &s.vs_skinned_color), "CreateVertexShader");
+		code->Release();
 		code = compile(source, "ps_red", "ps_2_0");
 		check(dev->CreatePixelShader(static_cast<const DWORD*>(code->GetBufferPointer()), &s.ps_red), "CreatePixelShader");
 		code->Release();
@@ -447,9 +524,12 @@ float4 ps_red() : COLOR
 		check(dev->CreateVertexDeclaration(FLAT_DECL, &s.flat_decl), "CreateVertexDeclaration");
 		check(dev->CreateVertexDeclaration(SKIN3_DECL, &s.skin3_decl), "CreateVertexDeclaration");
 		check(dev->CreateVertexDeclaration(SKIN4_DECL, &s.skin4_decl), "CreateVertexDeclaration");
+		const D3DVERTEXELEMENT9* variant_elements = s.opt.variant == "color-indices" ? SKIN3_COLOR_DECL
+			: s.opt.variant == "ushort-weights" ? SKIN_USHORT_DECL : SKIN3_DECL;
+		check(dev->CreateVertexDeclaration(variant_elements, &s.variant_decl), "CreateVertexDeclaration");
 
-		s.rigid_vb = make_vertex_buffer(dev, std::vector<rigid_vertex>(std::begin(RIGID_VERTICES), std::end(RIGID_VERTICES)));
-		s.flat_vb = make_vertex_buffer(dev, std::vector<flat_vertex>(std::begin(FLAT_VERTICES), std::end(FLAT_VERTICES)));
+		s.rigid_vb = make_vertex_buffer(s, std::vector<rigid_vertex>(std::begin(RIGID_VERTICES), std::end(RIGID_VERTICES)));
+		s.flat_vb = make_vertex_buffer(s, std::vector<flat_vertex>(std::begin(FLAT_VERTICES), std::end(FLAT_VERTICES)));
 
 		std::vector<skin3_vertex> skin3;
 		std::vector<skin4_vertex> skin4;
@@ -458,22 +538,38 @@ float4 ps_red() : COLOR
 			skin3.push_back(skin3_from(p));
 			skin4.push_back(skin4_from(p));
 		}
-		s.skin3_vb = make_vertex_buffer(dev, skin3);
-		s.skin4_vb = make_vertex_buffer(dev, skin4);
+		s.skin3_vb = make_vertex_buffer(s, skin3);
+		s.skin4_vb = make_vertex_buffer(s, skin4);
 
 		std::vector<skin3_vertex> skin3_high = skin3;
 		for (auto& vertex : skin3_high)
 			for (auto& index : vertex.indices)
 				index = static_cast<BYTE>(index + LARGE_PALETTE - BONES_PER_STRIP);
-		s.skin3_high_vb = make_vertex_buffer(dev, skin3_high);
+		s.skin3_high_vb = make_vertex_buffer(s, skin3_high);
+
+		// The D3DCOLOR variant keeps index i in byte i, as data for a shader that decodes its
+		// indices with D3DCOLORtoUBYTE4 does
+		if (s.opt.variant == "ushort-weights")
+		{
+			std::vector<skin_ushort_vertex> skin_ushort;
+			for (const auto& p : STRIP)
+				skin_ushort.push_back(skin_ushort_from(p));
+			s.variant_vb = make_vertex_buffer(s, skin_ushort);
+			s.variant_stride = sizeof(skin_ushort_vertex);
+		}
+		else
+		{
+			s.variant_vb = make_vertex_buffer(s, skin3);
+			s.variant_stride = sizeof(skin3_vertex);
+		}
 
 		// Filler a correct draw never reads: one point far outside the cell, following bone 0.
 		const strip_point filler = { 9.0f, 9.0f, { 1.0f, 0.0f, 0.0f }, { 0, 0, 0, 0 } };
 		std::vector<skin3_vertex> skin3_offset(OFFSET_FILLER, skin3_from(filler));
 		skin3_offset.insert(skin3_offset.end(), skin3.begin(), skin3.end());
-		s.skin3_offset_vb = make_vertex_buffer(dev, skin3_offset);
+		s.skin3_offset_vb = make_vertex_buffer(s, skin3_offset);
 
-		check(dev->CreateIndexBuffer(sizeof(INDICES), 0, D3DFMT_INDEX16, D3DPOOL_MANAGED, &s.ib, nullptr), "CreateIndexBuffer");
+		check(dev->CreateIndexBuffer(sizeof(INDICES), 0, D3DFMT_INDEX16, buffer_pool(s), &s.ib, nullptr), "CreateIndexBuffer");
 		void* data = nullptr;
 		check(s.ib->Lock(0, sizeof(INDICES), &data, 0), "IDirect3DIndexBuffer9::Lock");
 		std::memcpy(data, INDICES, sizeof(INDICES));
@@ -544,7 +640,17 @@ int main(int argc, char** argv)
 
 	const HWND hwnd = create_window();
 
-	IDirect3D9* d3d = Direct3DCreate9(D3D_SDK_VERSION);
+	IDirect3D9* d3d = nullptr;
+	if (s.opt.d3d9ex)
+	{
+		IDirect3D9Ex* d3d_ex = nullptr;
+		check(Direct3DCreate9Ex(D3D_SDK_VERSION, &d3d_ex), "Direct3DCreate9Ex");
+		d3d = d3d_ex;
+	}
+	else
+	{
+		d3d = Direct3DCreate9(D3D_SDK_VERSION);
+	}
 	if (!d3d) fail("Direct3DCreate9");
 
 	D3DPRESENT_PARAMETERS pp = {};

@@ -31,6 +31,7 @@ CELLS = {
     "skinned strip with four weights": (1, 2),
     "rigid quad after the strips": (2, 0),
     "skinned strip on a large palette": (2, 1),
+    "skinned strip variant": (2, 2),
 }
 _GRID = 3
 _BACKGROUND = (0, 0, 64)
@@ -180,7 +181,8 @@ class ProxyToy:
         return subprocess.run(["cmd", "/c", str(script), config], cwd=self._template_copy, capture_output=True, text=True, env=env)
 
     def frame(self, name: str, layout: Layout, *, ini: dict | None = None, proxy: bool = True, albedo_stage: int = 0,
-              extra_vertices: int = 0, files: dict[str, bytes] | None = None) -> Frame:
+              extra_vertices: int = 0, files: dict[str, bytes] | None = None, variant: str = "",
+              d3d9ex: bool = False) -> Frame:
         """Run the toy in a folder of its own and return what it drew.
 
         Args:
@@ -193,6 +195,9 @@ class ProxyToy:
             extra_vertices: Added to the NumVertices of each skinned draw, past the end of
                 its vertex buffer.
             files: {path inside the folder: content} to put there before the run.
+            variant: How the toy draws the strip in its last cell (toy.cpp, VARIANTS); a
+                plain skinned strip when empty.
+            d3d9ex: Create the device through Direct3DCreate9Ex.
 
         Raises:
             Unavailable: The toy could not create a Direct3D 9 device without the proxy.
@@ -214,7 +219,8 @@ class ProxyToy:
         hidden = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW, wShowWindow=subprocess.SW_HIDE)
         done = subprocess.run(
             [str(folder / "toy.exe"), "--out", "frame.raw", *layout.toy_arguments, "--albedo-stage", str(albedo_stage),
-             "--extra-vertices", str(extra_vertices), "-nobeep"],
+             "--extra-vertices", str(extra_vertices), *(["--variant", variant] if variant else []),
+             *(["--d3d9ex"] if d3d9ex else []), "-nobeep"],
             cwd=folder, capture_output=True, text=True, timeout=120,
             startupinfo=hidden, creationflags=subprocess.CREATE_NEW_CONSOLE)
         if done.returncode != 0:

@@ -263,3 +263,82 @@ class TestAlbedoStage:
     @pytest.mark.parametrize("shape", RIGID + SKINNED)
     def test_converted_draw_samples_the_albedo_stage(self, frame, reference, shape):
         assert_drawn_by(frame, reference, shape, "green")
+
+
+class TestSkinnedVertexFormats:
+    """The strip in the last cell, drawn as one of the toy's variants, against its own reference."""
+
+    @staticmethod
+    def frames(toy, variant):
+        reference = toy.frame(f"reference_{variant}", MOVED_LAYOUT, proxy=False, variant=variant)
+        frame = toy.frame(variant, MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON), variant=variant)
+        return frame, reference
+
+    def test_blend_indices_in_a_d3dcolor_decoded_with_d3dcolortoubyte4_are_converted(self, toy):
+        frame, reference = self.frames(toy, "color-indices")
+        assert_drawn_by(frame, reference, "skinned strip variant", "green")
+
+    def test_blend_weights_in_a_format_the_expansion_cannot_read_keep_their_shaders(self, toy):
+        frame, reference = self.frames(toy, "ushort-weights")
+        assert_drawn_by(frame, reference, "skinned strip variant", "red")
+
+    def test_blend_index_past_the_last_uploaded_bone_keeps_its_shaders(self, toy):
+        frame, reference = self.frames(toy, "partial-palette")
+        assert_drawn_by(frame, reference, "skinned strip variant", "red")
+
+
+class TestD3D9Ex:
+    """A device created through Direct3DCreate9Ex, which has no managed pool."""
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def ex_reference(cls, toy):
+        return toy.frame("reference_d3d9ex", MOVED_LAYOUT, proxy=False, d3d9ex=True)
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def frame(cls, toy):
+        return toy.frame("d3d9ex", MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON), d3d9ex=True,
+                         files={ICON: _png(4, 4, (255, 128, 0, 255))})
+
+    def test_the_overlay_icon_is_loaded(self, frame):
+        assert "Failed to load" not in frame.log
+
+    @pytest.mark.parametrize("shape", RIGID + SKINNED)
+    def test_draw_is_converted(self, frame, ex_reference, shape):
+        assert_drawn_by(frame, ex_reference, shape, "green")
+
+
+class TestMatrixEndNotFourPastItsStart:
+    def test_the_default_layout_is_used_and_the_log_says_so(self, toy, reference):
+        frame = toy.frame("short_view_range", SHIPPED_LAYOUT, ini={"FFP.Registers": {"ViewEnd": 1}})
+        assert "[FFP.Registers]" in frame.log and "using the default layout" in frame.log
+        assert_drawn_by(frame, reference, "rigid quad", "green")
+
+
+class TestBonesOverlappingAMatrix:
+    """BoneThreshold at c20, below the World matrix at c24."""
+
+    OVERLAPPING = {"Skinning": {"BoneThreshold": 20}}
+
+    def test_with_skinning_on_the_default_layouts_are_used_and_the_log_says_so(self, toy):
+        frame = toy.frame("bones_over_world", MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON, self.OVERLAPPING))
+        assert "[Skinning] BoneThreshold=20" in frame.log and "using the default layouts" in frame.log
+        assert "Registers: View=c0-c3 Proj=c4-c7 World=c16-c19" in frame.log
+
+    def test_with_skinning_off_the_layout_is_kept(self, toy, reference):
+        frame = toy.frame("bones_over_world_unused", MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, self.OVERLAPPING))
+        assert "using the default" not in frame.log
+        assert_drawn_by(frame, reference, "rigid quad", "green")
+
+
+class TestIniNumberWithComment:
+    def test_a_comment_after_a_switch_is_ignored(self, toy, reference):
+        frame = toy.frame("switch_with_comment", SHIPPED_LAYOUT, ini={"FFP": {"Enabled": "0  ; passthrough"}})
+        assert "is not a decimal number" not in frame.log
+        assert_drawn_by(frame, reference, "rigid quad", "red")
+
+    def test_a_number_with_a_sign_and_a_comment_is_read(self, toy, reference):
+        frame = toy.frame("register_with_comment", SHIPPED_LAYOUT, ini={"FFP.Registers": {"WorldStart": "+16 ; world"}})
+        assert "is not a decimal number" not in frame.log
+        assert_drawn_by(frame, reference, "rigid quad", "green")

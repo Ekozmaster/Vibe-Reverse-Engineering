@@ -9,10 +9,27 @@ namespace shared::common
 	{
 		// ffp_state keeps c0-c255 and reads a matrix as four registers from its start
 		constexpr int CAPTURED_VS_REGISTERS = 256;
+		constexpr int MATRIX_REGISTERS = 4;
 
 		bool holds_matrix(const int start, const int end)
 		{
-			return start >= 0 && start + 4 <= CAPTURED_VS_REGISTERS && end > start && end <= CAPTURED_VS_REGISTERS;
+			return start >= 0 && start + MATRIX_REGISTERS <= CAPTURED_VS_REGISTERS && end == start + MATRIX_REGISTERS;
+		}
+
+		// A bone palette is any upload from BoneThreshold on, so a matrix there could be taken for bones
+		bool below_bones(const config::ffp_settings::register_layout& regs, const int bone_threshold)
+		{
+			return regs.view_end <= bone_threshold && regs.proj_end <= bone_threshold && regs.world_end <= bone_threshold;
+		}
+
+		// The value without an inline ';' comment and the blanks around it
+		std::string_view number_text(const std::string& value)
+		{
+			std::string_view text = value;
+			text = text.substr(0, text.find(';'));
+			const auto first = text.find_first_not_of(" \t");
+			if (first == std::string_view::npos) return {};
+			return text.substr(first, text.find_last_not_of(" \t") - first + 1);
 		}
 	}
 
@@ -51,19 +68,19 @@ namespace shared::common
 	template <typename T>
 	T config::get_number(const char* section, const char* key, T default_val) const
 	{
-		const auto text = get_string(section, key, "");
-		const auto first = text.find_first_not_of(" \t");
-		if (first == std::string::npos) return default_val;
-		const auto last = text.find_last_not_of(" \t");
+		const auto value_text = get_string(section, key, "");
+		const auto text = number_text(value_text);
+		if (text.empty()) return default_val;
 
-		// The whole value has to be a decimal number: "c8", "0x10" or "8 ; comment" keep the default
+		// Apart from a comment, the whole value has to be a decimal number, "+" allowed:
+		// "c8" or "0x10" keep the default
+		const char* begin = text.data() + (text.size() > 1 && text[0] == '+' && text[1] != '-' ? 1 : 0);
+		const char* end = text.data() + text.size();
 		T value{};
-		const char* begin = text.data() + first;
-		const char* end = text.data() + last + 1;
 		const auto [stop, error] = std::from_chars(begin, end, value);
 		if (error == std::errc() && stop == end) return value;
 
-		log("Config", std::format("[{}] {}={} is not a decimal number; using {}", section, key, text, default_val),
+		log("Config", std::format("[{}] {}={} is not a decimal number; using {}", section, key, value_text, default_val),
 			LOG_TYPE::LOG_TYPE_ERROR, true);
 		return default_val;
 	}
@@ -111,12 +128,19 @@ namespace shared::common
 			!holds_matrix(regs.proj_start, regs.proj_end) ||
 			!holds_matrix(regs.world_start, regs.world_end))
 		{
-			log("Config", "[FFP.Registers] names a matrix outside c0-c255 or an End that is not above its Start; using the default layout",
+			log("Config", "[FFP.Registers] names a matrix outside c0-c255 or an End that is not its Start + 4; using the default layout",
 				LOG_TYPE::LOG_TYPE_ERROR, true);
 			regs = {};
 		}
 
 		// [Skinning]
+		const auto use_default_bone_layout = [this]
+		{
+			const skinning_settings defaults;
+			skinning.bone_threshold = defaults.bone_threshold;
+			skinning.regs_per_bone = defaults.regs_per_bone;
+			skinning.bone_min_regs = defaults.bone_min_regs;
+		};
 		skinning.enabled = get_bool("Skinning", "Enabled", false);
 		skinning.bone_threshold = get_int("Skinning", "BoneThreshold", skinning.bone_threshold);
 		skinning.regs_per_bone = get_int("Skinning", "RegsPerBone", skinning.regs_per_bone);
@@ -127,10 +151,16 @@ namespace shared::common
 		{
 			log("Config", "[Skinning] needs BoneThreshold in 0-255, RegsPerBone 3 or 4 and BoneMinRegs 1 or more; using the default bone layout",
 				LOG_TYPE::LOG_TYPE_ERROR, true);
-			const skinning_settings defaults;
-			skinning.bone_threshold = defaults.bone_threshold;
-			skinning.regs_per_bone = defaults.regs_per_bone;
-			skinning.bone_min_regs = defaults.bone_min_regs;
+			use_default_bone_layout();
+		}
+
+		// The default register layout and bone layout do not overlap
+		if (skinning.enabled && !below_bones(regs, skinning.bone_threshold))
+		{
+			log("Config", std::format("[Skinning] BoneThreshold={} is not above every matrix in [FFP.Registers], whose uploads would be "
+				"taken for bones; using the default layouts", skinning.bone_threshold), LOG_TYPE::LOG_TYPE_ERROR, true);
+			regs = {};
+			use_default_bone_layout();
 		}
 
 		// [Diagnostics]

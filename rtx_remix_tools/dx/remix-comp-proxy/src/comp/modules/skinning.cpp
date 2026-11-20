@@ -24,7 +24,7 @@ namespace comp
 		p_this = nullptr;
 	}
 
-	HRESULT skinning::draw_skinned_dip(IDirect3DDevice9* dev,
+	std::optional<HRESULT> skinning::draw_skinned_dip(IDirect3DDevice9* dev,
 		D3DPRIMITIVETYPE pt, INT base_vtx, UINT min_vtx, UINT num_verts,
 		UINT start_idx, UINT prim_count)
 	{
@@ -44,15 +44,12 @@ namespace comp
 		const auto source_range = convertible
 			? vertices_in_buffer(src_vb, ffp.stream_offset(0) + static_cast<UINT64>(first_vtx) * stride, num_verts, stride)
 			: vertex_range{};
-		auto* exp_vb = source_range.num_verts ? get_expanded_vb(dev, src_vb, source_range, stride) : nullptr;
+		const auto* expanded = source_range.num_verts ? get_expanded_vb(dev, src_vb, source_range, stride) : nullptr;
 
-		// No bone palette, a layout the expansion cannot read or no vertices inside the buffer:
-		// the game's shaders draw it
-		if (!exp_vb)
-		{
-			ffp.disengage(dev);
-			return dev->DrawIndexedPrimitive(pt, base_vtx, min_vtx, num_verts, start_idx, prim_count);
-		}
+		// No bone palette, a layout the expansion cannot read, no vertices inside the buffer or a
+		// vertex blended by a bone past the end of the palette: the game's shaders draw it
+		if (!expanded || expanded->max_blend_index >= ffp.num_bones())
+			return std::nullopt;
 
 		// Engage FFP with skinning
 		ffp.engage(dev);
@@ -63,10 +60,12 @@ namespace comp
 		IDirect3DVertexDeclaration9* orig_decl = nullptr;
 		dev->GetVertexDeclaration(&orig_decl);
 		dev->SetVertexDeclaration(skin_exp_decl_);
-		dev->SetStreamSource(0, exp_vb, 0, SKIN_VTX_SIZE);
+		dev->SetStreamSource(0, expanded->expanded, 0, SKIN_VTX_SIZE);
 
-		// Vertex 0 of the expanded buffer is the vertex the index min_vtx names
-		auto hr = dev->DrawIndexedPrimitive(pt, -static_cast<INT>(min_vtx), min_vtx, source_range.num_verts, start_idx, prim_count);
+		// Vertex 0 of the expanded buffer is the vertex the index min_vtx names. The negative
+		// BaseVertexIndex this takes is legal Direct3D 9, and Remix's bridge and runtime carry it
+		// as a signed value; expanding from base_vtx instead would convert min_vtx unused vertices.
+		const HRESULT hr = dev->DrawIndexedPrimitive(pt, -static_cast<INT>(min_vtx), min_vtx, source_range.num_verts, start_idx, prim_count);
 
 		// Restore original state
 		dev->SetVertexDeclaration(orig_decl);
@@ -138,7 +137,7 @@ namespace comp
 		return { static_cast<UINT>(first_byte), static_cast<UINT>((std::min)(static_cast<UINT64>(num_verts), fitting)) };
 	}
 
-	IDirect3DVertexBuffer9* skinning::get_expanded_vb(IDirect3DDevice9* dev,
+	const skinning::expanded_range* skinning::get_expanded_vb(IDirect3DDevice9* dev,
 		IDirect3DVertexBuffer9* src_vb, const vertex_range& range, UINT stride)
 	{
 		auto& ffp = shared::common::ffp_state::get();
@@ -156,7 +155,7 @@ namespace comp
 		// Cache hit
 		if (entry.expanded && entry.source == src_vb && entry.source_decl == src_decl &&
 			entry.first_byte == first_byte && entry.num_verts == num_verts && entry.stride == stride)
-			return entry.expanded;
+			return &entry;
 
 		evict(entry);
 
@@ -169,7 +168,7 @@ namespace comp
 		// Create expanded VB
 		IDirect3DVertexBuffer9* exp_vb = nullptr;
 		if (FAILED(dev->CreateVertexBuffer(num_verts * SKIN_VTX_SIZE, D3DUSAGE_WRITEONLY,
-			0, D3DPOOL_MANAGED, &exp_vb, nullptr)))
+			0, D3DPOOL_DEFAULT, &exp_vb, nullptr)))
 		{
 			src_vb->Unlock();
 			return nullptr;
@@ -184,8 +183,9 @@ namespace comp
 			return nullptr;
 		}
 
+		BYTE max_blend_index = 0;
 		for (UINT v = 0; v < num_verts; v++)
-			expand_skin_vertex(&dst_data[v * SKIN_VTX_SIZE], &src_data[v * stride]);
+			max_blend_index = (std::max)(max_blend_index, expand_skin_vertex(&dst_data[v * SKIN_VTX_SIZE], &src_data[v * stride]));
 
 		exp_vb->Unlock();
 		src_vb->Unlock();
@@ -194,12 +194,12 @@ namespace comp
 		// while the entry names it
 		src_vb->AddRef();
 		if (src_decl) src_decl->AddRef();
-		entry = { src_vb, src_decl, first_byte, num_verts, stride, exp_vb };
+		entry = { src_vb, src_decl, first_byte, num_verts, stride, exp_vb, max_blend_index };
 
-		return exp_vb;
+		return &entry;
 	}
 
-	void skinning::expand_skin_vertex(unsigned char* dst, const unsigned char* src)
+	BYTE skinning::expand_skin_vertex(unsigned char* dst, const unsigned char* src)
 	{
 		auto& ffp = shared::common::ffp_state::get();
 		auto* out = reinterpret_cast<float*>(dst);
@@ -213,16 +213,9 @@ namespace comp
 		auto bw_off = ffp.cur_decl_blend_weight_off();
 		auto bw_type = ffp.cur_decl_blend_weight_type();
 
-		// A FLOAT4's fourth weight is left out: fixed-function blending derives the last weight from the others
-		if (bw_type == D3DDECLTYPE_FLOAT4 || bw_type == D3DDECLTYPE_FLOAT3 ||
-			bw_type == D3DDECLTYPE_FLOAT2 || bw_type == D3DDECLTYPE_FLOAT1)
-		{
-			auto* bw = reinterpret_cast<const float*>(&src[bw_off]);
-			out[3] = (num_weights >= 1) ? bw[0] : 0.0f;
-			out[4] = (num_weights >= 2) ? bw[1] : 0.0f;
-			out[5] = (num_weights >= 3) ? bw[2] : 0.0f;
-		}
-		else if (bw_type == D3DDECLTYPE_UBYTE4N)
+		// FLOAT1-4 or UBYTE4N, the formats ffp_state takes as expandable. A fourth weight is left
+		// out: fixed-function blending derives the last weight from the others.
+		if (bw_type == D3DDECLTYPE_UBYTE4N)
 		{
 			auto* bw = &src[bw_off];
 			out[3] = bw[0] / 255.0f;
@@ -231,11 +224,19 @@ namespace comp
 		}
 		else
 		{
-			out[3] = out[4] = out[5] = 0.0f;
+			auto* bw = reinterpret_cast<const float*>(&src[bw_off]);
+			out[3] = (num_weights >= 1) ? bw[0] : 0.0f;
+			out[4] = (num_weights >= 2) ? bw[1] : 0.0f;
+			out[5] = (num_weights >= 3) ? bw[2] : 0.0f;
 		}
 
-		// Blend indices (UBYTE4 at offset 24)
-		std::memcpy(&dst[24], &src[ffp.cur_decl_blend_indices_off()], 4);
+		// Blend indices (UBYTE4 at offset 24). The blend reads one index per stored weight and one
+		// for the weight it derives; the bytes past those may hold anything.
+		const auto* indices = &src[ffp.cur_decl_blend_indices_off()];
+		std::memcpy(&dst[24], indices, 4);
+		BYTE max_blend_index = 0;
+		for (int i = 0; i <= num_weights; i++)
+			max_blend_index = (std::max)(max_blend_index, indices[i]);
 
 		// Normal (FLOAT3 at offset 28)
 		if (ffp.cur_decl_has_normal())
@@ -272,6 +273,8 @@ namespace comp
 		{
 			out[10] = out[11] = 0.0f;
 		}
+
+		return max_blend_index;
 	}
 
 	void skinning::upload_bones(IDirect3DDevice9* dev)
