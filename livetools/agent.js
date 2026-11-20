@@ -51,6 +51,9 @@ function snapshotRegs(ctx) {
 }
 
 function hexToBytes(hex) {
+    if (!/^(?:[0-9a-fA-F]{2})*$/.test(hex)) {
+        throw new Error('hex must be pairs of hex digits, got "' + hex + '"');
+    }
     var bytes = [];
     for (var i = 0; i < hex.length; i += 2)
         bytes.push(parseInt(hex.substr(i, 2), 16));
@@ -112,6 +115,7 @@ var patches = {};   // address -> the int3 written there (see "breakpoints")
 
 // Writes `bytes` over code or data and leaves each page with the protection it had.
 function patchBytes(address, bytes) {
+    if (bytes.length === 0) return;
     var pageSize = Process.pageSize;
     var first = address.and(ptr(pageSize - 1).not());
     var end = address.add(bytes.length);
@@ -119,8 +123,11 @@ function patchBytes(address, bytes) {
     for (var page = first; page.compare(end) < 0; page = page.add(pageSize)) {
         protections.push({ page: page, protection: Process.getRangeByAddress(page).protection });
     }
-    Memory.patchCode(address, bytes.length, function (code) { code.writeByteArray(bytes); });
-    protections.forEach(function (p) { Memory.protect(p.page, pageSize, p.protection); });
+    try {
+        Memory.patchCode(address, bytes.length, function (code) { code.writeByteArray(bytes); });
+    } finally {
+        protections.forEach(function (p) { Memory.protect(p.page, pageSize, p.protection); });
+    }
 }
 
 function patchKey(address) {
@@ -166,6 +173,7 @@ function rewriteRefusal(start, size, what, interceptor) {
 function originalBytes(start, size) {
     var bytes = new Uint8Array(start.readByteArray(size));
     function putBack(from, saved) {
+        if (!overlaps(from, saved.length, start, size)) return;
         for (var i = 0; i < saved.length; i++) {
             var offset = from.add(i).sub(start).toInt32();
             if (offset >= 0 && offset < size) bytes[offset] = saved[i];
@@ -1049,10 +1057,12 @@ function arrive(details, threadId, patch, pending) {
         // before the check: nothing may run between reading `frozen` and setting it.
         var wake = createEvent(NULL, 0, 0, NULL);
         var freezing = !frozen && !shuttingDown;
-        if (freezing || step !== null) endStep();
         if (freezing) {
+            // The step in progress, on whichever thread, ends here: its thread runs on.
+            cancelStep();
             mode = freeze(details, threadId, patch, wake, step !== null && !stepEnds);
         } else {
+            if (step !== null) endStep();
             closeHandle(wake);
             mode = null;
         }
@@ -1129,7 +1139,10 @@ function onSingleStep(details, threadId) {
     var pc = details.context.pc;
     // Once the agent is unloading, the rest of the instruction runs untrapped:
     // a trap flag still set after the unload raises an exception nobody claims.
-    if (pending.repeated && pc.equals(pending.from) && !shuttingDown) {
+    // So does it once the trap has nothing left to do: its step was cancelled
+    // and no int3 waits to go back.
+    var trapNeeded = pending.stop || pending.lower !== null;
+    if (pending.repeated && pc.equals(pending.from) && !shuttingDown && trapNeeded) {
         setTrapFlag(details.nativeContext);
         return true;
     }

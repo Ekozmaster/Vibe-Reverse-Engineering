@@ -59,6 +59,35 @@ def _wait_until(condition, timeout: float = 5.0) -> None:
         time.sleep(0.05)
 
 
+_ALLOCATE_AT_JS = r"""
+var virtualAlloc = new NativeFunction(
+    Process.getModuleByName('kernel32.dll').getExportByName('VirtualAlloc'),
+    'pointer', ['pointer', 'size_t', 'uint32', 'uint32']);
+rpc.exports = {
+    allocateAt: function (address, size) {
+        return virtualAlloc(ptr(address), size, 0x3000, 0x40).toString();
+    }
+};
+"""
+
+
+def _allocate_alias(target, address: int) -> int:
+    """Commit a page whose address differs from *address* by exactly 4 GiB.
+
+    The two addresses agree in their low 32 bits, so an offset between them
+    truncated to 32 bits is zero. Skips if neither neighbour can be allocated.
+    """
+    script = target.daemon.session.create_script(_ALLOCATE_AT_JS)
+    script.load()
+    page = address & ~0xFFFF
+    for alias_page in (page + (1 << 32), page - (1 << 32)):
+        if alias_page <= 0:
+            continue
+        if int(script.exports_sync.allocate_at(hex_addr(alias_page), 0x10000), 16) == alias_page:
+            return alias_page + (address - page)
+    pytest.skip("no page exactly 4 GiB from the loop could be allocated")
+
+
 class TestBreakpoint:
     def test_on_a_call_instruction_freezes_with_the_arguments_in_place(self, target):
         with target.stays_correct():
@@ -254,6 +283,27 @@ class TestStep:
         assert f"thread {stepping} is running" in reply["stepInterrupted"]
         target.wait_for_iterations(3)
 
+    def test_interrupted_single_step_leaves_the_stepped_thread_running(self, target):
+        stepped = target.start_loop()
+        size = 8 << 20
+        stepped.set_repeat(int(target.helper.allocate(size), 16), size)
+        stepped.start_repeater()
+        before_rep = hex_addr(int(stepped.addr("rep"), 16) - 2)
+        target.run({"cmd": "bp_add", "addr": before_rep})
+        assert target.run({"cmd": "watch", "timeout": 5})["ok"]
+        _step(target, "into")
+        target.run({"cmd": "bp_del", "addr": before_rep})
+        target.run({"cmd": "bp_add", "addr": target.addr("loop")})
+
+        reply = target.run({"cmd": "step", "mode": "into", "timeout": 5})
+
+        assert reply["ok"], reply
+        assert _pc(reply["snapshot"], target.arch) == _at(target, "loop")
+        assert "stepInterrupted" in reply
+        target.run({"cmd": "bp_del", "addr": target.addr("loop")})
+        reps = stepped.reps
+        _wait_until(lambda: stepped.reps >= reps + 2)
+        assert target.run({"cmd": "status"})["state"] == "RUNNING"
 
 _COUNT_REGISTER = {"x86": "ecx", "x64": "rcx"}
 
@@ -390,6 +440,32 @@ class TestHookConflicts:
         assert not reply["ok"] and "breakpoint" in reply["error"]
         assert target.loop.live_bytes("dormant", 2) == target.loop.built_bytes("dormant", 2)
 
+    @pytest.mark.parametrize("label", ["dormant", "page"])
+    def test_empty_mem_write_succeeds_without_changing_protection(self, target, label):
+        address = hex_addr(_at(target, "dormant") & ~0xFFF) if label == "page" else target.addr(label)
+
+        reply = target.run({"cmd": "mem_write", "addr": address, "hex": ""})
+
+        assert reply["ok"], reply
+        assert target.helper.protection(address) == "r-x"
+
+    @pytest.mark.parametrize("hex_bytes", ["9", "909", "zz"])
+    def test_malformed_hex_mem_write_is_refused(self, target, hex_bytes):
+        reply = target.run({"cmd": "mem_write", "addr": target.addr("dormant"), "hex": hex_bytes})
+
+        assert not reply["ok"] and "hex" in reply["error"]
+        assert target.loop.live_bytes("dormant", 2) == target.loop.built_bytes("dormant", 2)
+
+    def test_original_instruction_ignores_a_breakpoint_exactly_4gib_away(self, target):
+        if target.arch != "x64":
+            pytest.skip("needs a 64-bit address space")
+        dormant = _at(target, "dormant")
+        alias = _allocate_alias(target, dormant)
+        target.run({"cmd": "bp_add", "addr": hex_addr(alias)})
+
+        insn = target.daemon.api.original_instruction(target.addr("dormant"))
+
+        assert insn["str"] == "nop"
 
 @pytest.fixture
 def x86_target(target):

@@ -430,3 +430,66 @@ class TestProcessExit:
 
         assert client.wait_for_exit(child.pid, 10)
         child.wait()
+
+    @pytest.mark.parametrize("stat_line, exited", [
+        ("1234 (python3) Z 1 1234 1234 0 -1 4194304 0", True),
+        ("1234 (my ) proc) Z 1 1234 1234 0 -1 4194304 0", True),
+        ("1234 (my ) proc) X 1 1234 1234 0 -1 4194304 0", True),
+        ("1234 (my ) proc) x 1 1234 1234 0 -1 4194304 0", True),
+        ("1234 (my ) proc) S 1 1234 1234 0 -1 4194304 0", False),
+        ("1234 (my ) proc) R 1 1234 1234 0 -1 4194304 0", False),
+    ])
+    def test_posix_wait_for_exit_parses_proc_stat_state(
+            self, monkeypatch, tmp_path, stat_line, exited):
+        stat_dir = tmp_path / "1234"
+        stat_dir.mkdir()
+        (stat_dir / "stat").write_text(stat_line, encoding="utf-8")
+
+        monkeypatch.setattr(client.sys, "platform", "linux")
+        monkeypatch.setattr(client, "_PROC_ROOT", tmp_path)
+        monkeypatch.setattr(client.os, "kill", lambda pid, sig: None)
+
+        assert client.wait_for_exit(1234, 0) is exited
+
+    def test_posix_wait_for_exit_treats_vanished_proc_entry_as_exited(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(client.sys, "platform", "linux")
+        monkeypatch.setattr(client, "_PROC_ROOT", tmp_path)
+        monkeypatch.setattr(client.os, "kill", lambda pid, sig: None)
+
+        assert client.wait_for_exit(9999, 0) is True
+
+    def test_posix_wait_for_exit_treats_a_process_reaped_mid_read_as_exited(self, monkeypatch, tmp_path):
+        (tmp_path / "1234").mkdir()
+        (tmp_path / "1234" / "stat").write_text("1234 (python3) S 1", encoding="utf-8")
+        monkeypatch.setattr(client.sys, "platform", "linux")
+        monkeypatch.setattr(client, "_PROC_ROOT", tmp_path)
+
+        def reaped(self, *args, **kwargs):
+            raise ProcessLookupError(3, "No such process")
+
+        monkeypatch.setattr(client.Path, "read_text", reaped)
+        assert client.wait_for_exit(1234, 0) is True
+
+    def test_posix_wait_for_exit_falls_back_to_kill_without_proc(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(client.sys, "platform", "darwin")
+        monkeypatch.setattr(client, "_PROC_ROOT", tmp_path / "no-proc")
+
+        def missing(pid, sig):
+            raise ProcessLookupError
+
+        monkeypatch.setattr(client.os, "kill", missing)
+        assert client.wait_for_exit(1234, 0) is True
+
+        monkeypatch.setattr(client.os, "kill", lambda pid, sig: None)
+        assert client.wait_for_exit(1234, 0) is False
+
+    def test_posix_wait_for_exit_treats_eperm_as_running_without_proc(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(client.sys, "platform", "darwin")
+        monkeypatch.setattr(client, "_PROC_ROOT", tmp_path / "no-proc")
+
+        def denied(pid, sig):
+            raise PermissionError
+
+        monkeypatch.setattr(client.os, "kill", denied)
+        assert client.wait_for_exit(1234, 0) is False
+

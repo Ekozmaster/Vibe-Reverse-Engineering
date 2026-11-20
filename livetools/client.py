@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import signal
 import socket
 import struct
 import sys
@@ -16,6 +17,9 @@ PORT = 27042
 STATE_FILE = Path(__file__).parent / ".state.json"
 DAEMON_LOG = Path(__file__).parent / ".daemon.log"
 RECV_BUF = 1 << 20
+
+_PROC_ROOT = Path("/proc")
+_EXITED_STATES = frozenset("ZXx")
 
 _SYNCHRONIZE = 0x00100000
 _WAIT_TIMEOUT = 0x102
@@ -59,15 +63,35 @@ def wait_for_exit(pid: int, timeout: float) -> bool:
             kernel32.CloseHandle(handle)
     deadline = time.monotonic() + timeout
     while True:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if _has_exited_posix(pid):
             return True
-        except PermissionError:
-            pass
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.05)
+
+
+def _has_exited_posix(pid: int) -> bool:
+    """Whether *pid* has exited, counting a zombie nobody has reaped yet as exited.
+
+    Signal 0 still reaches a zombie, so where /proc exists the process state is
+    read from it instead. The process is not reaped here: that would take the
+    exit status from the parent's ``subprocess.Popen``.
+    """
+    if _PROC_ROOT.is_dir():
+        try:
+            stat = (_PROC_ROOT / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+        except (FileNotFoundError, ProcessLookupError):  # ProcessLookupError: reaped mid-read (ESRCH)
+            return True
+        # The command name in parentheses may itself contain ") ".
+        state = stat[stat.rfind(")") + 1:].split()[0]
+        return state in _EXITED_STATES
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        pass  # it exists, owned by another user
+    return False
 
 
 def is_daemon_alive() -> bool:
@@ -92,7 +116,6 @@ def _kill_stale_daemon(state: dict) -> None:
     daemon_pid = state.get("pid")
     if daemon_pid:
         try:
-            import os, signal
             os.kill(daemon_pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass
