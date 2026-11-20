@@ -5,6 +5,7 @@ install, so these run on any platform. The hooks themselves are exercised
 against a real process in test_livetools_live.py.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,9 +38,12 @@ class FakeAgent:
         self.fences: list[str] = []
         self.step_traces: list[str] = []
         self.frozen_addr: str | None = None
+        self.frozen_thread = 100
         self.calls: list[str] = []
         self.on_unfreeze = lambda step: None
+        self.on_cancel_step = lambda: None
         self.bp_refusal: str | None = None
+        self.step_trace_result: dict | None = {"addr": ENTRY, "insnCount": 0, "trace": []}
 
     def list_bps(self):
         return []
@@ -69,9 +73,13 @@ class FakeAgent:
 
     def cancel_step(self):
         self.calls.append("cancel_step")
+        self.on_cancel_step()
 
     def get_snapshot(self, stack_count, disasm_count):
-        return {"addr": self.frozen_addr, "regs": {}, "stack": [], "disasm": []}
+        if self.frozen_addr is None:
+            return None
+        return {"addr": self.frozen_addr, "threadId": self.frozen_thread, "hitCount": 0,
+                "regs": {}, "stack": [], "disasm": []}
 
     def disasm_at(self, addr, count):
         mnemonic, _, operands = _CODE[addr].partition(" ")
@@ -103,7 +111,11 @@ class FakeAgent:
         return {"ok": True}
 
     def get_step_trace_result(self):
-        return {"addr": ENTRY, "insnCount": 0, "trace": []}
+        return self.step_trace_result
+
+    def cancel_step_trace(self):
+        self.calls.append("cancel_step_trace")
+        return {"ok": True}
 
 
 @pytest.fixture
@@ -186,6 +198,14 @@ class TestStepTrace:
         assert CALL_SITE in reply["error"] and "call instruction" in reply["error"]
         assert agent.step_traces == []
 
+    def test_that_times_out_is_removed(self, daemon, agent):
+        agent.step_trace_result = None
+
+        reply = daemon.handle({"cmd": "steptrace", "addr": ENTRY, "timeout": 0})
+
+        assert not reply["ok"] and "removed" in reply["error"]
+        assert agent.calls == ["cancel_step_trace"]
+
 
 class TestBreakpoint:
     def test_delete_removes_it_before_releasing_the_thread_frozen_there(self, daemon, agent):
@@ -211,6 +231,22 @@ class TestBreakpoint:
 
         assert not reply["ok"]
         assert reply["error"] == agent.bp_refusal
+
+
+class TestWatch:
+    def test_a_hit_whose_thread_was_released_since_is_not_reported(self, daemon, agent):
+        daemon._on_message({"type": "send", "payload": {"type": "bp_hit", "addr": ENTRY}}, None)
+
+        reply = daemon.handle({"cmd": "watch", "timeout": 0})
+
+        assert not reply["ok"] and reply["timeout"]
+
+    def test_reports_the_frozen_thread(self, daemon, agent):
+        agent.frozen_addr = ENTRY
+
+        reply = daemon.handle({"cmd": "watch", "timeout": 0})
+
+        assert reply["ok"] and reply["snapshot"]["addr"] == ENTRY
 
 
 class TestResume:
@@ -241,6 +277,44 @@ class TestStep:
 
         assert not reply["ok"] and "given up" in reply["error"]
         assert agent.calls == ["unfreeze", "cancel_step"]
+
+    def test_that_freezes_as_it_is_given_up_reports_where(self, daemon, agent):
+        agent.frozen_addr = ENTRY
+
+        def freeze_late():
+            agent.frozen_addr = CALL_SITE
+            daemon._on_message({"type": "send", "payload": {"type": "bp_hit", "addr": CALL_SITE}}, None)
+
+        agent.on_cancel_step = freeze_late
+
+        reply = daemon.handle({"cmd": "step", "mode": "over", "timeout": 0})
+
+        assert reply["ok"] and reply["snapshot"]["addr"] == CALL_SITE
+
+    def test_ended_by_another_threads_breakpoint_says_so(self, daemon, agent):
+        agent.frozen_addr = ENTRY
+
+        def other_thread_hits(step):
+            agent.frozen_addr, agent.frozen_thread = CALL_SITE, 200
+            daemon._on_message({"type": "send", "payload": {"type": "bp_hit", "addr": CALL_SITE}}, None)
+
+        agent.on_unfreeze = other_thread_hits
+
+        reply = daemon.handle({"cmd": "step", "mode": "into"})
+
+        assert reply["ok"] and reply["snapshot"]["threadId"] == 200
+        assert "thread 200" in reply["stepInterrupted"] and "thread 100" in reply["stepInterrupted"]
+
+    def test_that_cannot_continue_reports_why_at_once(self, daemon, agent):
+        agent.frozen_addr = ENTRY
+        cause = "the byte after it is an int3 the program put there"
+        agent.on_unfreeze = lambda step: daemon._on_message(
+            {"type": "send", "payload": {"type": "step_failed", "error": cause}}, None)
+
+        reply = daemon.handle({"cmd": "step", "mode": "over", "timeout": 30})
+
+        assert not reply["ok"] and reply["error"] == cause
+        assert agent.calls == ["unfreeze"]
 
     def test_unknown_mode_is_an_error(self, daemon, agent):
         agent.frozen_addr = ENTRY
@@ -321,3 +395,25 @@ class TestFormatTrace:
         assert "caller=0040100B" in text
         assert "ENTER  ecx=00000001" in text
         assert "LEAVE  eax=00000006 retval=00000006" in text
+
+
+class TestProcessExit:
+    """client.wait_for_exit and is_target_running, against real child processes."""
+
+    def test_an_exited_process_whose_handle_is_still_held_is_not_running(self):
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()  # the Popen object keeps its process handle open
+
+        assert not client.is_target_running(child.pid)
+        assert client.wait_for_exit(child.pid, 0)
+
+    def test_a_running_process_is_running_until_it_exits(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            assert client.is_target_running(child.pid)
+            assert not client.wait_for_exit(child.pid, 0.1)
+        finally:
+            child.kill()
+
+        assert client.wait_for_exit(child.pid, 10)
+        child.wait()

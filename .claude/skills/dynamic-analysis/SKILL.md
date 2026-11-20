@@ -21,6 +21,8 @@ python -m livetools detach                            # release target, stop dae
 python -m livetools status                            # check state
 ```
 
+`detach` returns once the daemon process has exited, so an `attach` right after it starts cleanly. One daemon runs at a time, on port 27042. The daemon's errors, including those the agent reports from inside the target, go to `livetools/.daemon.log`, which the next `attach` overwrites.
+
 ### Breakpoints (blocking)
 ```
 python -m livetools bp add <addr>             # set blocking code breakpoint
@@ -51,15 +53,17 @@ python -m livetools step [over|into|out]      # run the frozen thread one step, 
 python -m livetools resume                    # unfreeze target
 ```
 
-`step over` (the default) runs one instruction and lets a `call` run until it returns. `step into` runs one instruction and enters a call. `step out` runs until the current function has returned to its caller. A step that has not ended after 10 seconds (a call that blocks, a function that keeps looping) is given up with an error and the thread runs on.
+`step over` (the default) runs one instruction and lets a `call` run until it returns. `step into` runs one instruction and enters a call. `step out` runs until the current function has returned to its caller. A repeated string instruction (`rep movsb`, `rep stosd`, ...) always runs to its end, in every mode. A step that has not ended after 10 seconds (a call that blocks, a function that keeps looping) is given up with an error and the thread runs on. A step also ends early, with an error naming the cause and the thread running on, when the stepped instruction raises an exception of its own or a call is followed by an `int3` the program put there. If another thread reaches a breakpoint before the step ends, the step is ended, that thread is the one frozen, and the reply says so with a `[note]` line before the snapshot.
 
 **What a breakpoint is.** One `int3` byte written over the first byte of the instruction. The thread that reaches it freezes before that instruction runs, with its registers, stack and code exactly as the program left them, and a breakpoint may sit on any instruction.
 
-- One thread is frozen at a time. Every other thread keeps running; when one reaches a breakpoint its hit is counted and it runs on.
+- One thread is frozen at a time. Every other thread keeps running; when one reaches a breakpoint its hit is counted and it runs on. The exception is the breakpoint the frozen thread sits on: its original byte is back while that thread is frozen, so other threads run through that address unseen and uncounted.
+- A breakpoint on a repeated string instruction counts one hit per execution of the whole instruction. Releasing a thread from it raises one exception per iteration, so a breakpoint on a `rep movs` that copies megabytes stalls that thread noticeably.
 - `bp del` on the breakpoint a thread is frozen at also resumes that thread. After a `step` the thread is frozen somewhere else, and `bp del` leaves it frozen.
-- `detach` removes every breakpoint and releases the frozen thread.
+- `detach` removes every breakpoint and the vishook, and releases the frozen thread.
 - `disasm` and `mem read` show the `int3` (`CC`) of a breakpoint that is set, except at the address a thread is frozen at, where the original byte is back.
-- A breakpoint and a hook cannot share bytes. `trace`, `collect` and its fence refuse an address whose first bytes hold a breakpoint, `bp add` refuses an address inside the bytes of a hook that is active, and `steptrace` refuses to start while any breakpoint is set. `bp add` also refuses an address that already holds an `int3`, such as the padding between functions.
+- Breakpoints, hooks, the vishook and `mem write` never share bytes. `trace`, `collect` and its fence refuse an address whose first bytes hold a breakpoint or the vishook's jump; `bp add` refuses an address inside the bytes of an active hook or the vishook's jump; `vishook on` refuses a site whose 5 bytes hold a breakpoint or a hook; `mem write` refuses a range that holds any of them (remove it, write, then set it again); and `steptrace` refuses to start while any breakpoint is set. `bp add` also refuses an address that already holds an `int3`, such as the padding between functions.
+- A `steptrace` whose function is not called, or does not return, within its timeout is removed, and `bp add` works again.
 
 ### Patch + Scan (anytime)
 ```
@@ -301,7 +305,7 @@ Key names: `RETURN`, `ESCAPE`, `SPACE`, arrows, `TAB`, `F1`-`F12`, `A`-`Z`, `0`-
 
 ### vishook -- Selective visibility override via code cave
 
-Patches a jmp trampoline to route through a code cave that forces a "visible" result (st0 = 102400.0, optional byte out = 1) for callers at/above a threshold address, while callers below it run the original function. Designed for `__thiscall` visibility checks returning float on st(0) with `ret 0x10`. The `--threshold` value is parsed as hex: the default `500000` means 0x500000.
+Patches a jmp trampoline to route through a code cave that forces a "visible" result (st0 = 102400.0, optional byte out = 1) for callers at/above a threshold address, while callers below it run the original function. Designed for `__thiscall` visibility checks returning float on st(0) with `ret 0x10`. The `--threshold` value is parsed as hex: the default `500000` means 0x500000. 32-bit processes only. `detach` restores the jump site as `vishook off` does.
 
 ```bash
 python -m livetools vishook on <jmp_site> <orig_target> [--threshold 500000]

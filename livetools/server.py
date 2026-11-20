@@ -47,7 +47,10 @@ _STEP_GIVEN_UP = (
     "or the function being stepped out of, has not returned. The thread is running. To "
     "stop it later, set a breakpoint where it will arrive and wait with watch."
 )
-
+_STEP_INTERRUPTED = (
+    "thread {other} reached a breakpoint before thread {stepped} finished its step. The step "
+    "was ended: thread {other} is the one frozen now, and thread {stepped} is running."
+)
 
 class Daemon:
     def __init__(self, target: str, *, spawn: bool = False):
@@ -62,6 +65,7 @@ class Daemon:
         self._cleaned_up = False
 
         self._hit: dict | None = None
+        self._step_failure: str | None = None
         self._hit_event = threading.Event()
         self._lock = threading.Lock()
         self._running = True
@@ -138,6 +142,11 @@ class Daemon:
             if ptype == "bp_hit":
                 with self._lock:
                     self._hit = payload
+                    self._hit_event.set()
+
+            elif ptype == "step_failed":
+                with self._lock:
+                    self._step_failure = payload.get("error", "step failed")
                     self._hit_event.set()
 
             elif ptype == "trace_batch":
@@ -228,42 +237,34 @@ class Daemon:
         return {**self._base_resp(), "ok": True, "breakpoints": bps}
 
     def _cmd_watch(self, cmd: dict) -> dict:
+        """Wait until a thread is frozen and return its snapshot.
+
+        A bp_hit message whose thread has been released since describes no
+        stop any more; it is dropped and the wait goes on.
+        """
         timeout = cmd.get("timeout", 60)
         deadline = time.time() + timeout
-        with self._lock:
-            if self._hit is not None:
-                return self._consume_hit()
-        self._hit_event.clear()
-        while time.time() < deadline:
-            remaining = max(0.1, deadline - time.time())
-            self._hit_event.wait(timeout=min(remaining, 0.5))
+        while True:
             with self._lock:
-                if self._hit is not None:
-                    return self._consume_hit()
-            try:
-                if self.api.is_frozen():
-                    time.sleep(0.15)
-                    with self._lock:
-                        if self._hit is not None:
-                            return self._consume_hit()
-                    return self._build_snapshot_direct()
-            except Exception:
-                pass
-        return {**self._base_resp(), "ok": False, "timeout": True}
+                hit_reported = self._hit is not None
+            if hit_reported or self.api.is_frozen():
+                reply = self._consume_hit()
+                if reply["ok"]:
+                    return reply
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return {**self._base_resp(), "ok": False, "timeout": True}
+            self._hit_event.wait(timeout=min(remaining, 0.5))
 
     def _consume_hit(self) -> dict:
-        hit = self._hit
-        self._hit = None
-        self._hit_event.clear()
-        snap = self.api.get_snapshot(8, 8)
-        return {**self._base_resp(), "ok": True, "snapshot": snap,
-                "hitCount": hit.get("hitCount", 0) if hit else 0}
-
-    def _build_snapshot_direct(self) -> dict:
+        """Drop the reported hit and return the snapshot of the thread frozen now, if any."""
+        with self._lock:
+            self._hit = None
+            self._hit_event.clear()
         snap = self.api.get_snapshot(8, 8)
         if snap is None:
-            return {**self._base_resp(), "ok": False, "error": "frozen but snapshot unavailable"}
-        return {**self._base_resp(), "ok": True, "snapshot": snap, "hitCount": 0}
+            return {**self._base_resp(), "ok": False, "error": "not frozen"}
+        return {**self._base_resp(), "ok": True, "snapshot": snap, "hitCount": snap["hitCount"]}
 
     def _cmd_regs(self, cmd: dict) -> dict:
         regs = self.api.get_registers()
@@ -328,21 +329,31 @@ class Daemon:
         mode = cmd.get("mode", "over")
         if mode not in _STEP_MODES:
             return {**self._base_resp(), "ok": False, "error": f"unknown step mode: {mode}"}
+        before = self.api.get_snapshot(1, 1)
         with self._lock:
             self._hit = None
+            self._step_failure = None
             self._hit_event.clear()
-        if not self.api.unfreeze(mode):
+        if before is None or not self.api.unfreeze(mode):
             return {**self._base_resp(), "ok": False, "error": "not frozen"}
 
         timeout = cmd.get("timeout", 10)
         if not self._hit_event.wait(timeout=timeout):
             self.api.cancel_step()
         with self._lock:
-            stopped = self._hit is not None
-        if not stopped:
+            failure = self._step_failure
+        if failure is not None:
+            return {**self._base_resp(), "ok": False, "error": failure}
+        # A thread may have frozen just as the step was given up; it is reported.
+        reply = self._consume_hit()
+        if not reply["ok"]:
             return {**self._base_resp(), "ok": False,
                     "error": _STEP_GIVEN_UP.format(timeout=timeout)}
-        return self._consume_hit()
+        stepped = before["threadId"]
+        stopped_thread = reply["snapshot"]["threadId"]
+        if stopped_thread != stepped:
+            reply["stepInterrupted"] = _STEP_INTERRUPTED.format(stepped=stepped, other=stopped_thread)
+        return reply
 
     def _cmd_scan(self, cmd: dict) -> dict:
         pattern = cmd["pattern"]
@@ -567,11 +578,14 @@ class Daemon:
                     "error": result.get("error", "install_step_trace failed")}
 
         timeout = cmd.get("timeout", 30)
-        self._steptrace_event.wait(timeout=timeout)
+        if not self._steptrace_event.wait(timeout=timeout):
+            self.api.cancel_step_trace()
 
         trace_data = self.api.get_step_trace_result()
         if trace_data is None:
-            return {**self._base_resp(), "ok": False, "error": "steptrace timed out or failed"}
+            return {**self._base_resp(), "ok": False,
+                    "error": f"steptrace: the function at {addr} was not called, or did not "
+                             f"return, within {timeout} s. The steptrace was removed."}
 
         output = cmd.get("output")
         if output:
@@ -650,7 +664,12 @@ class Daemon:
 
     def serve(self) -> None:
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # One daemon per port. On Windows SO_REUSEADDR would let a second
+        # daemon bind beside a live one and receive half of its commands.
+        if sys.platform == "win32":
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind((HOST, PORT))
         srv.listen(4)
         srv.settimeout(1.0)

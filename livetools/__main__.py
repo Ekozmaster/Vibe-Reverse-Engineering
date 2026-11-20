@@ -97,13 +97,17 @@ def cmd_attach(args: argparse.Namespace) -> None:
     _spawn_daemon(args.target, spawn=spawn)
 
 
+_DAEMON_EXIT_SECONDS = 10
+
+
 def _force_cleanup() -> None:
     state = client.read_state()
     if state:
         client._kill_stale_daemon(state)
+        if state.get("pid"):
+            client.wait_for_exit(state["pid"], _DAEMON_EXIT_SECONDS)
     else:
         client.STATE_FILE.unlink(missing_ok=True)
-    time.sleep(0.5)
 
 
 def _spawn_daemon(target: str, *, spawn: bool = False) -> None:
@@ -128,7 +132,6 @@ def _spawn_daemon(target: str, *, spawn: bool = False) -> None:
             resp = client.send_command({"cmd": "status"})
             print(client.format_status_line(resp))
             print(f"Attached to {target}.")
-            client.DAEMON_LOG.unlink(missing_ok=True)
             return
         time.sleep(0.3)
 
@@ -140,7 +143,6 @@ def _spawn_daemon(target: str, *, spawn: bool = False) -> None:
         pass
     if log_text:
         print(f"[error] Daemon log:\n{log_text}", file=sys.stderr)
-    client.DAEMON_LOG.unlink(missing_ok=True)
     sys.exit(1)
 
 
@@ -149,13 +151,19 @@ def cmd_detach(_args: argparse.Namespace) -> None:
         client.STATE_FILE.unlink(missing_ok=True)
         print("Detached (daemon was already gone).")
         return
+    daemon_pid = client.read_state()["pid"]
     try:
         resp = client.send_command({"cmd": "detach"})
         print(client.format_status_line(resp))
-    except Exception:
-        pass
+    except (ConnectionError, OSError):
+        pass  # the daemon may close the connection as it shuts down
+    # The daemon's stderr is DAEMON_LOG, so the next attach can only reopen
+    # that file once this daemon has exited.
+    if not client.wait_for_exit(daemon_pid, _DAEMON_EXIT_SECONDS):
+        print(f"[error] The daemon (pid {daemon_pid}) has not exited after "
+              f"{_DAEMON_EXIT_SECONDS} s.", file=sys.stderr)
+        sys.exit(1)
     print("Detached.")
-    time.sleep(0.5)
     client.STATE_FILE.unlink(missing_ok=True)
 
 
@@ -344,8 +352,11 @@ def cmd_step(args: argparse.Namespace) -> None:
         print(f"[error] {resp.get('error', 'unknown')}")
         return
     snap = resp.get("snapshot")
+    interrupted = resp.get("stepInterrupted")
+    if interrupted:
+        print(f"[note] {interrupted}")
     if snap:
-        print(client.format_snapshot(snap, header="STEP COMPLETE"))
+        print(client.format_snapshot(snap, header="BREAKPOINT HIT" if interrupted else "STEP COMPLETE"))
 
 
 def cmd_resume(_args: argparse.Namespace) -> None:
@@ -769,9 +780,12 @@ def build_parser() -> argparse.ArgumentParser:
             "  over   one instruction; a call runs until it returns (default)\n"
             "  into   one instruction; a call is entered\n"
             "  out    until the current function has returned to its caller\n\n"
+            "A repeated string instruction (rep movsb, ...) always runs to its end.\n"
             "A step that has not ended after 10 seconds (a call that blocks, a\n"
             "function that keeps looping) is given up with an error and the\n"
-            "thread runs on. To stop it later, set a breakpoint and use 'watch'."
+            "thread runs on. To stop it later, set a breakpoint and use 'watch'.\n"
+            "If another thread reaches a breakpoint first, the step ends, that\n"
+            "thread is the one frozen, and the reply says so."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sp.add_argument("mode", nargs="?", default="over",

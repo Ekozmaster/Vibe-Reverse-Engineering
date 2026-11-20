@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("frida")
 
-from live_target import ARGS, RESULT
+from live_target import ARGS, REP_COUNT, RESULT, hex_addr
 
 _INT3 = 0xCC
 _LOOP_BODY = 0x30  # bytes from the loop label that cover every instruction a test breaks on
@@ -42,6 +42,14 @@ def _step(target, mode: str) -> dict:
     reply = target.run({"cmd": "step", "mode": mode})
     assert reply["ok"], reply
     return reply["snapshot"]
+
+
+def _hit_counts(target) -> dict[int, int]:
+    return {int(b["addr"], 16): b["hitCount"] for b in target.run({"cmd": "bp_list"})["breakpoints"]}
+
+
+def _offset(target, label: str, delta: int) -> str:
+    return hex_addr(_at(target, label) + delta)
 
 
 def _wait_until(condition, timeout: float = 5.0) -> None:
@@ -118,8 +126,20 @@ class TestBreakpoint:
         status = target.run({"cmd": "status"})
         assert status["state"] == "FROZEN"
         assert int(status["frozenAddr"], 16) == _at(target, "loop")
-        hits = {int(b["addr"], 16): b["hitCount"] for b in target.run({"cmd": "bp_list"})["breakpoints"]}
-        assert hits[int(other.addr("loop"), 16)] >= 5
+        assert _hit_counts(target)[int(other.addr("loop"), 16)] >= 5
+
+    def test_other_threads_pass_the_breakpoint_a_thread_is_frozen_at_uncounted(self, target):
+        shared = target.start_loop()
+        shared.start_thread()
+        target.run({"cmd": "bp_add", "addr": shared.addr("loop")})
+        snapshot = target.run({"cmd": "watch", "timeout": 5})["snapshot"]
+        hits_at_freeze = _hit_counts(target)[int(shared.addr("loop"), 16)]
+
+        with shared.stays_correct():
+            shared.wait_for_iterations(5)
+
+        assert int(snapshot["addr"], 16) == int(shared.addr("loop"), 16)
+        assert _hit_counts(target)[int(shared.addr("loop"), 16)] == hits_at_freeze
 
 
 class TestStep:
@@ -196,6 +216,62 @@ class TestStep:
 
         assert not reply["ok"] and reply["error"] == "not frozen"
 
+    def test_ended_by_another_threads_breakpoint_says_so(self, target):
+        other = target.start_loop()
+        stepping = _freeze_at(target, "loop")["threadId"]
+        _step(target, "into")
+        target.run({"cmd": "bp_del", "addr": target.addr("loop")})
+        target.run({"cmd": "bp_add", "addr": other.addr("loop")})
+
+        reply = target.run({"cmd": "step", "mode": "out", "timeout": 5})
+
+        assert reply["ok"], reply
+        assert reply["snapshot"]["threadId"] != stepping
+        assert int(reply["snapshot"]["addr"], 16) == int(other.addr("loop"), 16)
+        assert f"thread {stepping} is running" in reply["stepInterrupted"]
+        target.wait_for_iterations(3)
+
+
+_COUNT_REGISTER = {"x86": "ecx", "x64": "rcx"}
+
+
+class TestRepeatedInstruction:
+    """A rep string instruction runs every iteration in place, with the pc left on it."""
+
+    @pytest.fixture(autouse=True)
+    def _repeater(self, target):
+        target.loop.start_repeater()
+
+    def test_one_resume_from_a_breakpoint_on_it_is_one_hit(self, target):
+        first = _freeze_at(target, "rep")
+        reps = target.loop.reps
+
+        target.run({"cmd": "resume"})
+        second = target.run({"cmd": "watch", "timeout": 5})["snapshot"]
+
+        assert second["hitCount"] == first["hitCount"] + 1
+        assert target.loop.reps == reps + 1
+
+    def test_step_over_from_a_breakpoint_on_it_runs_it_to_the_end(self, target):
+        frozen = _freeze_at(target, "rep")
+
+        snapshot = _step(target, "over")
+
+        assert int(frozen["regs"][_COUNT_REGISTER[target.arch]], 16) == REP_COUNT
+        assert _pc(snapshot, target.arch) == _at(target, "after_rep")
+        assert int(snapshot["regs"][_COUNT_REGISTER[target.arch]], 16) == 0
+        assert _hit_counts(target)[_at(target, "rep")] == frozen["hitCount"]
+
+    def test_step_into_runs_it_to_the_end(self, target):
+        target.run({"cmd": "bp_add", "addr": _offset(target, "rep", -2)})
+        target.run({"cmd": "watch", "timeout": 5})
+        assert _pc(_step(target, "into"), target.arch) == _at(target, "rep")
+
+        snapshot = _step(target, "into")
+
+        assert _pc(snapshot, target.arch) == _at(target, "after_rep")
+        assert int(snapshot["regs"][_COUNT_REGISTER[target.arch]], 16) == 0
+
 
 class TestForeignExceptions:
     def test_the_programs_own_int3_and_single_step_reach_its_handler(self, target):
@@ -257,6 +333,82 @@ class TestHookConflicts:
         assert not reply["ok"]
         assert "breakpoint" in reply["error"]
 
+    def test_steptrace_that_times_out_leaves_breakpoints_allowed(self, target):
+        reply = target.run({"cmd": "steptrace", "addr": target.addr("dormant"), "timeout": 1})
+        assert not reply["ok"] and "removed" in reply["error"]
+
+        assert target.run({"cmd": "bp_add", "addr": target.addr("loop")})["ok"]
+        assert target.loop.live_bytes("dormant", 16) == target.loop.built_bytes("dormant", 16)
+
+    def test_mem_write_over_a_breakpoint_is_refused(self, target):
+        target.run({"cmd": "bp_add", "addr": _offset(target, "dormant", 2)})
+
+        reply = target.run({"cmd": "mem_write", "addr": target.addr("dormant"), "hex": "C3C3C3C3"})
+
+        assert not reply["ok"] and "breakpoint" in reply["error"]
+        assert target.loop.live_bytes("dormant", 2) == target.loop.built_bytes("dormant", 2)
+
+
+@pytest.fixture
+def x86_target(target):
+    """The shared target, for the 32-bit-only vishook."""
+    if target.arch != "x86":
+        pytest.skip("vishook builds 32-bit code")
+    return target
+
+
+def _vishook_on(target, site: str) -> dict:
+    return target.run({"cmd": "vishook_on", "threshold": "500000", "jmpSite": site,
+                       "origTarget": target.addr("dormant")})
+
+
+class TestVishook:
+    def test_is_refused_in_a_64_bit_process(self, target):
+        if target.arch != "x64":
+            pytest.skip("the refusal is for 64-bit processes")
+
+        reply = _vishook_on(target, target.addr("dormant"))
+
+        assert not reply["ok"] and "64-bit" in reply["msg"]
+
+    def test_over_a_breakpoint_is_refused(self, x86_target):
+        x86_target.run({"cmd": "bp_add", "addr": _offset(x86_target, "dormant", 4)})
+
+        reply = _vishook_on(x86_target, x86_target.addr("dormant"))
+
+        assert not reply["ok"] and "breakpoint" in reply["msg"]
+        assert x86_target.loop.live_bytes("dormant", 4) == x86_target.loop.built_bytes("dormant", 4)
+
+    def test_breakpoint_inside_its_jump_is_refused(self, x86_target):
+        assert _vishook_on(x86_target, x86_target.addr("dormant"))["ok"]
+
+        reply = x86_target.run({"cmd": "bp_add", "addr": _offset(x86_target, "dormant", 4)})
+
+        assert not reply["ok"] and "(vishook off)" in reply["error"]
+
+    def test_trace_over_its_jump_is_refused(self, x86_target):
+        assert _vishook_on(x86_target, _offset(x86_target, "dormant", 2))["ok"]
+
+        reply = x86_target.run({"cmd": "trace", "addr": x86_target.addr("dormant"), "count": 1,
+                                "timeout": 1, "probe": True})
+
+        assert not reply["ok"] and "vishook" in reply["error"]
+
+    def test_mem_write_over_its_jump_is_refused(self, x86_target):
+        assert _vishook_on(x86_target, x86_target.addr("dormant"))["ok"]
+
+        reply = x86_target.run({"cmd": "mem_write", "addr": _offset(x86_target, "dormant", 4),
+                                "hex": "90"})
+
+        assert not reply["ok"] and "vishook" in reply["error"]
+
+    def test_off_restores_the_original_bytes(self, x86_target):
+        _vishook_on(x86_target, x86_target.addr("dormant"))
+
+        x86_target.run({"cmd": "vishook_off"})
+
+        assert x86_target.loop.live_bytes("dormant", 16) == x86_target.loop.built_bytes("dormant", 16)
+
 
 class TestUnload:
     def test_detach_restores_the_code_and_releases_a_frozen_thread(self, fresh_target):
@@ -270,6 +422,18 @@ class TestUnload:
         loop.wait_for_iterations(5)
         assert loop.live_bytes("loop", _LOOP_BODY) == loop.built_bytes("loop", _LOOP_BODY)
         assert loop.bad == 0
+
+    def test_detach_removes_the_vishook(self, fresh_target):
+        if fresh_target.arch != "x86":
+            pytest.skip("vishook builds 32-bit code")
+        loop = fresh_target.loop
+        assert _vishook_on(fresh_target, loop.addr("dormant"))["ok"]
+        assert loop.live_bytes("dormant", 1) == b"\xE9"
+
+        fresh_target.detach_daemon()
+        fresh_target.attach_daemon()
+
+        assert loop.live_bytes("dormant", 16) == loop.built_bytes("dormant", 16)
 
     def test_a_daemon_that_dies_leaves_no_breakpoint_behind(self, fresh_target, tmp_path):
         loop = fresh_target.loop

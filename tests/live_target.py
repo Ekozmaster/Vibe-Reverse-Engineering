@@ -14,6 +14,13 @@ instruction address and every argument value:
 A hook that disturbs an argument, a return address or the stack shows up in
 the ``bad`` counter, or stops the ``good`` counter from advancing.
 
+The same code page holds two more routines a test may use:
+
+    repeater:    fill a buffer with ``rep stosb``, count it in ``reps``,
+                 Sleep(10) and repeat; it runs once a test starts it
+    dormant:     nops and a return that nothing calls, a site for code
+                 patches that must never execute
+
 The code page is read-execute like a real module's, and it belongs to the
 process, not to a Frida script, so it outlives a detach.
 """
@@ -96,12 +103,20 @@ rpc.exports = {
 };
 """
 
-_DATA_LABELS = {"good": 0x1000, "bad": 0x1004, "stop": 0x1008, "sleep_ptr": 0x1010}
+REP_COUNT = 64
+
+_DATA_LABELS = {"good": 0x1000, "bad": 0x1004, "stop": 0x1008, "reps": 0x100C,
+                "sleep_ptr": 0x1010, "buffer": 0x1100}
+_REPEATER = 0x80
+_DORMANT = 0xC0
+_DORMANT_CODE = b"\x90" * 16 + b"\xC3"
 
 
 def _x86_code(base: int) -> tuple[bytes, dict[str, int]]:
     labels = {"loop": 0x00, "second": 0x02, "call_site": 0x06, "after_call": 0x0B,
-              "spare": 0x1E, "callee": 0x40, "callee_second": 0x44, **_DATA_LABELS}
+              "spare": 0x1E, "callee": 0x40, "callee_second": 0x44,
+              "repeater": _REPEATER, "rep": 0x8C, "after_rep": 0x8E, "dormant": _DORMANT,
+              **_DATA_LABELS}
     at = {name: base + offset for name, offset in labels.items()}
     code = bytes.fromhex("6A03 6A02 6A01")                              # 00 push 3; push 2; push 1
     code += b"\xE8" + struct.pack("<i", labels["callee"] - 0x0B)        # 06 call callee
@@ -118,12 +133,23 @@ def _x86_code(base: int) -> tuple[bytes, dict[str, int]]:
     code += bytes.fromhex("31C0 C20400")                                # 30 xor eax, eax; ret 4
     code = code.ljust(labels["callee"], b"\xCC")
     code += bytes.fromhex("8B442404 03442408 0344240C C20C00")          # 40 a + b + c; ret 12
+    code = code.ljust(_REPEATER, b"\xCC")
+    code += b"\xBF" + struct.pack("<I", at["buffer"])                   # 80 mov edi, buffer
+    code += b"\xB9" + struct.pack("<I", REP_COUNT)                      # 85 mov ecx, REP_COUNT
+    code += bytes.fromhex("31C0 F3AA")                                  # 8A xor eax, eax; 8C rep stosb
+    code += b"\xFF\x05" + struct.pack("<I", at["reps"])                 # 8E inc dword [reps]
+    code += bytes.fromhex("6A0A")                                       # 94 push 10
+    code += b"\xFF\x15" + struct.pack("<I", at["sleep_ptr"])            # 96 call [sleep_ptr]
+    code += bytes.fromhex("EBE2")                                       # 9C jmp repeater
+    code = code.ljust(_DORMANT, b"\xCC") + _DORMANT_CODE                # C0 dormant
     return code, at
 
 
 def _x64_code(base: int) -> tuple[bytes, dict[str, int]]:
     labels = {"loop": 0x04, "second": 0x09, "call_site": 0x14, "after_call": 0x19,
-              "spare": 0x2C, "callee": 0x60, "callee_second": 0x63, **_DATA_LABELS}
+              "spare": 0x2C, "callee": 0x60, "callee_second": 0x63,
+              "repeater": _REPEATER, "rep": 0x92, "after_rep": 0x94, "dormant": _DORMANT,
+              **_DATA_LABELS}
 
     def rip_relative(label: str, next_insn: int) -> bytes:
         return struct.pack("<i", labels[label] - next_insn)
@@ -145,6 +171,16 @@ def _x64_code(base: int) -> tuple[bytes, dict[str, int]]:
     code = code.ljust(labels["callee"], b"\xCC")
     code += bytes.fromhex("8D0411 4401C0")                              # 60 lea eax, [rcx+rdx]; add eax, r8d
     code += bytes.fromhex("0F1F440000 0F1F440000 C3")                   # 66 two 5-byte nops; ret
+    code = code.ljust(_REPEATER, b"\xCC")
+    code += bytes.fromhex("4883EC28")                                   # 80 sub rsp, 0x28
+    code += b"\x48\x8D\x3D" + rip_relative("buffer", 0x8B)              # 84 lea rdi, [buffer]
+    code += b"\xB9" + struct.pack("<I", REP_COUNT)                      # 8B mov ecx, REP_COUNT
+    code += bytes.fromhex("31C0 F3AA")                                  # 90 xor eax, eax; 92 rep stosb
+    code += b"\xFF\x05" + rip_relative("reps", 0x9A)                    # 94 inc dword [reps]
+    code += bytes.fromhex("B90A000000")                                 # 9A mov ecx, 10
+    code += b"\xFF\x15" + rip_relative("sleep_ptr", 0xA5)               # 9F call [sleep_ptr]
+    code += bytes.fromhex("EBDD")                                       # A5 jmp 0x84
+    code = code.ljust(_DORMANT, b"\xCC") + _DORMANT_CODE                # C0 dormant
     return code, {name: base + offset for name, offset in labels.items()}
 
 
@@ -164,6 +200,23 @@ class Loop:
         self._base = base
         self._labels = labels
         self._code = code
+        self._repeater_started = False
+
+    def start_thread(self) -> None:
+        """Run the loop on one more thread, sharing this copy's code and counters."""
+        self._target.helper.start_thread(self.addr("loop"))
+
+    def start_repeater(self) -> None:
+        """Run the repeater on its own thread, once per copy of the code."""
+        if not self._repeater_started:
+            self._target.helper.start_thread(self.addr("repeater"))
+            self._repeater_started = True
+
+    @property
+    def reps(self) -> int:
+        """How many times the repeater has completed its ``rep stosb``."""
+        reply = self._target.run({"cmd": "mem_read", "addr": self.addr("reps"), "size": 4})
+        return struct.unpack("<I", bytes.fromhex(reply["hex"]))[0]
 
     def addr(self, label: str) -> str:
         """Address of *label* in the form the daemon's commands take."""
@@ -274,7 +327,8 @@ class LiveTarget:
         return self.daemon.handle(command)
 
     def reset(self) -> None:
-        """Remove every breakpoint and release a frozen thread."""
+        """Remove the vishook and every breakpoint, and release a frozen thread."""
+        self.run({"cmd": "vishook_off"})
         for breakpoint in self.run({"cmd": "bp_list"})["breakpoints"]:
             self.run({"cmd": "bp_del", "addr": breakpoint["addr"]})
         if self.run({"cmd": "status"})["state"] == "FROZEN":

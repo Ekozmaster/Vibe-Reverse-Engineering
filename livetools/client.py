@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
+import os
 import socket
 import struct
+import sys
+import time
 from pathlib import Path
 
 HOST = "127.0.0.1"
@@ -12,6 +16,9 @@ PORT = 27042
 STATE_FILE = Path(__file__).parent / ".state.json"
 DAEMON_LOG = Path(__file__).parent / ".daemon.log"
 RECV_BUF = 1 << 20
+
+_SYNCHRONIZE = 0x00100000
+_WAIT_TIMEOUT = 0x102
 
 
 # ── state file helpers ─────────────────────────────────────────────────────
@@ -25,26 +32,42 @@ def read_state() -> dict | None:
         return None
 
 
-def is_target_running(pid: int) -> bool:
-    """Check if a process with the given PID is still alive."""
-    if pid is None:
-        return False
-    try:
-        import ctypes
+def is_target_running(pid: int | None) -> bool:
+    """Whether a process with the given PID is still running."""
+    return pid is not None and not wait_for_exit(pid, 0)
+
+
+def wait_for_exit(pid: int, timeout: float) -> bool:
+    """Wait up to *timeout* seconds for process *pid* to exit.
+
+    On Windows a process that has exited stays openable for as long as anyone
+    holds a handle to it, so its exit is read from the handle's signalled
+    state, not from whether it can be opened.
+
+    Returns:
+        True if the process has exited (or never existed), False if it is
+        still running when the timeout ends.
+    """
+    if sys.platform == "win32":
         kernel32 = ctypes.windll.kernel32
-        SYNCHRONIZE = 0x00100000
-        h = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-        if h:
-            kernel32.CloseHandle(h)
+        handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
+        if not handle:
             return True
-        return False
-    except Exception:
-        import os
+        try:
+            return kernel32.WaitForSingleObject(handle, int(timeout * 1000)) != _WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    deadline = time.monotonic() + timeout
+    while True:
         try:
             os.kill(pid, 0)
+        except ProcessLookupError:
             return True
-        except (OSError, ProcessLookupError):
+        except PermissionError:
+            pass
+        if time.monotonic() >= deadline:
             return False
+        time.sleep(0.05)
 
 
 def is_daemon_alive() -> bool:

@@ -98,13 +98,16 @@ function checkPrologue(addrStr) {
 
 // ── code this agent has changed ───────────────────────────────────────────
 //
-// Two things rewrite the target's code: Interceptor hooks, which replace the
-// first bytes at their address with a jump, and breakpoints, which replace one
-// byte with an int3. They must not overlap. Frida would copy a breakpoint's
-// int3 into its trampoline, where no breakpoint is registered, and a
-// breakpoint written into a hook's jump would redirect it.
+// Four things rewrite the target's code: Interceptor hooks and the vishook,
+// which replace the first bytes at their address with a jump; breakpoints,
+// which replace one byte with an int3; and `mem write`. None of them may
+// rewrite bytes another one owns. Frida would copy a breakpoint's int3 into
+// its trampoline, where no breakpoint is registered; a breakpoint written into
+// a jump would redirect it; and bytes saved for a later restore would hold the
+// other one's change and write it back after it was undone. Interceptor hooks
+// alone may share bytes with each other, because Frida chains them.
 
-var hooks = [];     // { start, size, what } for every Interceptor hook installed
+var hooks = [];     // { start, size, what, interceptor } for every jump written
 var patches = {};   // address -> the int3 written there (see "breakpoints")
 
 function patchKey(address) {
@@ -120,29 +123,51 @@ function contains(start, size, address) {
     return address.compare(start) >= 0 && address.compare(start.add(size)) < 0;
 }
 
-function hookRefusal(address, what) {
-    var size = hookedBytes(address);
+function overlaps(startA, sizeA, startB, sizeB) {
+    return contains(startA, sizeA, startB) || contains(startB, sizeB, startA);
+}
+
+// Why `what` must not rewrite the `size` bytes at `start`, or null if it may.
+function rewriteRefusal(start, size, what, interceptor) {
     for (var key in patches) {
-        if (contains(address, size, patches[key].address)) {
+        if (contains(start, size, patches[key].address)) {
             return 'a breakpoint is set at 0x' + ptrToHex(patches[key].address) +
-                ', inside the ' + size + ' bytes a ' + what + ' hook at 0x' + ptrToHex(address) +
-                ' replaces. Remove the breakpoint first (bp del).';
+                ', inside the ' + size + ' bytes the ' + what + ' at 0x' + ptrToHex(start) +
+                ' would rewrite. Remove the breakpoint first (bp del).';
         }
+    }
+    for (var i = 0; i < hooks.length; i++) {
+        var hook = hooks[i];
+        if ((interceptor && hook.interceptor) || !overlaps(hook.start, hook.size, start, size)) continue;
+        return 'the ' + hook.what + ' at 0x' + ptrToHex(hook.start) + ' has replaced ' + hook.size +
+            ' bytes there, which overlap the ' + size + ' bytes the ' + what + ' at 0x' +
+            ptrToHex(start) + ' would rewrite. ' +
+            (hook.interceptor ? 'Wait for it to finish, or remove it first.'
+                              : 'Remove it first (' + hook.what + ' off).');
     }
     return null;
 }
 
-function attachHook(address, what, callbacks) {
-    var refusal = hookRefusal(address, what);
-    if (refusal !== null) throw new Error(refusal);
-    var hook = { start: address, size: hookedBytes(address), what: what };
-    var listener = Interceptor.attach(address, callbacks);
+// Records a jump written over `size` bytes at `start`; returns its release.
+function recordHook(start, size, what, interceptor) {
+    var hook = { start: start, size: size, what: what, interceptor: interceptor };
     hooks.push(hook);
+    return function () {
+        var index = hooks.indexOf(hook);
+        if (index >= 0) hooks.splice(index, 1);
+    };
+}
+
+function attachHook(address, what, callbacks) {
+    var size = hookedBytes(address);
+    var refusal = rewriteRefusal(address, size, what + ' hook', true);
+    if (refusal !== null) throw new Error(refusal);
+    var listener = Interceptor.attach(address, callbacks);
+    var release = recordHook(address, size, what + ' hook', true);
     return {
         detach: function () {
             listener.detach();
-            var index = hooks.indexOf(hook);
-            if (index >= 0) hooks.splice(index, 1);
+            release();
         }
     };
 }
@@ -458,15 +483,12 @@ function installTrace(addrStr, config) {
         }
     };
 
-    var refusal = hookRefusal(ptr(addrStr), 'trace');
-    if (refusal !== null) return { ok: false, error: refusal };
-
     var origFirstByte = ptr(addrStr).readU8();
     var listener;
     try {
         listener = attachHook(ptr(addrStr), 'trace', config.probe ? probe : functionHook);
     } catch (e) {
-        return { ok: false, error: 'Interceptor.attach failed at ' + addrStr + ': ' + e.message, prologue: prologue };
+        return { ok: false, error: 'cannot hook ' + addrStr + ': ' + e.message, prologue: prologue };
     }
 
     var hookCheck = verifyHook(addrStr, origFirstByte);
@@ -537,7 +559,20 @@ function removeFence() {
 // ── steptrace (Stalker-based) ─────────────────────────────────────────────
 
 var steptraceResult = null;
-var steptraceActive = false;
+var steptrace = null;   // { listener, threadId } from install until the result is in or it is cancelled
+
+// Stops a steptrace that has not finished: unhooks it and stops following its thread.
+function cancelStepTrace() {
+    if (steptrace === null) return { ok: false, msg: 'no steptrace running' };
+    var running = steptrace;
+    steptrace = null;
+    running.listener.detach();
+    if (running.threadId !== null) {
+        Stalker.unfollow(running.threadId);
+        Stalker.garbageCollect();
+    }
+    return { ok: true };
+}
 
 function installStepTrace(addrStr, config) {
     var maxInsn = config.maxInsn || 1000;
@@ -551,9 +586,9 @@ function installStepTrace(addrStr, config) {
             'the copy of the code it executes would contain the breakpoint. ' +
             'Remove the breakpoints first (bp list, bp del).' };
     }
+    if (steptrace !== null) return { ok: false, error: 'a steptrace is already running' };
 
     steptraceResult = null;
-    steptraceActive = true;
 
     var targetAddr = ptr(addrStr);
     var targetMod = Process.findModuleByAddress(targetAddr);
@@ -567,15 +602,16 @@ function installStepTrace(addrStr, config) {
     var insnCount = 0;
     var currentDepth = 0;
     var entryRegs = null;
-    var traced = false;
+    var session = { listener: null, threadId: null };
 
     var listener = attachHook(targetAddr, 'steptrace', {
         onEnter: function () {
-            if (traced || !steptraceActive) return;
-            traced = true;
+            if (steptrace !== session || session.threadId !== null) return;
+            this.followed = true;
 
             entryRegs = snapshotRegs(this.context);
             var tid = this.threadId;
+            session.threadId = tid;
             var shouldStop = false;
 
             Stalker.follow(tid, {
@@ -656,10 +692,10 @@ function installStepTrace(addrStr, config) {
             });
         },
         onLeave: function () {
-            if (!traced) return;
+            if (!this.followed || steptrace !== session) return;
+            steptrace = null;
 
-            var tid = this.threadId;
-            Stalker.unfollow(tid);
+            Stalker.unfollow(this.threadId);
             Stalker.flush();
             Stalker.garbageCollect();
 
@@ -673,13 +709,14 @@ function installStepTrace(addrStr, config) {
                 regSnapshots: regSnapshots,
                 detail: detail
             };
-            steptraceActive = false;
 
             send({ type: 'steptrace_done', addr: addrStr, insnCount: insnCount });
 
             listener.detach();
         }
     });
+    session.listener = listener;
+    steptrace = session;
 
     return { ok: true };
 }
@@ -693,6 +730,11 @@ function installStepTrace(addrStr, config) {
 // byte back and sets the CPU trap flag, so the thread raises a single-step
 // exception after that one instruction, and the int3 is written again from
 // there. `step` uses the same trap flag to stop after one instruction.
+//
+// A repeated string instruction (rep movs, rep stos, ...) raises a single-step
+// exception after every iteration with the pc left on it, so a trap set on one
+// is armed again until the pc moves on: the thread passes the whole
+// instruction in one go, at the cost of one exception per iteration.
 //
 // An exception nobody claims ends the process, so the handler returns true for
 // every exception this agent caused, whatever else goes wrong.
@@ -715,6 +757,7 @@ var waitForSingleObject = new NativeFunction(kernel32.getExportByName('WaitForSi
     'uint32', ['pointer', 'uint32']);
 
 var nextBpId = 1;
+var retired = {};         // address -> true where this agent has taken an int3 away
 var pendingTraps = {};    // thread id -> what that thread's coming single-step exception is for
 var activeStep = null;    // { threadId, mode, target, minSp } while a step spans exceptions
 var handlersRunning = 0;
@@ -736,6 +779,7 @@ function writeCodeByte(address, value) {
 function addPatch(address) {
     var patch = { address: address, original: address.readU8(), lifted: 0, bp: null, stepTarget: false };
     patches[patchKey(address)] = patch;
+    delete retired[patchKey(address)];
     writeCodeByte(address, INT3);
     return patch;
 }
@@ -751,6 +795,7 @@ function restoreByte(patch) {
 
 function removePatch(patch) {
     delete patches[patchKey(patch.address)];
+    retired[patchKey(patch.address)] = true;
     if (patch.lifted === 0) restoreByte(patch);
 }
 
@@ -770,17 +815,12 @@ function lower(patch) {
 }
 
 function breakpointRefusal(address) {
-    if (steptraceActive) {
+    if (steptrace !== null) {
         return 'a steptrace is running, and the copy of the code it executes cannot carry a ' +
             'breakpoint. Wait for it to finish.';
     }
-    for (var i = 0; i < hooks.length; i++) {
-        if (contains(hooks[i].start, hooks[i].size, address)) {
-            return 'the ' + hooks[i].what + ' hook at 0x' + ptrToHex(hooks[i].start) +
-                ' has replaced the ' + hooks[i].size + ' bytes that include this address. ' +
-                'Wait for it to finish, or remove it first.';
-        }
-    }
+    var refusal = rewriteRefusal(address, 1, 'breakpoint', false);
+    if (refusal !== null) return refusal;
     if (address.readU8() === INT3) {
         return 'the byte at this address is already an int3: padding between functions, or a ' +
             'breakpoint built into the program.';
@@ -820,10 +860,10 @@ function listBps() {
     return result;
 }
 
-// Blocks the calling thread inside the exception handler until unfreeze().
-// Returns the step mode the thread is to continue with, or null to run.
-function freeze(details, threadId, patch) {
-    var ticket = { wake: createEvent(NULL, 0, 0, NULL), step: null };
+// Blocks the calling thread inside the exception handler until unfreeze() sets
+// `wake`. Returns the step mode the thread is to continue with, or null to run.
+function freeze(details, threadId, patch, wake) {
+    var ticket = { wake: wake, step: null };
     var bp = patch !== null ? patch.bp : null;
     frozen = true;
     frozenTicket = ticket;
@@ -861,6 +901,22 @@ function unfreeze(step) {
 function setTrapFlag(nativeContext) {
     var flags = nativeContext.add(EFLAGS_OFFSET);
     flags.writeU32(flags.readU32() | TRAP_FLAG);
+}
+
+function clearTrapFlag(nativeContext) {
+    var flags = nativeContext.add(EFLAGS_OFFSET);
+    flags.writeU32(flags.readU32() & ~TRAP_FLAG);
+}
+
+// A pushf stepped with the trap flag set pushed the flag too; the program must not see it.
+function clearPushedTrapFlag(sp) {
+    sp.writeU16(sp.readU16() & ~TRAP_FLAG);
+}
+
+// Ends the step of the thread now running it, and tells the daemon why.
+function failStep(reason) {
+    endStep();
+    send({ type: 'step_failed', error: reason });
 }
 
 // While a step runs a call to its end, an int3 waits on the instruction after it.
@@ -922,9 +978,17 @@ function arrive(details, threadId, patch, pending) {
 
     if (stop) {
         // Only one thread is frozen at a time; a thread that cannot freeze runs on.
+        // A native call lets other threads into this script, so the event is made
+        // before the check: nothing may run between reading `frozen` and setting it.
+        var wake = createEvent(NULL, 0, 0, NULL);
         var freezing = !frozen && !shuttingDown;
         if (freezing || step !== null) endStep();
-        mode = freezing ? freeze(details, threadId, patch) : null;
+        if (freezing) {
+            mode = freeze(details, threadId, patch, wake);
+        } else {
+            closeHandle(wake);
+            mode = null;
+        }
     }
     depart(details, threadId, patch, mode);
 }
@@ -933,11 +997,17 @@ function arrive(details, threadId, patch, pending) {
 // patch, and for one more leg of a step if `mode` names one.
 function depart(details, threadId, lifted, mode) {
     if (lifted !== null && !isInstalled(lifted)) lifted = null;
-    var pending = { lower: lifted, stop: false };
+    if (lifted === null && mode === null) return;
+    var pc = details.context.pc;
+    var insn = Instruction.parse(pc);
+    var repeated = insn.mnemonic.indexOf('rep') === 0;
+    var pending = {
+        lower: lifted, stop: false, from: pc, repeated: repeated,
+        pushesFlags: insn.mnemonic.indexOf('pushf') === 0
+    };
     var trap = lifted !== null;
     if (mode !== null) {
-        var insn = Instruction.parse(details.context.pc);
-        var runsToNext = insn.mnemonic === 'call' || insn.mnemonic.indexOf('rep') === 0;
+        var runsToNext = insn.mnemonic === 'call' || repeated;
         var lastInstruction = mode === 'into' || (mode === 'over' && !runsToNext) ||
             (mode === 'out' && insn.mnemonic.indexOf('ret') === 0);
         if (lastInstruction) {
@@ -947,8 +1017,14 @@ function depart(details, threadId, lifted, mode) {
             if (activeStep === null) {
                 activeStep = { threadId: threadId, mode: mode, target: null, minSp: null };
             }
-            if (!runsToNext) trap = true;
-            else if (!setStepTarget(activeStep, insn.next, details.context.sp)) endStep();
+            if (!runsToNext) {
+                trap = true;
+            } else if (!setStepTarget(activeStep, insn.next, details.context.sp)) {
+                failStep('the step cannot wait for the ' + insn.mnemonic + ' at 0x' + ptrToHex(pc) +
+                    ' to finish: the byte after it, at 0x' + ptrToHex(insn.next) + ', is an int3 ' +
+                    'the program put there, so no breakpoint can be set on it. The thread is ' +
+                    'running. Set a breakpoint further on and wait with watch.');
+            }
         }
     }
     if (trap) {
@@ -957,25 +1033,7 @@ function depart(details, threadId, lifted, mode) {
     }
 }
 
-Process.setExceptionHandler(function (details) {
-    var isBreakpoint = details.type === 'breakpoint';
-    if (!isBreakpoint && details.type !== 'single-step') return false;
-
-    var threadId = Process.getCurrentThreadId();
-    var pc = details.context.pc;
-    var patch = patches[patchKey(pc)] || null;
-    var pending = null;
-    if (isBreakpoint) {
-        // With no patch here, the int3 was this agent's if it is gone by now: the
-        // breakpoint was removed while the exception was on its way, and the
-        // instruction back in its place runs. Any other int3 is the program's.
-        if (patch === null) return pc.readU8() !== INT3;
-    } else {
-        pending = pendingTraps[threadId] || null;
-        if (pending === null) return false;
-        delete pendingTraps[threadId];
-    }
-
+function handle(details, threadId, patch, pending) {
     handlersRunning++;
     try {
         if (pending !== null && pending.lower !== null) lower(pending.lower);
@@ -985,6 +1043,55 @@ Process.setExceptionHandler(function (details) {
     }
     handlersRunning--;
     return true;
+}
+
+function onBreakpoint(details, threadId) {
+    var pc = details.context.pc;
+    var patch = patches[patchKey(pc)] || null;
+    if (patch !== null) return handle(details, threadId, patch, null);
+    // An int3 this agent took away while the exception was on its way: the
+    // instruction back in its place runs. Every other int3 is the program's.
+    return retired[patchKey(pc)] === true && pc.readU8() !== INT3;
+}
+
+function onSingleStep(details, threadId) {
+    var pending = pendingTraps[threadId] || null;
+    if (pending === null) return false;
+    var pc = details.context.pc;
+    if (pending.repeated && pc.equals(pending.from)) {
+        setTrapFlag(details.nativeContext);
+        return true;
+    }
+    delete pendingTraps[threadId];
+    if (pending.pushesFlags) clearPushedTrapFlag(details.context.sp);
+    return handle(details, threadId, patches[patchKey(pc)] || null, pending);
+}
+
+// The instruction a thread was sent past raised an exception of its own, which
+// is the program's to handle. The thread will not raise the single-step
+// exception it was given the trap flag for, so that trap is taken back.
+function abandonTrap(details, threadId) {
+    var pending = pendingTraps[threadId] || null;
+    if (pending === null) return;
+    delete pendingTraps[threadId];
+    clearTrapFlag(details.nativeContext);
+    if (pending.lower !== null) lower(pending.lower);
+    if (pending.stop || (activeStep !== null && activeStep.threadId === threadId)) {
+        failStep('the instruction at 0x' + ptrToHex(pending.from) + ' raised a ' + details.type +
+            ' exception, which the program handles. The step ended there and the thread is running.');
+    }
+}
+
+Process.setExceptionHandler(function (details) {
+    var threadId = Process.getCurrentThreadId();
+    if (details.type === 'breakpoint') return onBreakpoint(details, threadId);
+    if (details.type === 'single-step') return onSingleStep(details, threadId);
+    try {
+        abandonTrap(details, threadId);
+    } catch (e) {
+        send({ type: 'agent_error', where: 'exception handler', error: e.message, stack: e.stack || '' });
+    }
+    return false;
 });
 
 function hasPendingTraps() {
@@ -993,9 +1100,11 @@ function hasPendingTraps() {
 }
 
 // Runs when the script is unloaded, which includes the daemon going away.
-// Afterwards no int3 of this agent's is left in the target and no thread is frozen.
+// Afterwards no int3 or jump of this agent's is left in the target and no
+// thread is frozen. Frida removes the Interceptor hooks itself.
 function shutdown() {
     shuttingDown = true;
+    removeVisOverride();
     endStep();
     Object.keys(patches).forEach(function (key) { removePatch(patches[key]); });
     unfreeze(null);
@@ -1012,17 +1121,21 @@ function shutdown() {
 // forces "fully visible" for callers above a threshold address while
 // letting callers below the threshold run the original function.
 
-var visOverride = null;   // { cave: NativePointer, origBytes: ArrayBuffer, stats: NativePointer }
+var visOverride = null;   // { cave, origBytes, stats, jmpSite, release }
+var VIS_JMP_BYTES = 5;
 
 function installVisOverride(thresholdHex, jmpSiteHex, origTargetHex) {
     if (visOverride) return { ok: false, msg: 'already installed' };
+    if (is64) return { ok: false, msg: 'vishook builds 32-bit code; this process is 64-bit' };
 
     var threshold = parseInt(thresholdHex, 16);
     var jmpSite = ptr(jmpSiteHex);
     var origTarget = ptr(origTargetHex);
 
-    // Save original 5 bytes at jmp site
-    var origBytes = jmpSite.readByteArray(5);
+    var refusal = rewriteRefusal(jmpSite, VIS_JMP_BYTES, 'vishook', false);
+    if (refusal !== null) return { ok: false, msg: refusal };
+
+    var origBytes = jmpSite.readByteArray(VIS_JMP_BYTES);
 
     // Allocate code cave (64 bytes code + 8 bytes counters)
     var cave = Memory.alloc(72);
@@ -1109,15 +1222,19 @@ function installVisOverride(thresholdHex, jmpSiteHex, origTargetHex) {
     patchDv.setInt32(1, cave.sub(jmpSite.add(5)).toInt32(), true);
     jmpSite.writeByteArray(patchBuf.buffer);
 
-    visOverride = { cave: cave, origBytes: origBytes, stats: statsPtr, jmpSite: jmpSite };
+    visOverride = {
+        cave: cave, origBytes: origBytes, stats: statsPtr, jmpSite: jmpSite,
+        release: recordHook(jmpSite, VIS_JMP_BYTES, 'vishook', false)
+    };
     return { ok: true, cave: ptrToHex(cave), threshold: threshold };
 }
 
 function removeVisOverride() {
     if (!visOverride) return { ok: false, msg: 'not installed' };
     var jmpSite = visOverride.jmpSite;
-    Memory.protect(jmpSite, 5, 'rwx');
+    Memory.protect(jmpSite, VIS_JMP_BYTES, 'rwx');
     jmpSite.writeByteArray(visOverride.origBytes);
+    visOverride.release();
     visOverride = null;
     return { ok: true };
 }
@@ -1338,9 +1455,13 @@ rpc.exports = {
         try { return ptr(addrStr).readByteArray(size); }
         catch (e) { return null; }
     },
+    // Refused over a breakpoint or a hook: either would later restore the
+    // bytes it saved and undo the write, or run on in bytes it no longer owns.
     writeMemory: function (addrStr, hexStr) {
         try {
             var bytes = hexToBytes(hexStr);
+            var refusal = rewriteRefusal(ptr(addrStr), bytes.length, 'mem write', false);
+            if (refusal !== null) return { ok: false, error: refusal };
             Memory.protect(ptr(addrStr), bytes.length, 'rwx');
             ptr(addrStr).writeByteArray(bytes);
             return { ok: true };
@@ -1414,6 +1535,7 @@ rpc.exports = {
     // ── NEW: steptrace ──
     installStepTrace: function (addrStr, config) { return installStepTrace(addrStr, config); },
     getStepTraceResult: function () { return steptraceResult; },
+    cancelStepTrace: function () { return cancelStepTrace(); },
 
     // ── NEW: fence ──
     installFence: function (addrStr) { return installFence(addrStr); },
