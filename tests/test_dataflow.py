@@ -124,6 +124,15 @@ class TestForwardPropagation:
         state = propagate_forward([])
         assert isinstance(state, dict)
 
+    def test_partial_init_still_tracks_the_other_registers(self):
+        """With eax given, mov ecx, 5 still resolves ecx."""
+        from dataflow import propagate_forward, Const
+        init = {"eax": Const(1)}
+        state = propagate_forward(self._disasm(b"\xB9\x05\x00\x00\x00"), init)
+        assert state["ecx"] == Const(5)
+        assert state["eax"] == Const(1)
+        assert init == {"eax": Const(1)}
+
 
 _SET_EAX_ECX_EDX = bytes.fromhex("B805000000" "B906000000" "BA07000000")   # mov eax, 5; mov ecx, 6; mov edx, 7
 

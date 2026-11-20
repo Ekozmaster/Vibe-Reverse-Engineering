@@ -101,9 +101,10 @@ def parse_kb(text_or_path: str | Path) -> Kb:
             type_ = " ".join(parts[1:-1])
             kb.globals.append(KbGlobal(address=addr, type=type_, name=name))
         else:
-            # A brace that opens a line belongs to the line before it ("struct Foo" / "{").
+            # A declaration runs until its braces are closed and a line ends in ";", so
+            # "struct Foo" / "{" and "typedef struct { ... }" / "Foo;" each stay one entry.
             unclosed = sum(part.count("{") - part.count("}") for part in declaration) > 0
-            if not unclosed and not line.startswith("{"):
+            if not unclosed and declaration and declaration[-1].endswith(";"):
                 end_declaration()
             declaration.append(line)
     end_declaration()

@@ -158,3 +158,43 @@ class TestGameIndex:
         from index import GameIndex
         with pytest.raises(SystemExit):
             GameIndex.resolve_db("NoSuchGame", str(tmp_path / "absent.db"))
+
+
+class TestStatusCli:
+    def test_status_prints_the_version_and_per_table_counts(self, tmp_path, capsys):
+        from index import GameIndex, SCHEMA_VERSION, main
+        db = str(tmp_path / "index.db")
+        gi = GameIndex(db)
+        gi.replace("funcs", [{"address": 0x1000, "name": "a"}], source="ghidra")
+        gi.close()
+        main(["status", "Game", "--db", db])
+        lines = capsys.readouterr().out.splitlines()
+        assert lines[0] == f"index: {db}  (schema_version={SCHEMA_VERSION})"
+        assert "  funcs      1" in lines and "  xrefs      0" in lines
+
+
+class TestViews:
+    def test_callers_and_callees_list_code_calls_only(self, tmp_path):
+        from index import GameIndex
+        gi = GameIndex(str(tmp_path / "index.db"))
+        gi.replace("funcs", [{"address": 0x2000, "name": "Callee"}], source="ghidra")
+        gi.replace("xrefs", [
+            {"from_ea": 0x1010, "to_ea": 0x2000, "type": "call", "is_code": 1, "from_func": 0x1000},
+            {"from_ea": 0x1020, "to_ea": 0x2000, "type": "jump", "is_code": 1, "from_func": 0x1000},
+            {"from_ea": 0x1030, "to_ea": 0x2000, "type": "call", "is_code": 0, "from_func": 0x1000},
+        ], source="ghidra")
+        conn = gi._conn
+        assert conn.execute("SELECT caller, callee_addr, callee FROM callers").fetchall() == \
+            [(0x1000, 0x2000, "Callee")]
+        assert conn.execute("SELECT caller, callee_addr FROM callees").fetchall() == [(0x1000, 0x2000)]
+        gi.close()
+
+    def test_grep_names_the_entity_and_its_address(self, tmp_path):
+        from index import GameIndex
+        gi = GameIndex(str(tmp_path / "index.db"))
+        gi.replace("names", [{"address": 0x3000, "name": "g_x"}], source="ghidra")
+        gi.replace("strings", [{"address": 0x4000, "length": 5, "type": "ascii", "encoding": "ascii",
+                                "content": "hello"}], source="ghidra")
+        rows = gi._conn.execute("SELECT entity, address, name FROM grep ORDER BY address").fetchall()
+        assert rows == [("name", 0x3000, "g_x"), ("string", 0x4000, "hello")]
+        gi.close()

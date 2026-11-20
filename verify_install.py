@@ -8,13 +8,13 @@ Usage:
 import importlib
 import os
 import pkgutil
-import re
-import shutil
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
 from urllib.request import urlopen
+
+from retools.jdk import MIN_MAJOR as MIN_JDK_MAJOR, find_jdk
 
 ROOT = Path(__file__).resolve().parent
 TOOLS_DIR = ROOT / "tools"
@@ -27,8 +27,7 @@ GHIDRA_DATE = "20251203"
 GHIDRA_ZIP = f"ghidra_{GHIDRA_VERSION}_PUBLIC_{GHIDRA_DATE}.zip"
 GHIDRA_URL = f"https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_{GHIDRA_VERSION}_build/{GHIDRA_ZIP}"
 GHIDRA_DIR_NAME = f"ghidra_{GHIDRA_VERSION}_PUBLIC"
-JDK_VERSION = "21"
-JDK_ADOPTIUM_URL = "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse"
+JDK_ADOPTIUM_URL = f"https://api.adoptium.net/v3/binary/latest/{MIN_JDK_MAJOR}/ga/windows/x64/jdk/hotspot/normal/eclipse"
 
 
 def record(name: str, status: str, detail: str = ""):
@@ -114,73 +113,15 @@ def check_sigdb():
                "signatures.db missing or empty -- run: python -m retools.sigdb pull")
 
 
-def _portable_java() -> Path | None:
-    """Java launcher of a portable JDK under tools/, newest directory first."""
-    launcher = "java.exe" if os.name == "nt" else "java"
-    for jdk_dir in sorted(TOOLS_DIR.glob("jdk-*"), reverse=True):
-        if (jdk_dir / "bin" / launcher).is_file():
-            return jdk_dir / "bin" / launcher
-    return None
-
-
-def find_java() -> Path | None:
-    """Locate a Java launcher in the order retools.pyghidra_backend resolves one.
-
-    Returns:
-        The launcher from JAVA_HOME, else ``java`` on PATH, else a portable JDK
-        under tools/, else None.
-    """
-    launcher = "java.exe" if os.name == "nt" else "java"
-    java_home = os.environ.get("JAVA_HOME")
-    if java_home and (Path(java_home) / "bin" / launcher).is_file():
-        return Path(java_home) / "bin" / launcher
-    on_path = shutil.which("java")
-    if on_path:
-        return Path(on_path)
-    return _portable_java()
-
-
-def java_major_version(banner: str) -> int | None:
-    """Major version from the first line of ``java -version``.
-
-    Legacy ``1.8`` style banners count as 8. Returns None if the banner has no
-    version string.
-    """
-    match = re.search(r'version "(\d+)(?:\.(\d+))?', banner)
-    if not match:
-        return None
-    major = int(match.group(1))
-    if major == 1 and match.group(2):
-        return int(match.group(2))
-    return major
-
-
-def _java_banner(java: Path) -> str:
-    out = subprocess.check_output(
-        [str(java), "-version"], stderr=subprocess.STDOUT, timeout=10
-    )
-    return out.decode(errors="replace").strip().split("\n")[0].strip()
-
-
 def check_java() -> bool:
     """Check for a JDK new enough for Ghidra. Returns True if found."""
-    java = find_java()
-    if java is None:
+    found = find_jdk()
+    if found is None:
         record("java", WARN,
-               "java not found (JAVA_HOME, PATH, tools/jdk-*) -- "
+               f"no JDK {MIN_JDK_MAJOR}+ in JAVA_HOME, on PATH or under tools/jdk-* -- "
                "required for pyghidra/Ghidra backend")
         return False
-    try:
-        banner = _java_banner(java)
-    except (OSError, subprocess.SubprocessError) as e:
-        record("java", WARN, f"java check failed: {e}")
-        return False
-    major = java_major_version(banner)
-    if major is not None and major < int(JDK_VERSION):
-        record("java", WARN,
-               f"{banner} ({java}) -- Ghidra needs JDK {JDK_VERSION}+")
-        return False
-    record("java", PASS, f"{banner} ({java})")
+    record("java", PASS, f"JDK {found.major} ({found.home})")
     return True
 
 
@@ -265,45 +206,30 @@ def _download(url: str, desc: str) -> bytes:
 
 
 def setup_jdk():
-    """Download and install Adoptium JDK 21 to tools/jdk-21 unless a suitable JDK exists."""
-    java = find_java()
-    if java is not None:
-        try:
-            major = java_major_version(_java_banner(java))
-        except (OSError, subprocess.SubprocessError):
-            major = None
-        if major is not None and major >= int(JDK_VERSION):
-            print(f"  JDK {major} already available ({java})")
-            return True
-
-    portable = _portable_java()
-    if portable is not None:
-        jdk_dir = portable.parent.parent
-        print(f"  JDK already at {jdk_dir}")
-        os.environ["JAVA_HOME"] = str(jdk_dir)
-        os.environ["PATH"] = str(jdk_dir / "bin") + os.pathsep + os.environ.get("PATH", "")
+    """Download and install Adoptium JDK 21 under tools/ unless a JDK 21+ is already found."""
+    found = find_jdk()
+    if found is not None:
+        print(f"  JDK {found.major} already available ({found.home})")
         return True
 
-    print(f"\n  No JDK {JDK_VERSION}+ found. Downloading Adoptium Temurin JDK {JDK_VERSION}...")
+    print(f"\n  No JDK {MIN_JDK_MAJOR}+ found. Downloading Adoptium Temurin JDK {MIN_JDK_MAJOR}...")
     try:
-        data = _download(JDK_ADOPTIUM_URL, f"JDK {JDK_VERSION}")
+        data = _download(JDK_ADOPTIUM_URL, f"JDK {MIN_JDK_MAJOR}")
         TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-        zip_path = TOOLS_DIR / f"jdk-{JDK_VERSION}.zip"
+        zip_path = TOOLS_DIR / f"jdk-{MIN_JDK_MAJOR}.zip"
         zip_path.write_bytes(data)
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(TOOLS_DIR)
         zip_path.unlink()
-        jdk_dir = next(TOOLS_DIR.glob(f"jdk-{JDK_VERSION}*"), None)
-        if jdk_dir and (jdk_dir / "bin" / "java.exe").exists():
-            os.environ["JAVA_HOME"] = str(jdk_dir)
-            os.environ["PATH"] = str(jdk_dir / "bin") + os.pathsep + os.environ.get("PATH", "")
-            record("setup:jdk", PASS, f"Installed to {jdk_dir}")
-            return True
-        record("setup:jdk", FAIL, "Extraction succeeded but java.exe not found")
-        return False
     except Exception as e:
         record("setup:jdk", FAIL, f"Download failed: {e}")
         return False
+    found = find_jdk()
+    if found is None:
+        record("setup:jdk", FAIL, f"Extracted to {TOOLS_DIR}, but no JDK {MIN_JDK_MAJOR}+ runs from it")
+        return False
+    record("setup:jdk", PASS, f"Installed to {found.home}")
+    return True
 
 
 def setup_ghidra():

@@ -249,12 +249,13 @@ def propagate_forward(insns: list, init: dict[str, object] | None = None) -> dic
 
     Args:
         insns: List of Capstone instructions (linear block, no branches).
-        init: Optional initial register state. Defaults to all Unknown.
+        init: Initial values of some registers; every register it leaves
+            out starts Unknown. Not modified.
 
     Returns:
         Register state dict mapping register names to Value objects.
     """
-    state = init if init is not None else _init_state()
+    state = {**_init_state(), **(init or {})}
     push_stack: list = []
     for insn in insns:
         _apply_insn(state, insn, push_stack)
@@ -334,7 +335,7 @@ def propagate_cfg(
             else:
                 init = _merge_states(pred_states) if pred_states else _init_state()
 
-            new_exit = propagate_forward(blocks[bva], dict(init))
+            new_exit = propagate_forward(blocks[bva], init)
             if bva not in block_exit or new_exit != block_exit[bva]:
                 block_exit[bva] = new_exit
                 changed = True

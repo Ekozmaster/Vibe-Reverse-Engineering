@@ -37,12 +37,29 @@ def find_start(b: Binary, va: int, **_kw) -> int | None:
     return b.find_func_start(va)
 
 
+def _branch_target(insn) -> int | None:
+    """Immediate target of a jump or loop instruction; None for anything else."""
+    if not insn.mnemonic.startswith(("j", "loop")):
+        return None
+    try:
+        return int(insn.op_str, 16)
+    except ValueError:
+        return None
+
+
 def analyze(b: Binary, start: int, max_size: int):
-    """Return (rets, callees, end_va) for the function at *start*."""
+    """Return (rets, callees, end_va) for the function at *start*.
+
+    The scan ends at padding: three nops after a return, or an int3. Compilers
+    also put an int3 after a call that does not return; such an int3 ends the
+    scan only when no branch seen so far jumps past it.
+    """
     rets: list[tuple[int, int]] = []
     calls: list[tuple[int, int | str]] = []
     end_va = start
     nop_run = 0
+    furthest_branch = start
+    previous = None
 
     window = b.iter_disasm(start, max_bytes=max_size)
     for insn in itertools.islice(window, _MAX_FUNCTION_INSNS):
@@ -56,10 +73,17 @@ def analyze(b: Binary, start: int, max_size: int):
             except ValueError:
                 target = insn.op_str
             calls.append((insn.address, target))
+        else:
+            branch = _branch_target(insn)
+            if branch is not None:
+                furthest_branch = max(furthest_branch, branch)
 
         nop_run = nop_run + 1 if insn.mnemonic == "nop" else 0
-        if (nop_run >= 3 and rets) or insn.mnemonic == "int3":
+        if nop_run >= 3 and rets:
             break
+        if insn.mnemonic == "int3" and (previous in ("ret", "retn", "jmp") or insn.address >= furthest_branch):
+            break
+        previous = insn.mnemonic
 
     return rets, calls, end_va
 

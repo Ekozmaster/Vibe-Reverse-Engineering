@@ -235,6 +235,14 @@ class TestAssemble:
         result = assemble(b, 0x401500, str(proj))
         assert "unknown function at 0x00401500" in result
 
+    def test_x64_skips_dataflow_and_says_so(self, tmp_path):
+        from context import assemble
+        b = self._make_mock_binary()
+        b.is_64 = True
+        with patch("context.propagate_cfg", side_effect=AssertionError("ran on x64")):
+            result = assemble(b, 0x401500, str(tmp_path))
+        assert "[dataflow] skipped" in result
+
 
 class TestAssembleSingleDisasm:
     def test_disasm_called_once(self, tmp_path):
@@ -448,3 +456,194 @@ class TestAssembleIndexBranch:
         assert "RealCallee" in result           # kb.h name wins over FUN_00401200
         assert "FUN_00401200" not in result
         assert "indirect call" in result        # indirect marker recovered
+
+
+def _assemble(b, proj, calls=(), end=0x401100, start=0x401000, **kwargs):
+    from context import assemble
+    with patch("context.find_start", return_value=start), \
+         patch("context.analyze", return_value=([], list(calls), end)), \
+         patch("context.aggregate_struct", return_value=[]) as agg, \
+         patch("context.find_strings", return_value=[]):
+        result = assemble(b, start, str(proj), **kwargs)
+    return result, agg
+
+
+def _bare_binary():
+    b = MagicMock()
+    b.is_64 = False
+    b.disasm.return_value = []
+    b.abs_mem_refs.return_value = []
+    b.abs_imm_refs.return_value = []
+    return b
+
+
+def _section(result: str, header: str) -> list[str]:
+    """The indented lines under *header* in an assemble() result."""
+    lines = result.splitlines()
+    body = []
+    for line in lines[lines.index(header) + 1:]:
+        if not line.startswith("  "):
+            break
+        body.append(line)
+    return body
+
+
+class TestAssembleCallees:
+    def test_scan_lists_each_callee_once_named_from_kb(self, tmp_path):
+        """Without an index, the scan lists every distinct target once: kb name,
+        'unknown', or an indirect-call marker."""
+        (tmp_path / "kb.h").write_text("@ 0x401200 void __cdecl Foo();\n")
+        calls = [(0x401010, 0x401200), (0x401020, 0x401300), (0x401030, 0x401200),
+                 (0x401040, "dword ptr [eax]"), (0x401050, "dword ptr [eax]")]
+        result, _ = _assemble(_bare_binary(), tmp_path, calls)
+        assert _section(result, "[callees]") == [
+            "  0x00401200: Foo",
+            "  0x00401300: unknown",
+            "  dword ptr [eax]: indirect call",
+        ]
+
+    def test_index_path_recovers_each_indirect_marker_once(self, tmp_path):
+        from index import GameIndex
+        gi = GameIndex(str(tmp_path / "index.db"))
+        gi.replace("funcs", [{"address": 0x401000, "name": "Caller"},
+                             {"address": 0x401200, "name": "Callee"}], source="ghidra")
+        gi.replace("xrefs", [{"from_ea": 0x401010, "to_ea": 0x401200, "type": "call",
+                              "is_code": 1, "from_func": 0x401000}], source="ghidra")
+        gi.close()
+        calls = [(0x401010, 0x401200), (0x401020, "dword ptr [eax]"),
+                 (0x401030, "dword ptr [eax]")]
+        result, _ = _assemble(_bare_binary(), tmp_path, calls)
+        assert _section(result, "[callees]") == [
+            "  0x00401200: Callee",
+            "  dword ptr [eax]: indirect call",
+        ]
+
+
+class TestAssembleFunctionBounds:
+    def test_scans_only_the_function_bytes(self, tmp_path):
+        b = _bare_binary()
+        _, agg = _assemble(b, tmp_path, start=0x401000, end=0x401100)
+        assert agg.call_args.kwargs["fn_size"] == 0x100
+        assert b.disasm.call_args.kwargs["max_bytes"] == 0x100
+
+    def test_unknown_end_scans_up_to_the_analysis_cap(self, tmp_path):
+        """analyze() caps a function at 0x2000 bytes; an end equal to the start
+        means no end was found, and the sections still scan that cap."""
+        b = _bare_binary()
+        _, agg = _assemble(b, tmp_path, start=0x401000, end=0x401000)
+        assert agg.call_args.kwargs["fn_size"] == 0x2000
+        assert b.disasm.call_args.kwargs["max_bytes"] == 0x2000
+
+
+class TestAssembleGlobals:
+    def test_lists_each_referenced_kb_global_once(self, tmp_path):
+        (tmp_path / "kb.h").write_text(
+            "$ 0x500000 int g_first\n$ 0x500010 int g_second\n$ 0x500020 int g_unused\n")
+        b = _bare_binary()
+        insn1, insn2 = MagicMock(), MagicMock()
+        b.disasm.return_value = [insn1, insn2]
+        b.abs_mem_refs.side_effect = (
+            lambda i: [0x500000, 0x500010, 0x600000] if i is insn1 else [0x500000])
+        result, _ = _assemble(b, tmp_path)
+        assert _section(result, "[globals]") == [
+            "  g_first at 0x00500000",
+            "  g_second at 0x00500010",
+        ]
+
+    def test_no_section_without_a_referenced_global(self, tmp_path):
+        (tmp_path / "kb.h").write_text("$ 0x500000 int g_first\n")
+        result, _ = _assemble(_bare_binary(), tmp_path)
+        assert "[globals]" not in result
+
+
+class TestAssembleKbLookup:
+    def test_explicit_kb_dir_outranks_project_kb(self, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "kb.h").write_text("@ 0x401000 void __cdecl ProjectName();\n")
+        override = tmp_path / "override"
+        override.mkdir()
+        (override / "kb.h").write_text("@ 0x401000 void __cdecl OverrideName();\n")
+        result, _ = _assemble(_bare_binary(), proj, project_dir_for_kb=str(override))
+        assert "[identity] OverrideName (from KB)" in result.splitlines()
+
+
+class TestAssembleSimilar:
+    def _match(self, source, name):
+        m = MagicMock(source=source)
+        m.name = name
+        return m
+
+    def test_reports_the_best_structural_match(self, tmp_path):
+        sig = {"block_count": 3, "edge_count": 4, "call_count": 2,
+               "mnemonic_hash": "h", "constants": []}
+        with patch("context.SignatureDB") as db_cls, \
+             patch("context.extract_structural_sig", return_value=sig):
+            db_cls.return_value.match_structural.return_value = [
+                self._match("msvc", "best"), self._match("other", "second")]
+            result, _ = _assemble(_bare_binary(), tmp_path, db_path="sigs.db")
+        db_cls.assert_called_once_with("sigs.db")
+        assert "[similar] msvc: best (block_count=3, call_count=2)" in result.splitlines()
+
+    def test_no_line_without_a_signature(self, tmp_path):
+        with patch("context.SignatureDB") as db_cls, \
+             patch("context.extract_structural_sig", return_value=None):
+            db_cls.return_value.match_structural.return_value = [self._match("a", "b")]
+            result, _ = _assemble(_bare_binary(), tmp_path, db_path="sigs.db")
+        assert "[similar]" not in result
+
+
+class TestCli:
+    def test_assemble_prints_identity_and_named_callees_from_the_projects_kb(self, tmp_path, capsys):
+        import struct
+        from context import main
+        from pe_fakes import pe_image
+        code = bytearray(b"\xCC" * 0x40)
+        code[0:3] = b"\x55\x8B\xEC"                                   # push ebp / mov ebp, esp
+        code[3:8] = b"\xE8" + struct.pack("<i", 0x20 - 8)             # call 0x401020
+        code[8:10] = b"\x5D\xC3"                                      # pop ebp / ret
+        code[0x20] = 0xC3
+        image = pe_image(tmp_path / "game.exe", bytes(code))
+        project = tmp_path / "Game"
+        project.mkdir()
+        (project / "kb.h").write_text("@ 0x401000 int __cdecl Outer(void);\n"
+                                      "@ 0x401020 void __cdecl Inner(void);\n")
+        main(["assemble", str(image), "401000", "--project", str(project), "--no-dataflow"])
+        assert capsys.readouterr().out.splitlines() == [
+            "=== CONTEXT FOR 0x00401000 ===",
+            "[identity] Outer (from KB)",
+            "[callees]",
+            "  0x00401020: Inner",
+        ]
+
+    def _postprocess(self, project, stdin_text, fields, capsys, monkeypatch):
+        import io
+        from context import main
+        monkeypatch.setattr("sys.stdin", io.StringIO(stdin_text))
+        with patch("context.Binary"), \
+             patch("context.find_start", return_value=0x401500) as fs, \
+             patch("context.aggregate_struct", return_value=fields) as agg:
+            main(["postprocess", "game.exe", "401510", "--project", project])
+        assert fs.call_args.args[1] == 0x401510
+        assert agg.call_args.args[1] == 0x401500
+        return capsys.readouterr().out
+
+    def test_postprocess_renames_calls_and_struct_fields_from_stdin(
+            self, tmp_path, capsys, monkeypatch):
+        from structrefs import FieldAccess
+        (tmp_path / "kb.h").write_text("@ 0x401200 void __cdecl Foo();\n")
+        fields = [FieldAccess(offset=0x10, type_name="int", size=4, access="read")]
+        out = self._postprocess(str(tmp_path),
+                                "call fcn.00401200;\nx = *(int *)(this + 0x10);\n",
+                                fields, capsys, monkeypatch)
+        assert out == "call Foo;\nx = this->field_10;\n"
+
+    def test_postprocess_falls_back_to_patches_kb(self, tmp_path, capsys, monkeypatch):
+        """A project dir without kb.h reads patches/<project name>/kb.h from the cwd."""
+        kb_dir = tmp_path / "patches" / "Game"
+        kb_dir.mkdir(parents=True)
+        (kb_dir / "kb.h").write_text("@ 0x401200 void __cdecl Foo();\n")
+        monkeypatch.chdir(tmp_path)
+        out = self._postprocess(str(tmp_path / "elsewhere" / "Game"), "call fcn.00401200;",
+                                [], capsys, monkeypatch)
+        assert out == "call Foo;"

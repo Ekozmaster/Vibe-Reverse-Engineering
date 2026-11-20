@@ -80,13 +80,37 @@ class TestBackendRouting:
         assert result == "void func() {}"
 
 
-class FakeR2:
-    def __init__(self):
-        self.cmds = []
+class _FakeR2:
+    """Stands in for an r2pipe session: records commands, answers each from *outputs* by its name.
+
+    The name is the command before any `` @ address``; unknown commands answer "".
+    """
+
+    def __init__(self, outputs: dict | None = None):
+        self.outputs, self.cmds, self.quit_called = outputs or {}, [], False
 
     def cmd(self, c):
         self.cmds.append(c)
-        return ""
+        return self.outputs.get(c.split(" @ ")[0], "")
+
+    def quit(self):
+        self.quit_called = True
+
+
+@pytest.fixture
+def fake_r2(monkeypatch):
+    """Install a factory for _FakeR2 sessions answering from the given outputs; returns those made."""
+    import decompiler
+    made = []
+
+    def install(outputs):
+        monkeypatch.setattr(decompiler, "_find_r2_bin", lambda: "r2")
+        monkeypatch.setattr(decompiler, "_ensure_r2_in_path", lambda path: None)
+        monkeypatch.setattr(decompiler, "_find_sleigh_home", lambda: None)
+        monkeypatch.setattr(decompiler.r2pipe, "open",
+                            lambda binary, flags: made.append(_FakeR2(outputs)) or made[-1])
+        return made
+    return install
 
 
 class TestLoadTypesOrdering:
@@ -100,7 +124,7 @@ class TestLoadTypesOrdering:
         )
 
         from decompiler import _load_types
-        r2 = FakeR2()
+        r2 = _FakeR2()
         _load_types(r2, str(kb_path))
 
         td_idx = next(i for i, c in enumerate(r2.cmds) if "td " in c)
@@ -113,16 +137,22 @@ class TestLoadTypesOrdering:
     def test_a_declaration_over_several_lines_is_one_command_radare2_does_not_split(self):
         """A leading quote makes radare2 take the rest literally; unquoted, each ';' starts a new command."""
         from decompiler import _load_types
-        r2 = FakeR2()
+        r2 = _FakeR2()
         _load_types(r2, "struct Foo {\n    int x;\n    float y;\n};\n")
         assert r2.cmds == ["'td struct Foo { int x; float y; };"]
 
     def test_an_entry_without_a_parameter_list_only_names_the_function(self):
         from decompiler import _load_types
-        r2 = FakeR2()
+        r2 = _FakeR2()
         _load_types(r2, "@ 0x401000 _thunk_Foo;")
         assert not [c for c in r2.cmds if "afs " in c]
         assert [c for c in r2.cmds if "afn " in c] == ["'@0x401000'afn _thunk_Foo"]
+
+    def test_an_entry_without_a_name_only_creates_the_function(self):
+        from decompiler import _load_types
+        r2 = _FakeR2()
+        _load_types(r2, "@ 0x401000 (int a);")
+        assert r2.cmds == ["af @ 0x401000"]
 
 
 def _radare2() -> str:
@@ -200,50 +230,21 @@ class TestKnowledgeBaseInRadare2:
         assert "KbCount(KbPoint *point,int n)" in code
 
 
-class _ScriptedR2:
-    """Stands in for an r2pipe session: answers decompile commands from a table."""
-
-    def __init__(self, outputs: dict):
-        self._outputs = outputs
-        self.cmds = []
-
-    def cmd(self, c):
-        self.cmds.append(c)
-        for prefix, output in self._outputs.items():
-            if c.startswith(prefix + " "):
-                return output
-        return ""
-
-    def quit(self):
-        pass
-
-
-def _decompile_with(outputs: dict, **kwargs) -> str:
-    import decompiler
-    session = _ScriptedR2(outputs)
-    with (
-        patch("decompiler._find_r2_bin", return_value="r2"),
-        patch("decompiler._ensure_r2_in_path"),
-        patch("decompiler._find_sleigh_home", return_value=None),
-        patch("decompiler.r2pipe.open", return_value=session),
-    ):
-        return decompiler.decompile("fake.exe", 0x401000, **kwargs)
+MISSING_PLUGIN_HINT = "You need to install the plugin with r2pm -ci r2ghidra"
 
 
 class TestAutoBackendOutputSelection:
-    def test_output_mentioning_install_is_kept(self):
+    def test_output_mentioning_install_is_kept(self, fake_r2):
+        import decompiler
         code = "uint sym.MsiInstallProductW(int64_t arg1) { return 0; }"
-        assert _decompile_with({"pdg": code}, backend="auto") == code
+        fake_r2({"pdg": code})
+        assert decompiler.decompile("fake.exe", 0x401000, backend="auto") == code
 
-    def test_missing_plugin_hint_falls_back_to_next_backend(self):
-        hint = "You need to install the plugin with r2pm -ci r2ghidra"
+    def test_missing_plugin_hint_falls_back_to_next_backend(self, fake_r2):
+        import decompiler
         fallback = "void fcn_00401000(void) { }"
-        assert _decompile_with({"pdg": hint, "pdc": fallback}, backend="auto") == fallback
-
-    def test_error_when_no_backend_is_installed(self):
-        hint = "You need to install the plugin with r2pm -ci r2ghidra"
-        result = _decompile_with({"pdg": hint}, backend="auto")
-        assert result.startswith("[error]")
+        fake_r2({"pdg": MISSING_PLUGIN_HINT, "pdc": fallback})
+        assert decompiler.decompile("fake.exe", 0x401000, backend="auto") == fallback
 
 
 class TestAutoBackendGhidraProjectLookup:
@@ -265,3 +266,44 @@ class TestAutoBackendGhidraProjectLookup:
         assert result == "void func() {}"
         mock_backend.is_analyzed.assert_called_once_with(
             str(tmp_path / "ghidra"), "sl.common.dll")
+
+
+class TestGhidraFirstInAuto:
+    def _backend(self, monkeypatch, analyzed, result):
+        import decompiler
+        backend = MagicMock()
+        backend.is_analyzed.return_value = analyzed
+        backend.decompile.return_value = result
+        monkeypatch.setitem(sys.modules, "retools.pyghidra_backend", backend)
+        return decompiler, backend
+
+    def test_a_ghidra_error_falls_through_to_r2(self, monkeypatch, tmp_path, fake_r2):
+        decompiler, _ = self._backend(monkeypatch, True, "[error] no function")
+        fake_r2({"pdg": "int r2() {}"})
+        assert decompiler.decompile("game.exe", 0x401000, project_dir=str(tmp_path)) == "int r2() {}"
+
+
+class TestR2Routing:
+    def test_auto_prefers_pdg(self, fake_r2):
+        import decompiler
+        fake_r2({"pdg": "void g() {}", "pdc": "int f() {}"})
+        assert decompiler.decompile("a.exe", 0x401000) == "void g() {}"
+
+    @pytest.mark.parametrize("outputs", [{}, {"pdg": MISSING_PLUGIN_HINT}], ids=["nothing", "only-a-plugin-hint"])
+    def test_auto_with_no_output_is_an_error(self, fake_r2, outputs):
+        import decompiler
+        fake_r2(outputs)
+        assert decompiler.decompile("a.exe", 0x401000) == "[error] No decompiler backend produced output at 0x401000"
+
+    def test_named_backend_and_its_errors(self, fake_r2):
+        import decompiler
+        fake_r2({"pdd": "pseudo"})
+        assert decompiler.decompile("a.exe", 0x401000, backend="pdd") == "pseudo"
+        assert decompiler.decompile("a.exe", 0x401000, backend="pdc") == "[error] pdc produced no output at 0x401000"
+        assert decompiler.decompile("a.exe", 0x401000, backend="nope").startswith("[error] Unknown backend 'nope'")
+
+    def test_full_analysis_runs_aaa_instead_of_af(self, fake_r2):
+        import decompiler
+        made = fake_r2({"pdg": "x"})
+        decompiler.decompile("a.exe", 0x401000, full_analysis=True)
+        assert "aaa" in made[0].cmds and "af @ 0x401000" not in made[0].cmds

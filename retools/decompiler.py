@@ -127,6 +127,8 @@ def _load_types(r2, types_arg: str) -> None:
     for fn in kb.functions:
         at = f"'@{fn.address:#x}'"
         r2.cmd(f"af @ {fn.address:#x}")
+        if not fn.name:  # a signature such as "(int a)" names nothing to apply
+            continue
         parameters = fn.signature.find("(")
         if parameters != -1:
             # afs takes a signature only when its function name is a plain identifier.

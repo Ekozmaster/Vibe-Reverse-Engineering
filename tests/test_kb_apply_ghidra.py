@@ -37,7 +37,7 @@ def addresses():
 def report(addresses, tmp_path_factory):
     """The driver's report for a kb.h with types, prototypes, a name and a global."""
     pytest.importorskip("pyghidra")
-    if verify_install.find_java() is None or verify_install._find_ghidra_dir() is None:
+    if verify_install.find_jdk() is None or verify_install._find_ghidra_dir() is None:
         pytest.skip("needs Java and a Ghidra install (python verify_install.py --setup)")
 
     folder = tmp_path_factory.mktemp("kb_apply")

@@ -26,7 +26,7 @@ from funcinfo import find_start, analyze
 from structrefs import aggregate_struct
 from search import find_strings
 from sigdb import SignatureDB, extract_structural_sig
-from dataflow import propagate_cfg, Const, Unknown
+from dataflow import propagate_cfg, Const
 from index import GameIndex
 
 # Pattern: fcn.XXXXXXXX or FUN_XXXXXXXX (r2ghidra or Ghidra naming)
@@ -143,6 +143,20 @@ def _find_kb_path(project_dir: str, project_dir_for_kb: str | None = None) -> Pa
     if p.is_file():
         return p
     return Path(project_dir) / "kb.h"  # may not exist -- callers handle missing
+
+
+def _dataflow_section(b: Binary, start: int, func_size: int) -> list[str]:
+    """The ``[dataflow]`` lines: registers that hold a constant at a block's end."""
+    if b.is_64:
+        return ["[dataflow] skipped: constant propagation tracks x86 registers only"]
+    block_states = propagate_cfg(b, start, max_size=func_size)
+    constants = [
+        f"  0x{bva:08X}: {reg} = {val}"
+        for bva in sorted(block_states)
+        for reg, val in sorted(block_states[bva].items())
+        if isinstance(val, Const)
+    ]
+    return ["[dataflow]", *constants] if constants else []
 
 
 def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
@@ -268,23 +282,7 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
 
     # -- Dataflow (forward constant propagation) --
     if not no_dataflow:
-        try:
-            block_states = propagate_cfg(b, start, max_size=func_size)
-            resolved_any = False
-            dataflow_lines: list[str] = []
-            for bva in sorted(block_states):
-                state = block_states[bva]
-                for reg, val in sorted(state.items()):
-                    if isinstance(val, Const):
-                        dataflow_lines.append(
-                            f"  0x{bva:0{w}X}: {reg} = {val}"
-                        )
-                        resolved_any = True
-            if resolved_any:
-                lines.append("[dataflow]")
-                lines.extend(dataflow_lines)
-        except Exception:
-            pass
+        lines.extend(_dataflow_section(b, start, func_size))
 
     # -- Sigdb structural match (best-effort) --
     if db_path:

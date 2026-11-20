@@ -17,6 +17,39 @@ _EXCEPTION_DIRECTORY = 3
 _UNW_FLAG_CHAININFO = 0x4
 _MAX_UNWIND_CHAIN = 32  # a chain longer than this is a loop in a damaged file
 
+_MAX_INSN_LEN = 15
+# Capstone decodes everything one disasm call asks for before handing back the
+# first instruction, at about 1 KB per instruction with details on, so the
+# instructions decoded per call are capped.
+_SWEEP_BATCH_INSNS = 4096
+_ITER_BATCH_INSNS = 16
+
+
+def _disasm_batches(cs: Cs, code: bytes, va: int, batch_insns: int):
+    """Decode *code* with *cs*, at most *batch_insns* instructions per capstone call.
+
+    Each call gets ``batch_insns * 15`` bytes, so every instruction it may
+    return lies whole inside them, and the next call starts where the last
+    returned instruction ends. The result is the same as one call over all of
+    *code*. Decoding stops where *cs* stops: at the end of *code*, or at the
+    first byte that is no instruction unless *cs* skips data.
+
+    Args:
+        cs: Capstone handle with the mode, detail and skipdata settings to decode with.
+        code: Bytes to decode.
+        va: Virtual address of the first byte.
+        batch_insns: Most instructions decoded per capstone call.
+    """
+    pos = 0
+    while pos < len(code):
+        decoded = 0
+        for insn in cs.disasm(code[pos : pos + batch_insns * _MAX_INSN_LEN], va + pos, batch_insns):
+            decoded += 1
+            yield insn
+        if decoded < batch_insns:
+            return
+        pos = insn.address + insn.size - va
+
 
 def sweep_code(code: bytes, va: int, is_64: bool):
     """Linear-sweep *code*, yielding every instruction that decodes.
@@ -33,7 +66,7 @@ def sweep_code(code: bytes, va: int, is_64: bool):
     cs = Cs(CS_ARCH_X86, CS_MODE_64 if is_64 else CS_MODE_32)
     cs.detail = True
     cs.skipdata = True
-    for insn in cs.disasm(code, va):
+    for insn in _disasm_batches(cs, code, va, _SWEEP_BATCH_INSNS):
         if insn.id:  # id 0 marks a skipped data byte, which has no operands
             yield insn
 
@@ -142,13 +175,13 @@ class Binary:
         return list(self._cs.disasm(self.read_va(va, max_bytes), va, count))
 
     def iter_disasm(self, va: int, max_bytes: int = 0x800):
-        """Lazily decode instructions starting at *va*.
+        """Lazily decode instructions starting at *va*, up to the first byte that is no instruction.
 
-        Instructions are decoded as the iterator is consumed, so a caller
-        that stops at a function's end does not pay for the rest of the
-        *max_bytes* window.
+        Capstone is handed a few instructions' worth at a time as the iterator
+        is consumed, so a caller that stops at a function's end does not pay
+        for the rest of the *max_bytes* window.
         """
-        return self._cs.disasm(self.read_va(va, max_bytes), va)
+        return _disasm_batches(self._cs, self.read_va(va, max_bytes), va, _ITER_BATCH_INSNS)
 
     def sweep(self, ranges: list[tuple[int, int, int]] | None = None):
         """Yield every instruction of a linear sweep over executable code.
@@ -241,6 +274,11 @@ class Binary:
         another jump: that is a function reached by tail calls, while any other
         jump target is a label inside a function. On x64 nothing inside a
         function of the exception table is an entry point.
+
+        Both tests are byte heuristics, not decoded instructions: every
+        ``E8``/``E9`` byte counts as a call or jump, and "behind padding, a
+        return or a jump" only looks at the raw bytes before the target. An
+        operand or data byte that happens to match can add a false entry point.
         """
         if hasattr(self, "_func_table"):
             return self._func_table

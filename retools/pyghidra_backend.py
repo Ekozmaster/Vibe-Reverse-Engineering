@@ -7,7 +7,6 @@ using Ghidra's DecompInterface via the pyghidra bridge.
 import argparse
 import os
 import re
-import shutil
 import socket
 import sys
 import time
@@ -53,25 +52,18 @@ sys.path.insert(0, str(_HERE))  # so `from index import GameIndex` resolves as a
 
 
 def _ensure_java_env():
-    """Give pyghidra a JDK: the one JAVA_HOME names, else ``java`` on PATH, else a portable JDK in tools/.
+    """Hand pyghidra the JDK ``jdk.find_jdk`` picks, unless JAVA_HOME_OVERRIDE already names one.
 
-    pyghidra finds its JDK by running ``java``, or takes JAVA_HOME_OVERRIDE; it does not read JAVA_HOME.
+    pyghidra takes its JDK from JAVA_HOME_OVERRIDE, else from whatever ``java``
+    on PATH resolves to, whatever its version; it does not read JAVA_HOME.
     """
-    launcher = "java.exe" if os.name == "nt" else "java"
-    java_home = os.environ.get("JAVA_HOME")
-    if java_home and (Path(java_home) / "bin" / launcher).is_file():
-        os.environ.setdefault("JAVA_HOME_OVERRIDE", java_home)
+    from jdk import find_jdk
+
+    if os.environ.get("JAVA_HOME_OVERRIDE"):
         return
-    if shutil.which("java"):
-        return
-    for d in sorted(_TOOLS.glob("jdk-*"), reverse=True):
-        java_bin = d / "bin" / "java.exe"
-        if not java_bin.exists():
-            java_bin = d / "bin" / "java"
-        if java_bin.exists():
-            os.environ["JAVA_HOME"] = str(d)
-            os.environ["PATH"] = str(d / "bin") + os.pathsep + os.environ.get("PATH", "")
-            return
+    found = find_jdk()
+    if found is not None:
+        os.environ["JAVA_HOME_OVERRIDE"] = str(found.home)
 
 
 def _ensure_ghidra_env():
@@ -342,8 +334,23 @@ def _iter_blocks(program):
         yield {"func_ea": func_ea, "start_ea": start, "end_ea": end, "size": end - start}
 
 
+_EXPORTED_LABEL_SOURCES = ("IMPORTED", "USER_DEFINED")
+
+
+def _iter_data_labels(program):
+    """Named non-function labels: PDB-imported or kb-applied, never Ghidra's own DAT_/switchD_.
+
+    Names are namespace-qualified (``Config::Campaign::fTimeMultiplier``): class-scoped
+    PDB labels such as ``vftable`` are ambiguous without their class.
+    """
+    for sym in program.getSymbolTable().getSymbolIterator(True):
+        if str(sym.getSymbolType()) != "Label" or str(sym.getSource()) not in _EXPORTED_LABEL_SOURCES:
+            continue
+        yield {"address": sym.getAddress().getOffset(), "name": sym.getName(True)}
+
+
 def _export_program(program, gi, xrefs=None, blocks=None) -> dict:
-    """Extract funcs/names/xrefs/blocks from an open program into *gi*.
+    """Extract funcs/names (functions + named data labels)/xrefs/blocks from an open program into *gi*.
 
     *xrefs*/*blocks* default to streaming iterators over the program; tests
     pass explicit lists to avoid Ghidra-only classes.
@@ -364,6 +371,7 @@ def _export_program(program, gi, xrefs=None, blocks=None) -> dict:
             "comment": None,
         })
         name_rows.append({"address": ep, "name": name})
+    name_rows.extend(_iter_data_labels(program))
 
     xref_rows = list(_iter_xrefs(program)) if xrefs is None else xrefs
     block_rows = list(_iter_blocks(program)) if blocks is None else blocks

@@ -127,6 +127,11 @@ class TestDeclarationsOverSeveralLines:
         kb = parse_kb("typedef struct _Foo {\n    int x;\n} Foo;\nenum Mode { MODE_A=0 };\n")
         assert kb.typedefs == ["typedef struct _Foo { int x; } Foo;", "enum Mode { MODE_A=0 };"]
 
+    def test_typedef_name_on_the_line_after_the_closing_brace(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef struct {\n    int x;\n}\nFoo;\nstruct Bar { int y; };\n")
+        assert kb.typedefs == ["typedef struct { int x; } Foo;", "struct Bar { int y; };"]
+
     def test_nested_braces_stay_in_one_declaration(self):
         from kb import parse_kb
         kb = parse_kb("struct Outer {\n    union {\n        int i;\n        float f;\n    } value;\n    int tail;\n};\n")
@@ -169,6 +174,24 @@ class TestParseKbInputHandling:
         p.write_text("@ 0x402000 void Bar(void);\n")
         kb = parse_kb(p)
         assert kb.functions[0].name == "Bar"
+
+    def test_a_file_with_a_stray_non_utf8_byte_is_still_read(self, tmp_path):
+        from kb import parse_kb
+        p = tmp_path / "kb.h"
+        p.write_bytes(b"// caf\xe9\n@ 0x402000 void Bar(void);\n")
+        assert [f.name for f in parse_kb(p).functions] == ["Bar"]
+
+    def test_malformed_entries_are_skipped_without_ending_the_parse(self):
+        from kb import parse_kb
+        kb = parse_kb("@ 0x401000\n"
+                      "@ 0xZZZZ void Bad(void);\n"
+                      "$ 0x7C5548\n"
+                      "$ 0xZZZZ int g_bad\n"
+                      "@ 0x402000 void Good(void);\n"
+                      "$ 0x7C554C int g_good\n")
+        assert [(f.address, f.name) for f in kb.functions] == [(0x402000, "Good")]
+        assert [(g.address, g.name) for g in kb.globals] == [(0x7C554C, "g_good")]
+        assert kb.typedefs == []
 
 
 class TestReadExistingAddresses:

@@ -379,32 +379,6 @@ class TestBootstrapProjectDir:
 
 
 # ---------------------------------------------------------------------------
-# Pipeline steps
-# ---------------------------------------------------------------------------
-
-class TestPipelineSteps:
-    def test_detect_compiler_returns_dict(self, tmp_path):
-        from bootstrap import _detect_compiler
-        import pefile
-        pe_path = _make_minimal_pe(str(tmp_path))
-        b = MagicMock()
-        b.pe = pefile.PE(pe_path, fast_load=False)
-        result = _detect_compiler(b, db_path=None)
-        assert "compiler" in result
-        assert "confidence" in result
-
-    def test_propagate_labels_incremental_set(self):
-        """Verify propagation uses incremental set, not O(n^2) rebuild."""
-        from bootstrap import _propagate_labels
-        mock_b = MagicMock()
-        result = _propagate_labels(
-            b=mock_b, func_table=[], known_names={}, known_addresses=set(),
-            kb_entry_addresses=set(),
-        )
-        assert isinstance(result, list)
-
-
-# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -447,22 +421,155 @@ class TestStringSweepDedup:
         assert calls["n"] == 1
 
 
-class TestSeedIndex:
-    def test_seed_index_populates_tables(self, sample_binary, tmp_path):
-        import sys
-        from pathlib import Path
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
+def _parsed(entries):
+    """(address, name) of each KB entry, read back through the kb.h parser."""
+    from kb import parse_kb
+    return [(f.address, f.name) for f in parse_kb("\n".join(entries)).functions]
+
+
+class TestBootstrapPipeline:
+    def test_signature_db_is_downloaded_only_when_missing(self, tmp_path, monkeypatch):
+        import sigdb
+        from bootstrap import bootstrap
+        pe_path = _make_minimal_pe(str(tmp_path))
+        fetched = []
+        monkeypatch.setattr(sigdb, "_download_file", lambda url, path: fetched.append(path))
+        present = tmp_path / "present.db"
+        present.write_bytes(b"")
+        bootstrap(pe_path, str(tmp_path / "p1"), db_path=str(present))
+        assert fetched == []
+        missing = str(tmp_path / "missing.db")
+        bootstrap(pe_path, str(tmp_path / "p2"), db_path=missing)
+        assert fetched == [missing]
+
+
+class TestClassifyRules:
+    def test_vtable_call_without_operator_new_is_not_a_constructor(self):
+        from bootstrap import classify_function
+        assert classify_function([0x1000, 0x2000], {}, is_vtable_call=True) is None
+
+
+class TestDetectCompiler:
+    def test_crt_import_heuristic_has_low_confidence(self, monkeypatch):
+        import sigdb
+        from bootstrap import _detect_compiler
+        monkeypatch.setattr(sigdb, "detect_crt_import", lambda b: "msvc_2019")
+        assert _detect_compiler(MagicMock(), None) == {"compiler": "msvc_2019", "confidence": 0.3}
+        monkeypatch.setattr(sigdb, "detect_crt_import", lambda b: None)
+        assert _detect_compiler(MagicMock(), None) == {"compiler": "unknown", "confidence": 0.0}
+
+    def test_db_fingerprint_without_confidence_reports_zero(self, tmp_path, monkeypatch):
+        import sigdb
+        from bootstrap import _detect_compiler
+        db = tmp_path / "sigs.db"
+        db.write_bytes(b"")
+        fake = MagicMock()
+        fake.fingerprint.return_value = {"compiler": "gcc"}
+        monkeypatch.setattr(sigdb, "SignatureDB", lambda path: fake)
+        assert _detect_compiler(MagicMock(), str(db)) == {"compiler": "gcc", "confidence": 0.0}
+
+
+class TestMain:
+    def test_main_runs_the_pipeline_and_prints_the_summary(self, tmp_path, monkeypatch, capsys):
+        import bootstrap as bs
+        seen = []
+        monkeypatch.setattr(bs, "bootstrap", lambda binary, project, db_path=None: seen.append(
+            (binary, project, db_path)) or {"compiler": "msvc", "functions_identified": 7})
+        bs.main(["game.exe", "--project", str(tmp_path), "--db", "s.db"])
+        assert seen == [("game.exe", str(tmp_path), "s.db")]
+        assert capsys.readouterr().out.splitlines() == [
+            "Compiler: msvc", "Functions identified: 7",
+            f"Report written to: {os.path.join(str(tmp_path), 'bootstrap_report.txt')}"]
+
+
+class TestPropagateLabels:
+    def test_classifies_unseen_functions_from_their_direct_callees(self, monkeypatch):
+        import funcinfo
+        from bootstrap import _propagate_labels
+        calls = {
+            0x1000: [(0x1001, 0x9000)],                                  # thunk
+            0x2000: [(0x2001, "dword ptr [eax + 4]")],                   # indirect only
+            0x3000: [(0x3001, 0x9000)],                                  # known on disk
+            0x4000: [(0x4001, 0x9100), (0x4002, 0x9200), (0x4003, "dword ptr [ecx]")],
+        }
+        monkeypatch.setattr(funcinfo, "analyze", lambda b, va, max_size: ([], calls[va], va + 0x10))
+        names = {0x9000: "target", 0x9100: "operator_new", 0x9200: "other"}
+        out = _propagate_labels(MagicMock(), [0x1000, 0x2000, 0x3000, 0x4000], names, {0x3000}, set())
+        assert _parsed(out) == [(0x1000, "_thunk_target"), (0x4000, "constructor")]
+
+
+class TestScanRtti:
+    def test_classes_become_vtable_entries(self, monkeypatch):
+        import rtti
+        from bootstrap import _scan_rtti
+        cls = MagicMock(hierarchy=["Derived", "Base"], vtable_va=0x5000)
+        cls.name = ".?AVDerived@@"
+        lone = MagicMock(hierarchy=[], vtable_va=0x6000)
+        lone.name = ".?AVLone@@"
+        monkeypatch.setattr(rtti, "scan_all_rtti", lambda pe: [cls, lone])
+        count, entries = _scan_rtti(None)
+        assert count == 2
+        assert _parsed(entries) == [(0x5000, "Derived_vtable"), (0x6000, "Lone_vtable")]
+
+    def test_unparseable_rtti_is_skipped(self, monkeypatch):
+        import rtti
+        from bootstrap import _scan_rtti
+
+        def boom(pe):
+            raise ValueError("bad rva")
+        monkeypatch.setattr(rtti, "scan_all_rtti", boom)
+        assert _scan_rtti(None) == (0, [])
+
+
+class TestScanSignatures:
+    def test_matches_become_kb_entries(self, tmp_path, monkeypatch):
+        import sqlite3
+        import sigdb
+        from bootstrap import _scan_signatures
+        db = tmp_path / "sigs.db"
+        db.write_bytes(b"")
+        match = MagicMock(tier="byte", confidence=0.9, category="crt")
+        match.name = "_memcpy"
+        fake = MagicMock()
+        fake.scan.return_value = {0x401000: match}
+        monkeypatch.setattr(sigdb, "SignatureDB", lambda path: fake)
+        results, entries = _scan_signatures(MagicMock(), str(db), "msvc")
+        assert results == {0x401000: match}
+        assert _parsed(entries) == [(0x401000, "_memcpy")]
+        fake.scan.assert_called_once()
+        assert fake.scan.call_args.kwargs == {"preferred_compiler": "msvc"}
+
+        fake.scan.side_effect = sqlite3.DatabaseError("corrupt")
+        assert _scan_signatures(MagicMock(), str(db), "msvc") == ({}, [])
+
+
+class TestSeedIndexRows:
+    def test_rows_carry_ranges_modules_and_export_addresses(self, sample_binary, tmp_path):
         from bootstrap import _seed_index
         from common import Binary
         from index import GameIndex
-
-        db = str(tmp_path / "index.db")
         b = Binary(sample_binary)
-        _seed_index(b, db)  # must not raise
-
+        db = str(tmp_path / "index.db")
+        _seed_index(b, db, strings=[])
         gi = GameIndex(db)
-        counts = gi.counts()
+        segs = gi._conn.execute("SELECT start_ea, end_ea, name, source FROM segments").fetchall()
+        imports = gi._conn.execute("SELECT module, source FROM imports").fetchall()
+        exports = gi._conn.execute("SELECT address FROM entries").fetchall()
         gi.close()
-        # A real system DLL always has imports and segments.
-        assert counts["segments"] > 0
-        assert counts["imports"] > 0  # kernel32 imports from ntdll and others
+        expected = sorted((b.base + s.VirtualAddress, b.base + s.VirtualAddress + s.Misc_VirtualSize)
+                          for s in b.pe.sections)
+        assert sorted((s, e) for s, e, _, _ in segs) == expected
+        assert {src for *_, src in segs} == {"bootstrap"}
+        assert imports and all(m and src == "bootstrap" for m, src in imports)
+        assert exports and all(b.base < a < b.base + b.pe.OPTIONAL_HEADER.SizeOfImage for (a,) in exports)
+
+
+class TestWriteKbEntries:
+    def test_appends_new_entries_and_skips_known_addresses(self, tmp_path):
+        from bootstrap import _write_kb_entries
+        kb = tmp_path / "kb.h"
+        kb.write_text("// head\n")
+        entries = ["// [a]\n@ 0x1000 known;", "// [b]\n@ 0x2000 fresh;", "// no address line",
+                   "// [c]\n@ 0xZZ bad;\n@ 0x1000 known_again;"]
+        assert _write_kb_entries(str(kb), entries, {0x1000}) == 2
+        assert kb.read_text() == "// head\n// [b]\n@ 0x2000 fresh;\n\n// no address line\n\n"

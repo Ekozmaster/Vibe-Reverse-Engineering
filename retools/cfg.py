@@ -35,7 +35,11 @@ _UNCOND_JUMPS = {"jmp", "ret", "retn"}
 _COND_JUMPS = {
     "je", "jne", "jz", "jnz", "jg", "jge", "jl", "jle",
     "ja", "jae", "jb", "jbe", "jo", "jno", "js", "jns", "jp", "jnp",
+    "jcxz", "jecxz", "jrcxz", "loop", "loope", "loopne",
 }
+# Compilers emit int3 only as padding or after a call that does not return, so
+# execution never falls through it: it ends its block without a successor.
+_NO_SUCCESSOR = {"ret", "retn", "int3"}
 
 
 def _resolve_target(insn) -> int | None:
@@ -173,7 +177,7 @@ def build_cfg(b: Binary, start: int, max_size: int = 0x4000):
         if current_leader is not None:
             blocks[current_leader].append(insn)
             mn = insn.mnemonic
-            if mn in _UNCOND_JUMPS or mn in _COND_JUMPS:
+            if mn in _UNCOND_JUMPS or mn in _COND_JUMPS or mn in _NO_SUCCESSOR:
                 current_leader = None
 
     # Build edges
@@ -183,7 +187,7 @@ def build_cfg(b: Binary, start: int, max_size: int = 0x4000):
             continue
         last = block_insns[-1]
         mn = last.mnemonic
-        if mn in ("ret", "retn"):
+        if mn in _NO_SUCCESSOR:
             continue
         target = _resolve_target(last)
         fallthrough = last.address + last.size
