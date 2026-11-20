@@ -67,7 +67,7 @@ python -m livetools resume                    # unfreeze target
 
 ### Patch + Scan (anytime)
 ```
-python -m livetools mem write <addr> <hex>    # write bytes to live memory
+python -m livetools mem write <addr> <hex>    # write bytes to live memory (spaces allowed; an odd digit count or non-hex is refused)
 python -m livetools mem alloc <size>          # allocate rwx memory in target (for code caves)
 python -m livetools scan <pattern> --range START:SIZE
 ```
