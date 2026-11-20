@@ -23,7 +23,10 @@ def main():
         print("ERROR: pefile not installed. Run: pip install pefile")
         sys.exit(1)
 
-    pe = pefile.PE(args.binary)
+    try:
+        pe = pefile.PE(args.binary)
+    except (OSError, pefile.PEFormatError) as exc:
+        sys.exit(f"ERROR: {args.binary}: {exc}")
     image_base = pe.OPTIONAL_HEADER.ImageBase
     print(f"ImageBase: 0x{image_base:08X}")
     print(f"Machine: 0x{pe.FILE_HEADER.Machine:04X}")

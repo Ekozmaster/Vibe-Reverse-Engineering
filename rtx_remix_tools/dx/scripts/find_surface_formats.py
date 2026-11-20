@@ -19,11 +19,12 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_common import (
-    load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, method_immediates,
-    split_device_hits, device_origin_summary, decode_format, D3DPOOL,
+from dx9_pe import load_binary, load_text_section, print_header
+from dx9_calls import (
+    scan_vtable_calls, scan_vtable_mov, method_immediates, split_device_hits,
+    device_origin_summary,
 )
+from dx9_enums import decode_format, D3DPOOL
 
 # Method signatures (vtable offset, name, arg hints)
 METHODS = {

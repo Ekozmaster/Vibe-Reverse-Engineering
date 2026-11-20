@@ -21,11 +21,9 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_common import (
-    load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, method_immediates,
-    va_to_offset, validate_shader_token, find_shader_end,
-)
+from dx9_pe import load_binary, load_text_section, print_header, va_to_offset
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
+from dx9_shader import validate_shader_token, find_shader_end
 
 # Vtable offsets
 SVSCF = 0x178    # SetVertexShaderConstantF

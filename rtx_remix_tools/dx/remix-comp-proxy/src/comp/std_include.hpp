@@ -16,6 +16,7 @@ constexpr auto COMP_MOD_VERSION_PATCH = 1;
 #include <shellapi.h>
 #include <chrono>
 #include <mutex>
+#include <atomic>
 #include <filesystem>
 #include <cassert>
 #include <map>

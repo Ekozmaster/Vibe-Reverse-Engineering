@@ -23,11 +23,9 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_common import (
-    load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, scan_all_patterns,
-    method_args, arg_text, D3DSTATEBLOCKTYPE,
-)
+from dx9_pe import load_binary, load_text_section, print_header
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, scan_all_patterns, method_args, arg_text
+from dx9_enums import D3DSTATEBLOCKTYPE
 
 # Device methods
 DEVICE_METHODS = {

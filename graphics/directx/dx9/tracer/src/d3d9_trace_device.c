@@ -499,10 +499,27 @@ static void trace_post(int slot, DWORD retval, DWORD *args) {
 
 /* ---- Frame boundary: called from Present wrapper ---- */
 
+/* Frames the trigger file asks for ("frames=N", as "trigger" writes it);
+ * [Trace] CaptureFrames for a trigger file that names no count. */
+static int trigger_frames(void) {
+    char buf[256] = {0};
+    const char *p;
+    int frames = 0;
+    FILE *tf = fopen(g_triggerPath, "r");
+    if (tf) {
+        fread(buf, 1, sizeof(buf) - 1, tf);
+        fclose(tf);
+    }
+    p = strstr(buf, "frames=");
+    if (p) sscanf(p + 7, "%d", &frames);
+    return frames >= 1 ? frames : g_cfgCaptureFrames;
+}
+
 static void trace_on_present(void) {
     if (!g_capturing) {
         DWORD attr = GetFileAttributesA(g_triggerPath);
         if (attr != INVALID_FILE_ATTRIBUTES) {
+            int frames = trigger_frames();
             DeleteFileA(g_triggerPath);
 
             if (!g_jsonlFile) {
@@ -512,7 +529,7 @@ static void trace_on_present(void) {
                 g_capturing = 1;
                 g_currentFrame = 0;
                 g_seq = 0;
-                g_frameTarget = g_cfgCaptureFrames;
+                g_frameTarget = frames;
                 init_code_ranges(); /* refresh: DLLs may have loaded since init */
                 log_str("=== CAPTURE STARTED ===\r\n");
                 write_progress(0);

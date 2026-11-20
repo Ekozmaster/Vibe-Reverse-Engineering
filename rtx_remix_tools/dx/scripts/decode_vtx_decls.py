@@ -15,10 +15,8 @@ Examples:
 import argparse
 import struct
 
-from dx9_common import (
-    load_binary, find_text_section, va_to_offset,
-    scan_vtable_calls, scan_vtable_mov, method_immediates,
-)
+from dx9_pe import load_binary, find_text_section, va_to_offset
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
 
 D3DDECLTYPE = {
     0: "FLOAT1", 1: "FLOAT2", 2: "FLOAT3", 3: "FLOAT4",

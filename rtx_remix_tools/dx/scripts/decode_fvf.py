@@ -20,11 +20,9 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_common import (
-    load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, method_immediates,
-    decode_fvf, D3DFVF_POSITIONS, D3DFVF_FLAGS,
-)
+from dx9_pe import load_binary, load_text_section, print_header
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
+from dx9_enums import decode_fvf, D3DFVF_POSITIONS, D3DFVF_FLAGS
 
 SETFVF_OFFSET = 0x164
 GETFVF_OFFSET = 0x168

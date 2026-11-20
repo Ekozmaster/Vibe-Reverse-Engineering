@@ -12,6 +12,21 @@
 
 namespace comp
 {
+	namespace
+	{
+		// "<frame> <calls>" while capturing, " done" added once the capture file is
+		// closed: the format of the standalone tracer, which "trigger --wait" follows
+		void write_progress(int frame, int calls, bool done)
+		{
+			const std::string path = shared::globals::root_path + "\\dxtrace_progress.txt";
+			if (FILE* f = fopen(path.c_str(), "w"))
+			{
+				fprintf(f, done ? "%d %d done\n" : "%d %d\n", frame, calls);
+				fclose(f);
+			}
+		}
+	}
+
 	tracer::tracer()
 	{
 		p_this = this;
@@ -104,6 +119,7 @@ namespace comp
 
 	void tracer::start_capture(int num_frames, const std::string& filename)
 	{
+		std::lock_guard<std::recursive_mutex> lock(record_mutex_);
 		if (capturing_) return;
 
 		// Ensure output directory exists
@@ -138,6 +154,7 @@ namespace comp
 
 		capturing_ = true;
 		last_capture_path_ = full_path;
+		write_progress(frame_index_, sequence_, false);
 
 		shared::common::log("Tracer",
 			std::format("Capture started: {} frames -> {}", num_frames, full_path));
@@ -145,6 +162,7 @@ namespace comp
 
 	void tracer::stop_capture()
 	{
+		std::lock_guard<std::recursive_mutex> lock(record_mutex_);
 		if (!capturing_) return;
 		capturing_ = false;
 
@@ -164,6 +182,7 @@ namespace comp
 			CloseHandle(log_file_);
 			log_file_ = INVALID_HANDLE_VALUE;
 		}
+		write_progress(frames_captured_, sequence_, true);
 
 #ifdef HAS_FFP_STATE
 		// Restore FFP to its pre-capture state (don't force it on if config had it off)
@@ -242,9 +261,12 @@ namespace comp
 
 	void tracer::on_present()
 	{
-		// Check for external trigger file
+		// A capture the trigger file starts begins with the next frame, as a delayed one does
 		if (!capturing_ && !waiting_)
+		{
 			check_trigger_file();
+			return;
+		}
 
 		// Check delayed start countdown
 		if (waiting_)
@@ -258,14 +280,15 @@ namespace comp
 			return;
 		}
 
-		if (!capturing_) return;
-
+		std::lock_guard<std::recursive_mutex> lock(record_mutex_);
 		flush_buffer();
 		frame_index_++;
 		frames_captured_ = frame_index_;
 
 		if (frame_index_ >= frames_to_capture_)
 			stop_capture();
+		else
+			write_progress(frame_index_, sequence_, false);
 	}
 
 	void tracer::on_reset()

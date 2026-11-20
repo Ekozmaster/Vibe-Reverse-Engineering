@@ -22,11 +22,9 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_common import (
-    load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, va_to_offset,
-    D3D9_DEVICE_VTABLE,
-)
+from dx9_pe import load_binary, load_text_section, print_header, va_to_offset
+from dx9_calls import scan_vtable_calls, scan_vtable_mov
+from dx9_enums import D3D9_DEVICE_VTABLE
 
 # Draw methods to classify
 DRAW_METHODS = {

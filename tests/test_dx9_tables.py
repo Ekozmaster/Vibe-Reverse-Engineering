@@ -11,7 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rtx_remix_tools" / "dx" / "scripts"))
 
-import dx9_common as dx
+import dx9_calls as calls
+import dx9_enums as enums
 import find_render_states
 import find_vtable_calls
 
@@ -36,7 +37,7 @@ class TestRenderStateValueDecoding:
         (209, 1, "ADD"),           # D3DRS_BLENDOPALPHA
     ])
     def test_enum_valued_states(self, state_id, value, expected):
-        assert dx.decode_rs_value(state_id, value) == expected
+        assert enums.decode_rs_value(state_id, value) == expected
 
     @pytest.mark.parametrize("state_id", [
         14,    # ZWRITEENABLE
@@ -50,8 +51,8 @@ class TestRenderStateValueDecoding:
         206,   # SEPARATEALPHABLENDENABLE
     ])
     def test_boolean_states(self, state_id):
-        assert dx.decode_rs_value(state_id, 1) == "TRUE"
-        assert dx.decode_rs_value(state_id, 0) == "FALSE"
+        assert enums.decode_rs_value(state_id, 1) == "TRUE"
+        assert enums.decode_rs_value(state_id, 0) == "FALSE"
 
     @pytest.mark.parametrize("state_id", [
         34,    # FOGCOLOR
@@ -59,16 +60,16 @@ class TestRenderStateValueDecoding:
         139,   # AMBIENT
     ])
     def test_colour_states(self, state_id):
-        assert dx.decode_rs_value(state_id, 0xFF102030) == "ARGB(0xFF102030)"
+        assert enums.decode_rs_value(state_id, 0xFF102030) == "ARGB(0xFF102030)"
 
     def test_decoder_tables_only_reference_defined_states(self):
-        assert set(dx.RS_VALUE_DECODERS) <= set(dx.D3DRS)
-        assert dx.RS_BOOL_STATES <= set(dx.D3DRS)
-        assert not (set(dx.RS_VALUE_DECODERS) & dx.RS_BOOL_STATES)
+        assert set(enums.RS_VALUE_DECODERS) <= set(enums.D3DRS)
+        assert enums.RS_BOOL_STATES <= set(enums.D3DRS)
+        assert not (set(enums.RS_VALUE_DECODERS) & enums.RS_BOOL_STATES)
 
     def test_float_state_is_not_reported_as_boolean(self):
         point_size = 154
-        assert dx.decode_rs_value(point_size, 0x3F800000) not in ("TRUE", "FALSE")
+        assert enums.decode_rs_value(point_size, 0x3F800000) not in ("TRUE", "FALSE")
 
 
 class TestRenderStateCategories:
@@ -105,6 +106,6 @@ class TestD3dxConstantTableOffsets:
         assert find_vtable_calls.D3DX_CONST_TABLE[offset] == method
 
     def test_inherited_buffer_methods_precede_constant_table_methods(self):
-        methods = [name for name, _param_count in dx.D3DX_CONSTANT_TABLE_METHODS]
+        methods = [name for name, _param_count in calls.D3DX_CONSTANT_TABLE_METHODS]
         assert methods[:5] == ["QueryInterface", "AddRef", "Release", "GetBufferPointer", "GetBufferSize"]
         assert methods.index("GetDesc") == 5

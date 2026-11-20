@@ -17,7 +17,8 @@ import argparse
 import sys
 import struct
 
-from dx9_common import load_binary, va_to_offset, D3D9_DEVICE_VTABLE
+from dx9_pe import load_binary, va_to_offset
+from dx9_enums import D3D9_DEVICE_VTABLE
 
 # Derive slot-indexed method dict from offset-keyed vtable
 D3D9_DEVICE_METHODS = {offset // 4: name for offset, name in D3D9_DEVICE_VTABLE.items()}

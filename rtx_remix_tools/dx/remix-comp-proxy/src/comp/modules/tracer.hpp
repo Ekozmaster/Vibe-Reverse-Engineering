@@ -32,6 +32,16 @@ namespace comp
 		static bool is_active() { return p_this && p_this->capturing_; }
 		static tracer& ref() { return *p_this; }
 
+		// One record is built at a time, and device calls can come from several threads.
+		// Returns the held record lock while a capture runs, an unowned lock otherwise.
+		static std::unique_lock<std::recursive_mutex> lock_if_active()
+		{
+			if (!is_active()) return {};
+			std::unique_lock<std::recursive_mutex> lock(p_this->record_mutex_);
+			if (!p_this->capturing_) lock.unlock();
+			return lock;
+		}
+
 		// Delayed capture: starts after countdown expires
 		void start_capture_delayed(int num_frames, const std::string& filename, float delay_seconds);
 		void cancel_delayed();
@@ -86,7 +96,10 @@ namespace comp
 
 	private:
 		// Capture state
-		bool capturing_ = false;
+		std::atomic<bool> capturing_ = false;
+
+		// Guards the buffer and the record being built; recursive so stop_capture can run under it
+		std::recursive_mutex record_mutex_;
 		int frames_to_capture_ = 2;
 		int frames_captured_ = 0;
 		int sequence_ = 0;

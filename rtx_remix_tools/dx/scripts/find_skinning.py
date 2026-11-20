@@ -22,11 +22,9 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_common import (
-    load_binary, load_text_section, print_header, va_to_offset,
-    scan_vtable_calls, scan_vtable_mov, method_immediates,
-    D3DRS, decode_transform_type,
-)
+from dx9_pe import load_binary, load_text_section, print_header, va_to_offset
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
+from dx9_enums import D3DRS, decode_transform_type
 
 
 # ── Vertex declaration types ────────────────────────────────────────

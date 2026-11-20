@@ -1,8 +1,9 @@
 """Find SetVertexShaderConstantF call sites and analyze arguments.
 
 Scans for call [reg+0x178] patterns (D3D9 device vtable slot 94) and
-inspects push instructions before each call to determine the start
-register and count being written.
+method-pointer loads from that slot, and reads the start register and
+count each call is given from the pushes and [esp+disp] stores in front
+of it.
 
 Also scans for DrawIndexedPrimitive, SetVertexDeclaration, and
 CreateVertexDeclaration call sites.
@@ -12,10 +13,8 @@ Usage:
 """
 import argparse
 
-from dx9_common import (
-    load_binary, load_text_section, scan_vtable_calls, scan_vtable_mov,
-    method_args, arg_text,
-)
+from dx9_pe import load_binary, load_text_section
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_args, arg_text
 
 
 def main():

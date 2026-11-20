@@ -97,3 +97,11 @@ class TestBacktraceOutput:
         analyze.do_transform_calls(records)
         out = capsys.readouterr().out
         assert "bt: [0x00409ABC]" in out
+
+
+class TestLoadRecords:
+    def test_a_last_line_still_being_written_is_left_out(self, tmp_path):
+        # With init capture on, the tracer keeps the file open after a capture and flushes in chunks
+        capture = tmp_path / "dxtrace_frame.jsonl"
+        capture.write_text('{"frame":0,"seq":0,"method":"Present"}\n{"frame":-1,"seq":1,"method":"Cre')
+        assert analyze.load_records(str(capture)) == [{"frame": 0, "seq": 0, "method": "Present"}]

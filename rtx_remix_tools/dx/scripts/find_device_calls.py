@@ -15,10 +15,8 @@ import argparse
 import sys
 import struct
 
-from dx9_common import (
-    load_binary, find_text_section,
-    scan_vtable_calls, scan_vtable_mov, split_device_hits, device_origin_summary,
-)
+from dx9_pe import load_binary, find_text_section
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, split_device_hits, device_origin_summary
 
 # Key methods for FFP conversion (the ones you'll most likely intercept)
 KEY_METHODS = {

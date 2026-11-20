@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rtx_remix_tools
 from d3d9_calls import (
     PUSH_EAX, PUSH_ECX, Code, call_method, load_device, push, push32, write_pe32, write_pe32_plus,
 )
-import dx9_common
+import dx9_calls
 from proxy_template import ini_section_in, keys_of, keys_the_proxy_reads
 
 # IDirect3DDevice9 vtable offsets
@@ -285,7 +285,7 @@ class TestDeviceProvenanceReport:
     _OTHER_GLOBAL = 0x9D9200
     # BeginScene, EndScene, Clear, SetTransform, SetViewport, SetRenderState, SetTexture,
     # SetTextureStageState, SetSamplerState, DrawPrimitive, SetFVF, SetStreamSource
-    _DEVICE_METHODS = {offset: dx9_common.DEVICE[offset] for offset in (
+    _DEVICE_METHODS = {offset: dx9_calls.DEVICE[offset] for offset in (
         0xA4, 0xA8, 0xAC, 0xB0, 0xBC, 0xE4, 0x104, 0x10C, 0x114, 0x144, 0x164, 0x190)}
 
     @staticmethod
@@ -334,3 +334,18 @@ class TestInputTheScannersCannotRead:
             report(script, binary)
 
         assert "64-bit" in str(refusal.value)
+
+    @pytest.mark.parametrize("script", [
+        "classify_draws", "decode_fvf", "find_blend_states", "find_d3d_calls", "find_device_calls",
+        "find_matrix_registers", "find_ps_constants", "find_render_states",
+        "find_shader_bytecode", "find_skinning", "find_stateblocks", "find_surface_formats",
+        "find_texture_ops", "find_transforms", "find_vs_constants", "find_vtable_calls",
+    ])
+    def test_a_file_that_is_not_a_pe_is_refused(self, script, tmp_path):
+        text_file = tmp_path / "notes.txt"
+        text_file.write_text("not a program\n")
+
+        with pytest.raises(SystemExit) as refusal:
+            report(script, text_file)
+
+        assert "notes.txt" in str(refusal.value)

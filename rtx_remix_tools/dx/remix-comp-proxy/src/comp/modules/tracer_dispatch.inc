@@ -5,11 +5,12 @@
 
 // -- Macros --
 
+// Each record is written under the tracer's record lock, so threads cannot interleave records.
 #define TRACE_IF_ACTIVE(fn, ...) \
-    do { if (comp::tracer::is_active()) fn(comp::tracer::ref(), __VA_ARGS__); } while(0)
+    do { if (auto trace_lock = comp::tracer::lock_if_active()) fn(comp::tracer::ref(), __VA_ARGS__); } while(0)
 
 #define TRACE_IF_ACTIVE_NOARGS(fn) \
-    do { if (comp::tracer::is_active()) fn(comp::tracer::ref()); } while(0)
+    do { if (auto trace_lock = comp::tracer::lock_if_active()) fn(comp::tracer::ref()); } while(0)
 
 // -- Dispatch functions --
 

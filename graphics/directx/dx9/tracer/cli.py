@@ -28,6 +28,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -53,7 +54,7 @@ def cmd_codegen(args: argparse.Namespace) -> None:
 
 _WAIT_TIMEOUT_SECONDS = 120.0
 _POLL_SECONDS = 0.3
-# A tracer that reports progress writes its first line as it takes the trigger
+# A tracer writes its first progress line as it takes the trigger
 _PROGRESS_GRACE_SECONDS = 2.0
 
 
@@ -80,8 +81,7 @@ def _read_progress(path: Path) -> _Progress | None:
 
 
 def _frames_short(progress: _Progress, frames: int) -> str:
-    return (f"the capture stopped at frame {progress.frame} of {frames}. The standalone tracer captures as many "
-            f"frames as [Trace] CaptureFrames in its proxy.ini says, whatever --frames is")
+    return f"the capture stopped at frame {progress.frame} of {frames}"
 
 
 def _wait_for_capture(trigger_path: Path, progress_path: Path, frames: int) -> str | None:
@@ -106,17 +106,32 @@ def _wait_for_capture(trigger_path: Path, progress_path: Path, frames: int) -> s
         if taken_at is None and not trigger_path.exists():
             taken_at = time.time()
         if taken_at is not None and progress is None and time.time() - taken_at > _PROGRESS_GRACE_SECONDS:
-            return ("a tracer took the trigger but reports no progress. The tracer built into "
-                    "remix-comp-proxy reports none: look for the capture in its output folder (captures by default)")
+            return (f"a tracer took the trigger but reported no progress. Most likely it predates progress reports: "
+                    f"copy the current graphics/directx/dx9/tracer/bin/d3d9.dll, or a current remix-comp-proxy "
+                    f"build, to {trigger_path.parent}")
 
     if progress is None:
         return (f"no tracer took the trigger within {_WAIT_TIMEOUT_SECONDS:.0f}s. Is the game running, "
                 f"with the tracer's d3d9.dll in {trigger_path.parent}?")
     if progress.frame >= frames:
         return (f"the tracer reached frame {progress.frame} but never reported the capture file written in full. "
-                f"A d3d9.dll older than that report is in {trigger_path.parent}: copy the current "
-                f"graphics/directx/dx9/tracer/bin/d3d9.dll there")
+                f"Most likely it predates that report: copy the current graphics/directx/dx9/tracer/bin/d3d9.dll, "
+                f"or a current remix-comp-proxy build, to {trigger_path.parent}")
     return _frames_short(progress, frames)
+
+
+def _modified_at(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return None
+
+
+def _write_trigger(trigger_path: Path, frames: int) -> None:
+    """Write the trigger file whole, so a tracer polling for it never reads it empty."""
+    staging = trigger_path.with_suffix(".tmp")
+    staging.write_text(f"frames={frames}\n")
+    os.replace(staging, trigger_path)
 
 
 def cmd_trigger(args: argparse.Namespace) -> None:
@@ -138,7 +153,8 @@ def cmd_trigger(args: argparse.Namespace) -> None:
 
     # Progress left by an earlier capture would read as progress of this one
     progress_path.unlink(missing_ok=True)
-    trigger_path.write_text(f"frames={args.frames}\n")
+    earlier_capture = _modified_at(jsonl_path)
+    _write_trigger(trigger_path, args.frames)
     print(f"  Trigger file created: {trigger_path}")
 
     if not args.wait:
@@ -159,6 +175,10 @@ def cmd_trigger(args: argparse.Namespace) -> None:
         print(f"  [error] {problem}")
         sys.exit(1)
 
+    if _modified_at(jsonl_path) in (None, earlier_capture):
+        # The remix-comp-proxy tracer names each capture after the time it started
+        print(f"  Capture complete, in the [Tracer] OutputDir folder under {game_dir} (captures by default)")
+        return
     size_kb = jsonl_path.stat().st_size / 1024
     print(f"  Capture complete: {jsonl_path} ({size_kb:.1f} KB)")
     print(f"  Run: python -m graphics.directx.dx9.tracer analyze \"{jsonl_path}\" --summary")
@@ -186,9 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     # trigger
     tr = sub.add_parser("trigger", help="Signal trace proxy to capture frames")
     tr.add_argument("--game-dir", "-d", default=None, help="Target directory (default: cwd)")
-    tr.add_argument("--frames", "-n", type=int, default=2,
-                    help="Number of frames to capture. The standalone tracer DLL takes the count from "
-                         "[Trace] CaptureFrames in its proxy.ini instead")
+    tr.add_argument("--frames", "-n", type=int, default=2, help="Number of frames to capture")
     tr.add_argument("--delay", type=int, default=3, help="Countdown seconds before trigger")
     tr.add_argument("--wait", "-w", action="store_true",
                     help="Follow the capture until the tracer reports it written in full; "

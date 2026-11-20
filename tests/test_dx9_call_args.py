@@ -13,7 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rtx_remix_tools" / "dx" / "scripts"))
 
-import dx9_common as dx
+import dx9_calls as calls
+import dx9_pe
 from d3d9_calls import (
     DEVICE_GLOBAL, PUSH_EAX, PUSH_ECX, PUSH_ESI, TEXT_VA, Code, call_method, load_device, push, push32,
     write_pe32, write_pe32_plus,
@@ -44,7 +45,7 @@ def _jump_if_equal_over(*chunks: bytes) -> bytes:
 
 
 def _immediates(code: Code, label: str, method: str) -> dict:
-    return dx.method_immediates(code.data, TEXT_VA, code.calls[label], method)
+    return calls.method_immediates(code.data, TEXT_VA, code.calls[label], method)
 
 
 class TestArgumentsByName:
@@ -58,7 +59,7 @@ class TestArgumentsByName:
     def test_pushed_register_is_reported_by_name(self):
         code = Code().add("view", PUSH_EAX, push(2), PUSH_ECX, call_method(SET_TRANSFORM))
 
-        args = dx.method_args(code.data, TEXT_VA, code.calls["view"], "SetTransform")
+        args = calls.method_args(code.data, TEXT_VA, code.calls["view"], "SetTransform")
 
         assert args["this"].source == "ecx"
         assert args["State"].value == 2
@@ -93,7 +94,7 @@ class TestArgumentsStoredOnTheStack:
         code = Code().add("stored", sub_esp_12, _store(8, 1), _store(4, 22), _STORE_ECX_AT_ESP,
                           call_method(SET_RENDER_STATE))
 
-        args = dx.method_args(code.data, TEXT_VA, code.calls["stored"], "SetRenderState")
+        args = calls.method_args(code.data, TEXT_VA, code.calls["stored"], "SetRenderState")
 
         assert args["this"].source == "ecx"
         assert (args["State"].value, args["Value"].value) == (22, 1)
@@ -210,7 +211,7 @@ class TestWhereTheWalkStops:
         after_load = chunks[chunks.index(self._LOAD_METHOD):]
         load_va = code.calls["pointer_join"] - sum(len(chunk) for chunk in after_load)
 
-        assert dx.method_immediates(code.data, TEXT_VA, load_va, "SetRenderState") == {
+        assert calls.method_immediates(code.data, TEXT_VA, load_va, "SetRenderState") == {
             "this": None, "State": None, "Value": None}
 
 
@@ -220,14 +221,14 @@ class TestSitesThatAreNotCalls:
         code = Code().add("indirect", load_method, push(4), PUSH_ESI, push(8), PUSH_ECX, _CALL_EAX)
         mov_va = code.calls["indirect"] - len(push(4) + PUSH_ESI + push(8) + PUSH_ECX) - len(load_method)
 
-        assert dx.method_immediates(code.data, TEXT_VA, mov_va, "SetVertexShaderConstantF") == {
+        assert calls.method_immediates(code.data, TEXT_VA, mov_va, "SetVertexShaderConstantF") == {
             "this": None, "StartRegister": 8, "pConstantData": None, "Vector4fCount": 4}
 
     def test_field_read_at_a_method_offset_has_no_arguments(self):
         read_field = bytes([0x8B, 0x86]) + (SET_VS_CONSTANT_F).to_bytes(4, "little")   # mov eax, [esi+0x178]
         code = Code().add("field", push(16), push(32), _CALL_NEAR, read_field)
 
-        assert dx.method_immediates(code.data, TEXT_VA, code.calls["field"], "SetVertexShaderConstantF") == {
+        assert calls.method_immediates(code.data, TEXT_VA, code.calls["field"], "SetVertexShaderConstantF") == {
             "this": None, "StartRegister": None, "pConstantData": None, "Vector4fCount": None}
 
     def test_call_bytes_inside_another_instruction_have_no_arguments(self):
@@ -236,7 +237,7 @@ class TestSitesThatAreNotCalls:
         code = Code().add("embedded", push(4), push(8), mov_with_call_bytes)
         inside = code.calls["embedded"] + 1
 
-        assert dx.method_immediates(code.data, TEXT_VA, inside, "SetVertexShaderConstantF") == {
+        assert calls.method_immediates(code.data, TEXT_VA, inside, "SetVertexShaderConstantF") == {
             "this": None, "StartRegister": None, "pConstantData": None, "Vector4fCount": None}
 
 
@@ -245,7 +246,7 @@ class TestCallScan:
         code = (Code().add("short", *_NO_PRESENT_ARGUMENTS, PUSH_ECX, call_method(PRESENT, short=True))
                 .add("long", *_NO_PRESENT_ARGUMENTS, PUSH_ECX, call_method(PRESENT)))
 
-        found = dx.scan_vtable_calls(code.data, TEXT_VA, PRESENT)
+        found = calls.scan_vtable_calls(code.data, TEXT_VA, PRESENT)
 
         assert found == [(code.calls["short"], "edx"), (code.calls["long"], "edx")]
 
@@ -253,10 +254,31 @@ class TestCallScan:
         through_ebp = bytes([0xFF, 0x95]) + (SET_RENDER_STATE).to_bytes(4, "little")   # call [ebp+0xE4]
         code = Code().add("ebp", push(1), push(22), PUSH_ECX, through_ebp)
 
-        assert dx.scan_vtable_calls(code.data, TEXT_VA, SET_RENDER_STATE) == [(code.calls["ebp"], "ebp")]
+        assert calls.scan_vtable_calls(code.data, TEXT_VA, SET_RENDER_STATE) == [(code.calls["ebp"], "ebp")]
+
+
+    def test_finds_the_first_slot_through_a_register_without_displacement(self):
+        call_first_slot = bytes([0xFF, 0x12])                                     # call [edx]
+        code = Code().add("query_interface", load_device(), push(0), push(0), PUSH_ECX, call_first_slot)
+
+        assert calls.scan_vtable_calls(code.data, TEXT_VA, 0) == [(code.calls["query_interface"], "edx")]
+
+    def test_a_call_through_an_import_is_not_the_first_slot(self):
+        call_import = bytes([0xFF, 0x15]) + (0x40A000).to_bytes(4, "little")     # call [0x40A000]
+        code = Code().add("import", push(0), push(0), PUSH_ECX, call_import)
+
+        assert calls.scan_vtable_calls(code.data, TEXT_VA, 0) == []
 
 
 class TestMethodPointerLoadScan:
+    def test_finds_a_first_slot_load_without_displacement(self):
+        load_first_slot = bytes([0x8B, 0x02])                                     # mov eax, [edx]
+        code = Code().add("query_interface", load_device(), load_first_slot, push(0), push(0), PUSH_ECX,
+                          _CALL_EAX)
+        load_va = code.calls["query_interface"] - len(push(0) * 2 + PUSH_ECX + load_first_slot)
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, 0) == [(load_va, "mov eax, [edx+0x000]")]
+
     def test_finds_the_short_and_the_long_form_below_slot_32(self):
         load_short = bytes([0x8B, 0x42, PRESENT])                                  # mov eax, [edx+0x44]
         load_long = bytes([0x8B, 0x8E]) + PRESENT.to_bytes(4, "little")            # mov ecx, [esi+0x44]
@@ -265,16 +287,16 @@ class TestMethodPointerLoadScan:
         short_va = code.calls["short"] - len(PUSH_ECX) - len(load_short)
         long_va = code.calls["long"] - len(PUSH_ECX) - len(load_long)
 
-        assert dx.scan_vtable_mov(code.data, TEXT_VA, PRESENT) == [
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, PRESENT) == [
             (short_va, "mov eax, [edx+0x044]"), (long_va, "mov ecx, [esi+0x044]")]
 
     def test_short_form_load_leads_to_the_arguments_of_its_call(self):
         load_short = bytes([0x8B, 0x42, CREATE_TEXTURE])                           # mov eax, [edx+0x5C]
         code = Code().add("texture", push(0), PUSH_EAX, push(1), push(21), push(0), push(1),
                           push32(128), push32(256), load_short, PUSH_ECX, _CALL_EAX)
-        [(load_va, _)] = dx.scan_vtable_mov(code.data, TEXT_VA, CREATE_TEXTURE)
+        [(load_va, _)] = calls.scan_vtable_mov(code.data, TEXT_VA, CREATE_TEXTURE)
 
-        pushed = dx.method_immediates(code.data, TEXT_VA, load_va, "CreateTexture")
+        pushed = calls.method_immediates(code.data, TEXT_VA, load_va, "CreateTexture")
 
         assert (pushed["Width"], pushed["Height"], pushed["Format"]) == (256, 128, 21)
 
@@ -282,7 +304,7 @@ class TestMethodPointerLoadScan:
         load_short = bytes([0x8B, 0x42, 0x80])                                     # mov eax, [edx-0x80]
         code = Code().add("negative", load_short, PUSH_ECX, _CALL_EAX)
 
-        assert dx.scan_vtable_mov(code.data, TEXT_VA, 0x80) == []
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, 0x80) == []
 
     def test_a_conditional_jump_between_load_and_call_is_passed_by_its_fall_through(self):
         set_sampler_state = 0x114
@@ -291,16 +313,34 @@ class TestMethodPointerLoadScan:
         jump_past_call = bytes([0x75, len(push(2) * 3 + PUSH_EAX + call_edx)])     # jne past the call
         code = Code().add("tested", load_method, _TEST_EAX, jump_past_call,
                           push(2), push(7), push(0), PUSH_EAX, call_edx)
-        [(load_va, _)] = dx.scan_vtable_mov(code.data, TEXT_VA, set_sampler_state)
+        [(load_va, _)] = calls.scan_vtable_mov(code.data, TEXT_VA, set_sampler_state)
 
-        assert dx.method_immediates(code.data, TEXT_VA, load_va, "SetSamplerState") == {
+        assert calls.method_immediates(code.data, TEXT_VA, load_va, "SetSamplerState") == {
             "this": None, "Sampler": 0, "Type": 7, "Value": 2}
+
+    def test_a_call_between_load_and_call_is_passed_when_the_method_sits_in_a_saved_register(self):
+        draw_primitive = 0x144
+        load_into_edi = bytes([0x8B, 0xB8]) + draw_primitive.to_bytes(4, "little")  # mov edi, [eax+0x144]
+        call_edi = bytes([0xFF, 0xD7])
+        code = Code().add("helper_first", load_into_edi, _CALL_NEAR,
+                          push(2), push(0), push(4), PUSH_ESI, call_edi)
+        [(load_va, _)] = calls.scan_vtable_mov(code.data, TEXT_VA, draw_primitive)
+
+        assert calls.method_immediates(code.data, TEXT_VA, load_va, "DrawPrimitive") == {
+            "this": None, "PrimitiveType": 4, "StartVertex": 0, "PrimitiveCount": 2}
+
+    def test_a_call_between_load_and_call_ends_the_path_when_it_may_overwrite_the_register(self):
+        draw_primitive = 0x144
+        load_into_eax = bytes([0x8B, 0x80]) + draw_primitive.to_bytes(4, "little")  # mov eax, [eax+0x144]
+        code = Code().add("helper_first", load_into_eax, _CALL_NEAR, push(2), PUSH_ESI, _CALL_EAX)
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, draw_primitive) == []
 
     def test_a_field_read_that_is_not_called_is_not_a_method_pointer_load(self):
         read_field = bytes([0x8B, 0x46, PRESENT])                                  # mov eax, [esi+0x44]
         code = Code().add("field", read_field, PUSH_EAX, _CALL_NEAR)
 
-        assert dx.scan_vtable_mov(code.data, TEXT_VA, PRESENT) == []
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, PRESENT) == []
 
 
 _DEVICE_GLOBAL = DEVICE_GLOBAL.to_bytes(4, "little")
@@ -313,7 +353,7 @@ _MOV_ECX_ESI = bytes([0x8B, 0xCE])
 
 
 def _found_calls(code: Code, offset: int) -> list[int]:
-    return [va for va, _reg in dx.scan_vtable_calls(code.data, TEXT_VA, offset)]
+    return [va for va, _reg in calls.scan_vtable_calls(code.data, TEXT_VA, offset)]
 
 
 class TestComThis:
@@ -352,6 +392,38 @@ class TestComThis:
 
         assert _found_calls(code, PRESENT) == [code.calls["com"]]
 
+    @staticmethod
+    def _object_from_a_stack_argument(pushed_disp: int, *between: bytes) -> Code:
+        # mov eax, [esp+8] / mov ecx, [eax] / *between / push 1 / push 7 / push [esp+pushed_disp] / call [ecx+0xE4]
+        return Code().add("stack", bytes([0x8B, 0x44, 0x24, 0x08]), bytes([0x8B, 0x08]), *between, push(1), push(7),
+                          bytes([0xFF, 0x74, 0x24, pushed_disp]),
+                          bytes([0xFF, 0x91]) + SET_RENDER_STATE.to_bytes(4, "little"))
+
+    def test_object_pushed_earlier_and_pushed_again_from_its_slot_is_this(self):
+        # push esi / mov eax, [esi] / push 1 / push 7 / push [esp+8] / call [eax+0xE4]
+        code = Code().add("repushed", PUSH_ESI, _LOAD_VTABLE_FROM_ESI, push(1), push(7),
+                          bytes([0xFF, 0x74, 0x24, 0x08]),
+                          bytes([0xFF, 0x90]) + SET_RENDER_STATE.to_bytes(4, "little"))
+
+        assert _found_calls(code, SET_RENDER_STATE) == [code.calls["repushed"]]
+
+    def test_stack_slot_written_between_the_two_reads_is_not_this(self):
+        store_edx = bytes([0x89, 0x54, 0x24, 0x08])             # mov [esp+8], edx
+        code = self._object_from_a_stack_argument(0x10, store_edx)
+
+        assert _found_calls(code, SET_RENDER_STATE) == []
+
+    def test_object_read_twice_from_one_stack_slot_is_this(self):
+        # two pushes later, [esp+0x10] is the slot [esp+8] was
+        code = self._object_from_a_stack_argument(0x10)
+
+        assert _found_calls(code, SET_RENDER_STATE) == [code.calls["stack"]]
+
+    def test_another_stack_slot_is_not_this(self):
+        code = self._object_from_a_stack_argument(0x14)
+
+        assert _found_calls(code, SET_RENDER_STATE) == []
+
     def test_this_the_code_does_not_show_keeps_the_call(self):
         code = Code().add("unsettled", _CALL_NEAR, _LOAD_VTABLE_FROM_ESI, *_NO_PRESENT_ARGUMENTS, _PUSH_EDI,
                           _CALL_PRESENT_THROUGH_EAX)
@@ -367,7 +439,7 @@ class TestComThis:
                 .add("thiscall", *sizes, load_vtable, load_method, push(0), PUSH_EAX, call_edx))
         com_load = code.calls["com"] - len(push(0) + PUSH_EAX + PUSH_ECX) - len(load_method)
 
-        assert [va for va, _ in dx.scan_vtable_mov(code.data, TEXT_VA, CREATE_TEXTURE)] == [com_load]
+        assert [va for va, _ in calls.scan_vtable_mov(code.data, TEXT_VA, CREATE_TEXTURE)] == [com_load]
 
     def test_global_device_form(self):
         load_device = bytes([0xA1]) + _DEVICE_GLOBAL            # mov eax, [g_device]
@@ -425,7 +497,7 @@ class TestArgumentCount:
         beyond_the_constant_table = 0x6C
         code = Code().add("unknown_method", _CALL_NEAR, PUSH_ECX, call_method(beyond_the_constant_table))
 
-        assert dx.scan_vtable_calls(code.data, TEXT_VA, beyond_the_constant_table, dx.D3DX_CONSTANT_TABLE) == [
+        assert calls.scan_vtable_calls(code.data, TEXT_VA, beyond_the_constant_table, calls.D3DX_CONSTANT_TABLE) == [
             (code.calls["unknown_method"], "edx")]
 
     def test_d3dx_scan_counts_the_d3dx_method_parameters(self):
@@ -433,24 +505,24 @@ class TestArgumentCount:
         code = Code().add("set_matrices", _CALL_NEAR, push(4), PUSH_EAX, push(0), PUSH_EAX, PUSH_ECX,
                           call_method(CREATE_TEXTURE))
 
-        assert dx.scan_vtable_calls(code.data, TEXT_VA, CREATE_TEXTURE, dx.D3DX_CONSTANT_TABLE) == [
+        assert calls.scan_vtable_calls(code.data, TEXT_VA, CREATE_TEXTURE, calls.D3DX_CONSTANT_TABLE) == [
             (code.calls["set_matrices"], "edx")]
         assert _found_calls(code, CREATE_TEXTURE) == []
 
 
 _OTHER_GLOBAL = 0x9D9200
-_HIGH_SLOT_METHODS = sorted(offset for offset in dx.DEVICE if offset >= dx.DEVICE_LOW_SLOT_END)
+_HIGH_SLOT_METHODS = sorted(offset for offset in calls.DEVICE if offset >= calls.DEVICE_LOW_SLOT_END)
 _LOAD_FIELD_OF_THIS = bytes([0x8B, 0x49, 0x3C, 0x8B, 0x11])     # mov ecx, [ecx+0x3C] / mov edx, [ecx]
 
 
 def _device_methods(count: int, start: int = 0) -> dict[int, int]:
     """*count* device methods from vtable+0x80 on, from the *start*-th: {offset: parameter count}."""
-    return {offset: dx.DEVICE[offset] for offset in _HIGH_SLOT_METHODS[start:start + count]}
+    return {offset: calls.DEVICE[offset] for offset in _HIGH_SLOT_METHODS[start:start + count]}
 
 
-def _present_hits(code: Code) -> dx.DeviceHits:
-    hits = dx.scan_vtable_calls(code.data, TEXT_VA, PRESENT)
-    return dx.split_device_hits(code.data, TEXT_VA, PRESENT, hits)
+def _present_hits(code: Code) -> calls.DeviceHits:
+    hits = calls.scan_vtable_calls(code.data, TEXT_VA, PRESENT)
+    return calls.split_device_hits(code.data, TEXT_VA, PRESENT, hits)
 
 
 def _present_on(object_and_vtable: bytes) -> tuple[bytes, ...]:
@@ -465,7 +537,7 @@ class TestDeviceProvenance:
     def test_low_slot_call_on_the_device_global_is_confirmed(self):
         code = Code().add_com_calls(load_device(), self._EVIDENCE).add("present", *_present_on(load_device()))
 
-        assert dx.device_origins(code.data, TEXT_VA) == {"[0x009D915C]"}
+        assert calls.device_origins(code.data, TEXT_VA) == {"[0x009D915C]"}
         assert _present_hits(code) == ([(code.calls["present"], "edx")], [])
 
     def test_same_slot_on_an_object_from_another_global_is_unconfirmed(self):
@@ -477,9 +549,9 @@ class TestDeviceProvenance:
     def test_high_slot_calls_are_kept_whatever_their_object(self):
         code = Code().add_com_calls(load_device(_OTHER_GLOBAL), _device_methods(1))
         [offset] = _device_methods(1)
-        hits = dx.scan_vtable_calls(code.data, TEXT_VA, offset)
+        hits = calls.scan_vtable_calls(code.data, TEXT_VA, offset)
 
-        assert dx.split_device_hits(code.data, TEXT_VA, offset, hits).confirmed == hits != []
+        assert calls.split_device_hits(code.data, TEXT_VA, offset, hits).confirmed == hits != []
 
     def test_object_kept_in_a_preserved_register_across_calls(self):
         # mov esi, [g] / call f / mov eax, esi / mov ecx, [eax] / push eax / call [ecx+0x44]
@@ -487,7 +559,7 @@ class TestDeviceProvenance:
         code = Code().add("copied", load_esi, _CALL_NEAR, bytes([0x8B, 0xC6]), bytes([0x8B, 0x08]),
                           *_NO_PRESENT_ARGUMENTS, PUSH_EAX, bytes([0xFF, 0x51, PRESENT]))
 
-        assert dx.object_origin(code.data, TEXT_VA, code.calls["copied"]) == "[0x009D915C]"
+        assert calls.object_origin(code.data, TEXT_VA, code.calls["copied"]) == "[0x009D915C]"
 
     def test_object_in_a_register_a_call_clobbers_has_no_origin(self):
         # mov eax, [g] / call f / mov ecx, [eax] / push eax / call [ecx+0x44]
@@ -495,42 +567,42 @@ class TestDeviceProvenance:
         code = Code().add("clobbered", load_eax, _CALL_NEAR, bytes([0x8B, 0x08]),
                           *_NO_PRESENT_ARGUMENTS, PUSH_EAX, bytes([0xFF, 0x51, PRESENT]))
 
-        assert dx.object_origin(code.data, TEXT_VA, code.calls["clobbered"]) is None
+        assert calls.object_origin(code.data, TEXT_VA, code.calls["clobbered"]) is None
 
     def test_object_in_a_field_of_a_global_object(self):
         # mov eax, [g] / mov ecx, [eax+0x1C] / mov edx, [ecx] / push ecx / call [edx+0x44]
         load_field_of_global = bytes([0xA1]) + _DEVICE_GLOBAL + bytes([0x8B, 0x48, 0x1C, 0x8B, 0x11])
         code = Code().add("field", *_present_on(load_field_of_global))
 
-        assert dx.object_origin(code.data, TEXT_VA, code.calls["field"]) == "[[0x009D915C]+0x1C]"
+        assert calls.object_origin(code.data, TEXT_VA, code.calls["field"]) == "[[0x009D915C]+0x1C]"
 
     def test_device_in_a_field_of_this_teaches_no_origin(self):
         code = (Code().add_com_calls(_LOAD_FIELD_OF_THIS, self._EVIDENCE)
                 .add("present", *_present_on(_LOAD_FIELD_OF_THIS)))
 
-        assert dx.device_origins(code.data, TEXT_VA) == frozenset()
+        assert calls.device_origins(code.data, TEXT_VA) == frozenset()
         assert _present_hits(code) == ([], [(code.calls["present"], "edx")])
-        assert "none learned" in dx.device_origin_summary(code.data, TEXT_VA)
+        assert "none learned" in calls.device_origin_summary(code.data, TEXT_VA)
 
     def test_a_global_object_beside_a_device_in_a_field_of_this_is_not_learned(self):
         # an ID3DXEffect in a global reaches past vtable+0x80 through a few methods
         code = (Code().add_com_calls(_LOAD_FIELD_OF_THIS, self._EVIDENCE)
                 .add_com_calls(load_device(_OTHER_GLOBAL), _device_methods(9)))
 
-        assert dx.device_origins(code.data, TEXT_VA) == frozenset()
+        assert calls.device_origins(code.data, TEXT_VA) == frozenset()
 
     def test_an_object_called_through_under_half_the_methods_of_the_device_is_not_learned(self):
         code = (Code().add_com_calls(load_device(), _device_methods(26))
                 .add_com_calls(load_device(_OTHER_GLOBAL), _device_methods(12, start=26)))
 
-        assert dx.device_origins(code.data, TEXT_VA) == {"[0x009D915C]"}
+        assert calls.device_origins(code.data, TEXT_VA) == {"[0x009D915C]"}
 
 
 class TestLoadBinary:
     def test_pe32_loads(self, tmp_path):
         path = write_pe32(tmp_path / "game.exe", Code().data)
 
-        data, image_base, sections = dx.load_binary(path)
+        data, image_base, sections = dx9_pe.load_binary(path)
 
         assert image_base == 0x400000 and sections[0]["name"] == ".text"
 
@@ -538,7 +610,7 @@ class TestLoadBinary:
         path = write_pe32_plus(tmp_path / "game64.exe", Code().data)
 
         with pytest.raises(SystemExit) as refusal:
-            dx.load_binary(path)
+            dx9_pe.load_binary(path)
 
         assert "64-bit" in str(refusal.value)
 
@@ -547,6 +619,6 @@ class TestLoadBinary:
         path.write_text("not a program")
 
         with pytest.raises(SystemExit) as refusal:
-            dx.load_binary(path)
+            dx9_pe.load_binary(path)
 
         assert "not a PE" in str(refusal.value)

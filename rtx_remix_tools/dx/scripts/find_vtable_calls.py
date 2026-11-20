@@ -12,10 +12,8 @@ Usage:
 """
 import argparse
 
-from dx9_common import (
-    load_binary, load_text_section, scan_all_patterns,
-    D3DX_CONSTANT_TABLE, D3DX_CONSTANT_TABLE_METHODS,
-)
+from dx9_pe import load_binary, load_text_section
+from dx9_calls import scan_all_patterns, D3DX_CONSTANT_TABLE, D3DX_CONSTANT_TABLE_METHODS
 
 _REPORTED_CONSTANT_TABLE_METHODS = {
     "GetConstantByName",
