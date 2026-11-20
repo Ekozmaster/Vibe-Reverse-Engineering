@@ -36,11 +36,11 @@ These directories are **shared tooling and templates**. Do not modify them for g
 
 **Per-game work goes in `patches/<GameName>/`.** When starting a new game, copy `rtx_remix_tools/dx/remix-comp-proxy/` (excluding `build/`) to `patches/<GameName>/` and edit the copy. If the user says "edit remix-comp-proxy code" without specifying, ask whether they mean the template or a game copy.
 
-Shared tooling can be modified to improve the tools themselves — just not for game-specific customization.
+Shared tooling can be modified to improve the tools themselves — just not for game-specific customization. When you do, run `python -m pytest tests/` and the lint command from `.github/workflows/ci.yml` (tests that need Windows, Visual Studio, Ghidra, radare2 or Frida skip where those are missing — read the skip reasons with `-rs`), and update `.claude/references/tool-catalog.md` and the affected skill in the same change so the instructions keep describing what the tools do.
 
 ## Project Workspace
 
-Use `patches/<project_name>/` (git-ignored) for all project-specific artifacts: knowledge base files (`kb.h`), one-off analysis scripts, ASI patch specs and builds, notes, logs, and collected trace data. Create the project subfolder on first use.
+Use `patches/<project_name>/` (git-ignored) for all project-specific artifacts: knowledge base files (`kb.h`), one-off analysis scripts, ASI patch specs and builds, notes, logs, and collected trace data. The tools write there too: the Ghidra project (`ghidra/`), the query index (`index.db`), and the `static-analyzer` agent's `findings.md`. Create the project subfolder on first use.
 
 ### Backups
 
@@ -68,8 +68,10 @@ Update the KB when you: identify a function's purpose, reconstruct a struct, ide
 
 ## Working Method
 
+- **Check the install before first use.** Run `python verify_install.py` from the repo root: it reports missing Git LFS files (radare2 under `tools/`), Python packages and Java. `python verify_install.py --setup` downloads the Ghidra backend.
 - **Delegate heavy static analysis.** If your harness supports custom agents, use the `static-analyzer` agent for decompilation, xrefs, searches, and bulk scans instead of running `retools` commands in the main conversation. Only the fast (<5s) commands listed in `.claude/rules/tool-dispatch.md` run inline. If you're about to run a second retools command in the same turn, delegate.
 - **Live tools confirm static findings.** When static analysis returns addresses or candidates, follow up with `livetools` (trace, breakpoint, mem read/write) rather than more static analysis. Static analysis finds clues; live tools confirm and act on them. Don't sit idle while background analysis runs.
+- **D3D9 questions go to the DX scripts first.** The scanners under `rtx_remix_tools/dx/scripts/` answer questions about device calls, shader constants, render states and vertex formats faster than `retools`. They read 32-bit binaries only (the tool catalog names the one exception), as does `retools.dataflow`.
 - **Bootstrap new binaries first.** No or sparse `patches/<project>/kb.h` means run `bootstrap.py` and `pyghidra_backend.py analyze` before other static analysis — full workflow in `.claude/rules/subagent-workflow.md`.
 - **DX9 FFP porting** (renderer.cpp, ffp_state, remix-comp-proxy.ini, draw routing, VS constants, vertex declarations, matrix mapping, skinning, build/deploy of a proxy patch): use the `dx9-ffp-port` skill before editing.
 - **Dynamic analysis** (attach, breakpoints, tracing, runtime patching): use the `dynamic-analysis` skill as the canonical livetools reference.

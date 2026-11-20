@@ -12,7 +12,7 @@ No reverse engineering experience required -- just good prompting. Although some
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
   - [Kiro](https://kiro.dev)
 - Python 3.10+
-- Visual Studio 2022+ with C++ Desktop workload (only needed to build ASI patches)
+- Visual Studio 2022+ with C++ Desktop workload (only needed to build ASI patches and the RTX Remix proxy)
 
 Radare2 (used by the decompiler) is bundled in `tools/` for Windows -- no separate install needed. It is stored with [Git LFS](https://git-lfs.com), so install Git LFS before cloning, or run `git lfs pull` afterwards; without it the files under `tools/` are small pointer stubs and the decompiler cannot start.
 
