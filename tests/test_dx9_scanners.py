@@ -97,7 +97,8 @@ def lines_with(text: str, word: str) -> list[str]:
 
 class TestMatrixRegisters:
     @pytest.fixture(scope="class")
-    def text(self, known_calls):
+    @classmethod
+    def text(cls, known_calls):
         return report("find_matrix_registers", known_calls[0])
 
     def test_four_registers_from_c8_are_a_matrix(self, text):
@@ -120,7 +121,8 @@ class TestMatrixRegisters:
 
 class TestRenderStates:
     @pytest.fixture(scope="class")
-    def text(self, known_calls):
+    @classmethod
+    def text(cls, known_calls):
         return report("find_render_states", known_calls[0], "--all")
 
     @pytest.mark.parametrize("state, value", [
@@ -146,7 +148,8 @@ class TestPixelShaderConstants:
 
 class TestTextureOps:
     @pytest.fixture(scope="class")
-    def text(self, known_calls):
+    @classmethod
+    def text(cls, known_calls):
         return report("find_texture_ops", known_calls[0], "--all")
 
     def test_texture_stage(self, text):
@@ -165,7 +168,8 @@ class TestTextureOps:
 
 class TestSkinning:
     @pytest.fixture(scope="class")
-    def text(self, known_calls):
+    @classmethod
+    def text(cls, known_calls):
         return report("find_skinning", known_calls[0])
 
     def test_bone_palette_upload(self, text):
@@ -194,7 +198,8 @@ class TestSkinning:
 
 class TestBlendStates:
     @pytest.fixture(scope="class")
-    def text(self, known_calls):
+    @classmethod
+    def text(cls, known_calls):
         return report("find_blend_states", known_calls[0], "--all")
 
     def test_vertex_blend_states(self, text):

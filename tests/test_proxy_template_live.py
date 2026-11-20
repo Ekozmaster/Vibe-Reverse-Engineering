@@ -109,7 +109,8 @@ class TestShippedIni:
     """The INI as shipped, in front of a toy that uses the registers it names."""
 
     @pytest.fixture(scope="class")
-    def frame(self, toy):
+    @classmethod
+    def frame(cls, toy):
         return toy.frame("shipped_ini", SHIPPED_LAYOUT)
 
     @pytest.mark.parametrize("shape", RIGID)
@@ -128,7 +129,8 @@ class TestRegistersFromIni:
     """Matrices and bones at other registers, named in [FFP.Registers] and [Skinning]."""
 
     @pytest.fixture(scope="class")
-    def frame(self, toy):
+    @classmethod
+    def frame(cls, toy):
         return toy.frame("moved_layout", MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON))
 
     def test_the_log_names_the_layout(self, frame):
@@ -151,7 +153,8 @@ class TestProjectionBeforeView:
     """The Projection matrix in lower registers than the View matrix."""
 
     @pytest.fixture(scope="class")
-    def frame(self, toy):
+    @classmethod
+    def frame(cls, toy):
         return toy.frame("projection_first", PROJECTION_FIRST_LAYOUT, ini=_merged(PROJECTION_FIRST_LAYOUT.ini, SKINNING_ON))
 
     @pytest.mark.parametrize("shape", RIGID + SKINNED)
@@ -182,7 +185,8 @@ class TestBuiltInTracer:
     """A capture of two frames, started by the trigger file the proxy's tracer looks for."""
 
     @pytest.fixture(scope="class")
-    def capture(self, toy):
+    @classmethod
+    def capture(cls, toy):
         frame = toy.frame("tracer", SHIPPED_LAYOUT, files={"dxtrace_capture.trigger": b"frames=2"})
         captures = list((frame.folder / "captures").glob("dxtrace_*.jsonl"))
         assert len(captures) == 1, frame.log
@@ -209,7 +213,8 @@ class TestAlbedoStage:
     """The albedo texture on stage 1, a different texture on stage 0."""
 
     @pytest.fixture(scope="class")
-    def frame(self, toy):
+    @classmethod
+    def frame(cls, toy):
         settings = _merged(MOVED_LAYOUT.ini, SKINNING_ON, {"FFP": {"AlbedoStage": 1}})
         return toy.frame("albedo_stage", MOVED_LAYOUT, ini=settings, albedo_stage=1)
 
