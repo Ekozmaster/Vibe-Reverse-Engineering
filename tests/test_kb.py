@@ -147,6 +147,22 @@ class TestDeclarationsOverSeveralLines:
         kb = parse_kb("typedef int Handle;\nstruct Foo { int x; };\n")
         assert kb.typedefs == ["typedef int Handle;", "struct Foo { int x; };"]
 
+    def test_a_declaration_missing_its_semicolon_ends_where_the_next_one_starts(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef int Foo\nstruct Fwd\nstruct Bar {\n    int y;\n};\nenum E { A }\nunion U { int i; };\n")
+        assert kb.typedefs == ["typedef int Foo", "struct Fwd", "struct Bar { int y; };", "enum E { A }",
+                               "union U { int i; };"]
+
+    def test_a_keyword_alone_on_its_line_joins_the_declaration_after_it(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef\nstruct Foo { int x; } Foo;\ntypedef struct\nBar { int y; } Bar;\n")
+        assert kb.typedefs == ["typedef struct Foo { int x; } Foo;", "typedef struct Bar { int y; } Bar;"]
+
+    def test_a_parameter_list_over_several_lines_stays_one_declaration(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef void (*Fn)(int a,\n    struct Foo *b);\n")
+        assert kb.typedefs == ["typedef void (*Fn)(int a, struct Foo *b);"]
+
     def test_function_and_global_lines_end_an_unclosed_declaration(self):
         from kb import parse_kb
         kb = parse_kb("struct Broken {\n    int x;\n@ 0x401000 void Foo(void);\n$ 0x7C5548 int g_x\n")

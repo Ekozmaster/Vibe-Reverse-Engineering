@@ -36,7 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from capstone import x86_const as x86
-from common import Binary
+from common import MIN_ABS_ADDRESS, Binary
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "signatures.db"
 
@@ -45,6 +45,9 @@ _HF_REVISION_DEFAULT = "main"
 _HF_URL_TEMPLATE = "https://huggingface.co/{repo}/resolve/{revision}/{path}"
 
 SCHEMA_VERSION = 2
+
+# byte_sigs columns schema version 2 added to version 1.
+_V2_BYTE_COLUMNS = ("crc_len", "crc16")
 
 # Longest run of bytes after the 32-byte prefix a FLIRT CRC16 can cover.
 _MAX_CRC_LEN = 0xFF
@@ -174,16 +177,7 @@ def extract_byte_sig(
     pattern = bytearray(code[:32])
     mask = bytearray(b"\xff" * 32)
 
-    # Wildcard E8/E9 rel32 operands
-    i = 0
-    while i < 28:  # need room for 5 bytes
-        if pattern[i] in (0xE8, 0xE9):
-            for j in range(1, 5):
-                mask[i + j] = 0x00
-                pattern[i + j] = 0x00
-            i += 5
-        else:
-            i += 1
+    _wildcard_rel32(pattern, mask)
 
     if func_size is None:
         func_size = _estimate_func_size(b, va)
@@ -227,6 +221,23 @@ def extract_flirt_crc(b: Binary, va: int, func_size: int) -> tuple[int, int]:
     return stop - 32, flirt_crc16(b.read_va(va + 32, stop - 32))
 
 
+def _wildcard_rel32(pattern: bytearray, mask: bytearray) -> None:
+    """Wildcard the rel32 operand bytes of every fixed E8/E9 (call/jmp) in a 32-byte prefix.
+
+    An opcode near the end of the prefix has only part of its operand inside
+    it; that part is wildcarded too.
+    """
+    i = 0
+    while i < 32:
+        if mask[i] and pattern[i] in (0xE8, 0xE9):
+            end = min(i + 5, 32)
+            pattern[i + 1:end] = bytes(end - i - 1)
+            mask[i + 1:end] = bytes(end - i - 1)
+            i += 5
+        else:
+            i += 1
+
+
 def _depends_on_layout(b: Binary, insn, va: int, func_size: int) -> bool:
     if insn.group(x86.X86_GRP_CALL):
         return True
@@ -240,6 +251,10 @@ def _depends_on_layout(b: Binary, insn, va: int, func_size: int) -> bool:
         elif op.type == x86.X86_OP_MEM:
             mem = op.mem
             if mem.base in (0, x86.X86_REG_RIP, x86.X86_REG_EIP) and mem.index == 0:
+                return True
+            # x86 has no RIP-relative form: a switch table or global array is
+            # reached through [index*scale + abs32] or [reg + abs32].
+            if not b.is_64 and (mem.base == 0 or abs(mem.disp) > MIN_ABS_ADDRESS):
                 return True
     return False
 
@@ -531,15 +546,31 @@ class _ByteIndex:
 class SignatureDB:
     """SQLite-backed signature database.
 
+    Opening an existing database does not write to it, so a read-only or
+    older-schema file can be scanned as it is. The first write switches the
+    file to WAL and migrates it to the current schema.
+
     Args:
         path: Filesystem path to the database file, or ":memory:".
     """
 
     def __init__(self, path: str = ":memory:"):
         self._conn = sqlite3.connect(path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._byte_index: _ByteIndex | None = None
+        self._schema_writable = False
         self._init_schema()
+
+    @classmethod
+    def open_existing(cls, path: str) -> "SignatureDB":
+        """Open a database file that is already there, never creating one.
+
+        Raises:
+            FileNotFoundError: No file at *path*.
+        """
+        if not Path(path).is_file():
+            raise FileNotFoundError(
+                f"no signature database at {path} (download one with: python -m retools.sigdb pull)")
+        return cls(path)
 
     def _init_schema(self) -> None:
         cur = self._conn.execute(
@@ -557,16 +588,16 @@ class SignatureDB:
                     f"Database schema version {row[0]} is newer than "
                     f"code version {SCHEMA_VERSION}. Update the code."
                 )
-            if row and row[0] < 2:
-                self._migrate_to_v2()
             return
 
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA_SQL)
         self._conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)",
             (SCHEMA_VERSION,),
         )
         self._conn.commit()
+        self._schema_writable = True
 
     def close(self) -> None:
         if self._conn is not None:
@@ -578,12 +609,25 @@ class SignatureDB:
 
     # -- Insertion ---------------------------------------------------------
 
-    def _migrate_to_v2(self) -> None:
-        """Add the FLIRT CRC16 columns that schema version 2 introduced."""
-        self._conn.execute("ALTER TABLE byte_sigs ADD COLUMN crc_len INTEGER NOT NULL DEFAULT 0")
-        self._conn.execute("ALTER TABLE byte_sigs ADD COLUMN crc16 INTEGER NOT NULL DEFAULT 0")
-        self._conn.execute("UPDATE schema_version SET version = 2")
-        self._conn.commit()
+    def _byte_columns(self) -> set[str]:
+        return {row[1] for row in self._conn.execute("PRAGMA table_info(byte_sigs)")}
+
+    def _ensure_writable_schema(self) -> None:
+        """Before the first write: switch to WAL and migrate to the current schema.
+
+        The migration adds whichever schema-2 columns are missing in one
+        transaction, so a file left half-migrated is finished, not rejected.
+        """
+        if self._schema_writable:
+            return
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        missing = [col for col in _V2_BYTE_COLUMNS if col not in self._byte_columns()]
+        with self._conn:
+            self._conn.execute("BEGIN")
+            for col in missing:
+                self._conn.execute(f"ALTER TABLE byte_sigs ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+            self._conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
+        self._schema_writable = True
 
     def add_byte_sig(
         self, *, name: str, pattern: bytes, mask: bytes,
@@ -602,6 +646,7 @@ class SignatureDB:
         ])
 
     def _insert_byte_sigs(self, rows: list[tuple]) -> None:
+        self._ensure_writable_schema()
         self._conn.executemany(
             "INSERT INTO byte_sigs "
             "(name, pattern, mask, func_size, tail_crc, crc_len, crc16, compiler, source, category) "
@@ -616,6 +661,7 @@ class SignatureDB:
         call_count: int, mnemonic_hash: int, constants: str = "",
         compiler: str = "", source: str = "", category: str = "",
     ) -> None:
+        self._ensure_writable_schema()
         self._conn.execute(
             "INSERT INTO structural_sigs "
             "(name, block_count, edge_count, call_count, mnemonic_hash, "
@@ -657,8 +703,10 @@ class SignatureDB:
         code32 = code[:32]
 
         if self._byte_index is None:
+            crc_columns = ("crc_len, crc16" if set(_V2_BYTE_COLUMNS) <= self._byte_columns()
+                           else "0, 0")  # schema 1: no signature carries a CRC
             self._byte_index = _ByteIndex(self._conn.execute(
-                "SELECT name, pattern, mask, func_size, tail_crc, crc_len, crc16, "
+                f"SELECT name, pattern, mask, func_size, tail_crc, {crc_columns}, "
                 "compiler, source, category FROM byte_sigs"
             ))
         candidates: list[tuple[Match, float]] = []
@@ -863,6 +911,10 @@ class SignatureDB:
 _MIN_SIG_FUNC_SIZE = 16
 _MIN_FIXED_BYTES = 12
 
+# (pattern, mask, crc_len, crc16): everything match_bytes compares, so two
+# functions that differ only after the 32-byte prefix get separate keys.
+_SigKey = tuple[bytes, bytes, int, int]
+
 
 def build_from_manifest(db: SignatureDB, manifest: dict) -> collections.Counter:
     """Ingest signatures from a JSON manifest.
@@ -889,7 +941,7 @@ def build_from_manifest(db: SignatureDB, manifest: dict) -> collections.Counter:
         Counts of added and skipped byte signatures by reason.
     """
     stats: collections.Counter = collections.Counter()
-    by_prefix: dict[tuple[bytes, bytes], dict[str, tuple]] = collections.defaultdict(dict)
+    by_key: dict[_SigKey, list[tuple]] = collections.defaultdict(list)
     for source in manifest.get("sources", []):
         if source.get("type") != "binary_with_map":
             continue
@@ -927,7 +979,7 @@ def build_from_manifest(db: SignatureDB, manifest: dict) -> collections.Counter:
                     stats["too_few_fixed_bytes"] += 1
                 else:
                     crc_len, crc16 = extract_flirt_crc(b, va, func_size)
-                    by_prefix[(pattern, mask)].setdefault(name, (
+                    by_key[(pattern, mask, crc_len, crc16)].append((
                         name, pattern, mask, func_size, tail_crc, crc_len, crc16,
                         compiler, source_name, category,
                     ))
@@ -940,28 +992,38 @@ def build_from_manifest(db: SignatureDB, manifest: dict) -> collections.Counter:
                         **ssig,
                     )
 
-    _insert_unique_byte_sigs(db, by_prefix, stats)
+    _insert_unique_byte_sigs(db, by_key, stats)
     return stats
 
 
 def _insert_unique_byte_sigs(
-    db: SignatureDB, by_prefix: dict[tuple[bytes, bytes], dict[str, tuple]],
+    db: SignatureDB, by_key: dict[_SigKey, list[tuple]],
     stats: collections.Counter,
 ) -> None:
-    """Insert one byte_sigs row per prefix that names exactly one function.
+    """Insert the byte_sigs rows of every signature key that names exactly one function.
 
-    A prefix given more than one name cannot tell those functions apart, and
-    a prefix the database already holds would only repeat or contradict it.
+    A key given more than one name cannot tell those functions apart. A row
+    whose key is already held under a compiler label that can match the same
+    binaries would only repeat it; one held for other MSVC versions only is
+    added, since matching skips each row on the other's binaries.
     """
-    existing = set(db._conn.execute("SELECT pattern, mask FROM byte_sigs"))
+    db._ensure_writable_schema()
+    held: dict[_SigKey, list[str]] = collections.defaultdict(list)
+    for pattern, mask, crc_len, crc16, compiler in db._conn.execute(
+            "SELECT pattern, mask, crc_len, crc16, compiler FROM byte_sigs"):
+        held[(pattern, mask, crc_len, crc16)].append(compiler)
     rows = []
-    for prefix, rows_by_name in by_prefix.items():
-        if len(rows_by_name) > 1:
+    for key, candidates in by_key.items():
+        if len({row[0] for row in candidates}) > 1:
             stats["ambiguous_prefix"] += 1
-        elif prefix in existing:
-            stats["already_in_db"] += 1
-        else:
-            rows.extend(rows_by_name.values())
+            continue
+        for row in candidates:
+            toolchains = label_toolchains(row[7])
+            if any(_toolchain_allows(compiler, toolchains) for compiler in held[key]):
+                stats["already_in_db"] += 1
+            else:
+                rows.append(row)
+                held[key].append(row[7])
     db._insert_byte_sigs(rows)
     stats["added"] += len(rows)
 
@@ -1008,14 +1070,7 @@ def parse_pat_line(line: str) -> PatSig | None:
         if pair != "..":
             pattern[i] = int(pair, 16)
             mask[i] = 0xFF
-    i = 0
-    while i < 28:
-        if mask[i] and pattern[i] in (0xE8, 0xE9):
-            pattern[i + 1:i + 5] = b"\0\0\0\0"
-            mask[i + 1:i + 5] = b"\0\0\0\0"
-            i += 5
-        else:
-            i += 1
+    _wildcard_rel32(pattern, mask)
     return PatSig(name, bytes(pattern), bytes(mask), int(length_hex, 16),
                   int(crc_len_hex, 16), int(crc_hex, 16))
 
@@ -1034,14 +1089,15 @@ def import_pat(db: SignatureDB, path: str, compiler: str, source: str) -> collec
     """Add the byte signatures of a FLIRT .pat file to *db*.
 
     Skips local labels, functions under 16 bytes, prefixes with fewer than 12
-    fixed bytes, prefixes the file gives more than one name, and prefixes the
-    database already holds.
+    fixed bytes, signatures (prefix plus CRC16) the file gives more than one
+    name, and signatures the database already holds for an overlapping
+    compiler label (see _insert_unique_byte_sigs).
 
     Returns:
         Counts of added and skipped lines by reason.
     """
     stats: collections.Counter = collections.Counter()
-    by_prefix: dict[tuple[bytes, bytes], dict[str, tuple]] = collections.defaultdict(dict)
+    by_key: dict[_SigKey, list[tuple]] = collections.defaultdict(list)
     with open(path, errors="replace") as f:
         for line in f:
             sig = parse_pat_line(line.rstrip("\n"))
@@ -1052,11 +1108,11 @@ def import_pat(db: SignatureDB, path: str, compiler: str, source: str) -> collec
             if reason:
                 stats[reason] += 1
                 continue
-            by_prefix[(sig.pattern, sig.mask)].setdefault(sig.name, (
+            by_key[(sig.pattern, sig.mask, sig.crc_len, sig.crc16)].append((
                 sig.name, sig.pattern, sig.mask, sig.length, 0, sig.crc_len, sig.crc16,
                 compiler, source, _categorize_name(sig.name),
             ))
-    _insert_unique_byte_sigs(db, by_prefix, stats)
+    _insert_unique_byte_sigs(db, by_key, stats)
     return stats
 
 
@@ -1202,7 +1258,7 @@ def _dispatch(args: argparse.Namespace) -> None:
             print(f"  {reason}: {count}")
 
     elif args.command == "scan":
-        db = SignatureDB(args.db)
+        db = SignatureDB.open_existing(args.db)
         b = Binary(args.binary)
         results = db.scan(b, args.compiler)
         w = 16 if b.is_64 else 8
@@ -1213,7 +1269,7 @@ def _dispatch(args: argparse.Namespace) -> None:
         db.close()
 
     elif args.command == "identify":
-        db = SignatureDB(args.db)
+        db = SignatureDB.open_existing(args.db)
         b = Binary(args.binary)
         va = int(args.va, 16)
         m = db.identify(b, va, args.compiler)

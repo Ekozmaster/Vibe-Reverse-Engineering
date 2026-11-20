@@ -231,6 +231,16 @@ class TestScanIndirect:
     def test_default_max_offset_and_window(self, tmp_path):
         assert _pairs(_defaults_image(tmp_path)) == [(0x00, 0xFA), (0x10, 0xFA)]
 
+    def test_bytes_that_are_no_instruction_do_not_end_the_forward_scan(self, tmp_path):
+        code = bytearray(b"\x90" * 0x20)
+        _place(code, 0x00, b"\xB9" + _le(T - 0x100))                      # mov ecx, T - 0x100
+        _place(code, 0x05, b"\x0F\x04")                                   # no instruction
+        _place(code, 0x10, b"\x8B\x81" + _le(0x100))                      # mov eax, [ecx + 0x100]
+        path = pe_image(tmp_path / "a.exe", bytes(code))
+        b = Binary(str(path))
+        assert list(b._cs.disasm(bytes(code[0x05:0x07]), 0)) == []
+        assert _pairs(path) == [(0x00, 0x10)]
+
     def test_each_base_access_pair_reported_once(self, tmp_path):
         code = bytearray(b"\x90" * 0x20)
         _place(code, 0x00, b"\xC7\x05" + _le(PTR) + _le(T - 0x80))     # mov dword [PTR], T - 0x80

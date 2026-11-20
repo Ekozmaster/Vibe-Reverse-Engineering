@@ -5,7 +5,9 @@ kb.h lines take three shapes:
     $ 0xADDR <type...> <name>  -- global variable at an address
     <C declaration>            -- bare typedef / struct / enum
 Lines that are blank or begin with ``//`` are ignored. A declaration may span
-lines: it runs until its braces are closed.
+lines: it runs until its braces are closed and a line ends in ``;`` or the next
+line starts another declaration (``typedef``, ``struct``, ``union``, ``enum``,
+``class``).
 """
 
 from __future__ import annotations
@@ -48,6 +50,17 @@ def extract_function_name(sig: str) -> str:
     if not pre:
         return ""
     return pre.rsplit(None, 1)[-1].lstrip("*&")
+
+
+_DECLARATION_KEYWORDS = frozenset(("typedef", "struct", "union", "enum", "class"))
+
+
+def _complete(lines: list[str]) -> bool:
+    """Whether the lines so far can be a whole declaration: braces and parentheses
+    closed, and more than declaration keywords (``typedef`` alone on its line is not)."""
+    text = " ".join(lines)
+    return (text.count("{") <= text.count("}") and text.count("(") <= text.count(")")
+            and not set(text.split()) <= _DECLARATION_KEYWORDS)
 
 
 def parse_kb(text_or_path: str | Path) -> Kb:
@@ -101,10 +114,12 @@ def parse_kb(text_or_path: str | Path) -> Kb:
             type_ = " ".join(parts[1:-1])
             kb.globals.append(KbGlobal(address=addr, type=type_, name=name))
         else:
-            # A declaration runs until its braces are closed and a line ends in ";", so
-            # "struct Foo" / "{" and "typedef struct { ... }" / "Foo;" each stay one entry.
-            unclosed = sum(part.count("{") - part.count("}") for part in declaration) > 0
-            if not unclosed and declaration and declaration[-1].endswith(";"):
+            # A declaration runs until its braces and parentheses are closed and either a
+            # line ends in ";" or the next line opens a new declaration, so "struct Foo" /
+            # "{" and "typedef struct { ... }" / "Foo;" each stay one entry while a
+            # declaration missing its ";" does not swallow the one after it.
+            if declaration and _complete(declaration) and (
+                    declaration[-1].endswith(";") or line.split(None, 1)[0] in _DECLARATION_KEYWORDS):
                 end_declaration()
             declaration.append(line)
     end_declaration()

@@ -579,16 +579,16 @@ class TestAssembleSimilar:
                "mnemonic_hash": "h", "constants": []}
         with patch("context.SignatureDB") as db_cls, \
              patch("context.extract_structural_sig", return_value=sig):
-            db_cls.return_value.match_structural.return_value = [
+            db_cls.open_existing.return_value.match_structural.return_value = [
                 self._match("msvc", "best"), self._match("other", "second")]
             result, _ = _assemble(_bare_binary(), tmp_path, db_path="sigs.db")
-        db_cls.assert_called_once_with("sigs.db")
+        db_cls.open_existing.assert_called_once_with("sigs.db")
         assert "[similar] msvc: best (block_count=3, call_count=2)" in result.splitlines()
 
     def test_no_line_without_a_signature(self, tmp_path):
         with patch("context.SignatureDB") as db_cls, \
              patch("context.extract_structural_sig", return_value=None):
-            db_cls.return_value.match_structural.return_value = [self._match("a", "b")]
+            db_cls.open_existing.return_value.match_structural.return_value = [self._match("a", "b")]
             result, _ = _assemble(_bare_binary(), tmp_path, db_path="sigs.db")
         assert "[similar]" not in result
 

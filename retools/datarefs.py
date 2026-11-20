@@ -37,7 +37,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import Binary
+from common import Binary, sweep_code
 
 
 def _access_for(b, insn, addr_lo, addr_hi):
@@ -141,7 +141,7 @@ def scan_indirect(b: Binary, target: int, max_offset: int = 4096,
         code = b.read_va(cand_va, scan_window)
         if not code:
             continue
-        for insn in b._cs.disasm(code, cand_va):
+        for insn in sweep_code(code, cand_va, b.is_64):
             if insn.address == cand_va:
                 continue
             for mop in Binary.mem_operands(insn):

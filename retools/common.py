@@ -18,6 +18,9 @@ _UNW_FLAG_CHAININFO = 0x4
 _MAX_UNWIND_CHAIN = 32  # a chain longer than this is a loop in a damaged file
 
 _MAX_INSN_LEN = 15
+
+# Operand values above this are treated as addresses; smaller ones are constants.
+MIN_ABS_ADDRESS = 0x10000
 # Capstone decodes everything one disasm call asks for before handing back the
 # first instruction, at about 1 KB per instruction with details on, so the
 # instructions decoded per call are capped.
@@ -25,7 +28,7 @@ _SWEEP_BATCH_INSNS = 4096
 _ITER_BATCH_INSNS = 16
 
 
-def _disasm_batches(cs: Cs, code: bytes, va: int, batch_insns: int):
+def disasm_batches(cs: Cs, code: bytes, va: int, batch_insns: int, lite: bool = False):
     """Decode *code* with *cs*, at most *batch_insns* instructions per capstone call.
 
     Each call gets ``batch_insns * 15`` bytes, so every instruction it may
@@ -39,16 +42,24 @@ def _disasm_batches(cs: Cs, code: bytes, va: int, batch_insns: int):
         code: Bytes to decode.
         va: Virtual address of the first byte.
         batch_insns: Most instructions decoded per capstone call.
+        lite: Yield capstone's ``(address, size, mnemonic, op_str)`` tuples
+            instead of instruction objects.
+
+    Capstone decodes the whole buffer it is given before yielding the first
+    instruction, so the batches bound the memory one call takes.
     """
+    decode = cs.disasm_lite if lite else cs.disasm
     pos = 0
     while pos < len(code):
         decoded = 0
-        for insn in cs.disasm(code[pos : pos + batch_insns * _MAX_INSN_LEN], va + pos, batch_insns):
+        end = pos
+        for insn in decode(code[pos : pos + batch_insns * _MAX_INSN_LEN], va + pos, batch_insns):
             decoded += 1
+            end = (insn[0] + insn[1] if lite else insn.address + insn.size) - va
             yield insn
         if decoded < batch_insns:
             return
-        pos = insn.address + insn.size - va
+        pos = end
 
 
 def sweep_code(code: bytes, va: int, is_64: bool):
@@ -66,7 +77,7 @@ def sweep_code(code: bytes, va: int, is_64: bool):
     cs = Cs(CS_ARCH_X86, CS_MODE_64 if is_64 else CS_MODE_32)
     cs.detail = True
     cs.skipdata = True
-    for insn in _disasm_batches(cs, code, va, _SWEEP_BATCH_INSNS):
+    for insn in disasm_batches(cs, code, va, _SWEEP_BATCH_INSNS):
         if insn.id:  # id 0 marks a skipped data byte, which has no operands
             yield insn
 
@@ -181,7 +192,7 @@ class Binary:
         is consumed, so a caller that stops at a function's end does not pay
         for the rest of the *max_bytes* window.
         """
-        return _disasm_batches(self._cs, self.read_va(va, max_bytes), va, _ITER_BATCH_INSNS)
+        return disasm_batches(self._cs, self.read_va(va, max_bytes), va, _ITER_BATCH_INSNS)
 
     def sweep(self, ranges: list[tuple[int, int, int]] | None = None):
         """Yield every instruction of a linear sweep over executable code.
@@ -427,8 +438,8 @@ class Binary:
         """Immediate operand values that look like virtual addresses.
 
         Extracts values from ``push 0x7C540C``, ``mov ecx, 0x7C540C``,
-        etc.  Skips small constants (< 0x10000) that are unlikely to be
-        addresses.
+        etc.  Skips constants up to ``MIN_ABS_ADDRESS``, which are unlikely
+        to be addresses.
         """
         if not hasattr(insn, "operands"):
             return []
@@ -438,6 +449,6 @@ class Binary:
             if op.type != x86.X86_OP_IMM:
                 continue
             val = op.imm & mask
-            if val > 0x10000:
+            if val > MIN_ABS_ADDRESS:
                 refs.append(val)
         return refs

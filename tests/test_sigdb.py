@@ -673,6 +673,21 @@ class TestCliCommands:
         assert capsys.readouterr().out.splitlines()[0] == "  Compiler:   unknown"
 
 
+    @pytest.mark.parametrize("command", ["scan", "identify"])
+    def test_a_missing_database_is_reported_and_not_created(self, tmp_path, capsys, command):
+        from sigdb import main
+        image = _sig_image(tmp_path)
+        db = tmp_path / "missing.db"
+        args = [command, str(image)] + ([f"{CODE_VA:x}"] if command == "identify" else []) + ["--db", str(db)]
+
+        with pytest.raises(SystemExit) as exc:
+            main(args)
+
+        assert exc.value.code == 1
+        assert "no signature database" in capsys.readouterr().err
+        assert not db.exists()
+
+
 class TestFingerprintContract:
     def test_nothing_known_is_unknown_with_zero_confidence(self, tmp_path):
         from common import Binary
@@ -853,7 +868,7 @@ def _rich_stub(entries):
 
 
 class TestSchemaMigration:
-    def test_a_version_1_db_gains_the_crc_columns_and_keeps_its_rows(self, tmp_path):
+    def test_a_version_1_db_is_read_as_it_is_and_migrated_on_the_first_write(self, tmp_path):
         from sigdb import SignatureDB, SCHEMA_VERSION
         path = str(tmp_path / "v1.db")
         conn = sqlite3.connect(path)
@@ -870,9 +885,12 @@ class TestSchemaMigration:
         conn.commit()
         conn.close()
         db = SignatureDB(path)
-        assert db._conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
-        assert db._conn.execute("SELECT name, crc_len, crc16 FROM byte_sigs").fetchall() == [("old", 0, 0)]
         assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0)] == ["old"]
+        assert db._conn.execute("SELECT version FROM schema_version").fetchone()[0] == 1
+        db.add_byte_sig(name="new", pattern=b"\x56" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0)
+        assert db._conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+        assert db._conn.execute("SELECT name, crc_len, crc16 FROM byte_sigs ORDER BY id").fetchall() == [
+            ("old", 0, 0), ("new", 0, 0)]
         db.close()
 
 
@@ -1028,3 +1046,197 @@ class TestPatImport:
         pat.write_text(PAT_FIXTURE)
         main(["import-pat", str(pat), "-d", str(tmp_path / "s.db"), "--compiler", "msvc2008", "--source", "t"])
         assert "  added: 1" in capsys.readouterr().out.splitlines()
+
+
+class TestLayoutDependentOperands:
+    """Absolute addresses after the prefix end the CRC span, however they are indexed."""
+    ABS = 0x00402000
+
+    def _build(self, tmp_path, insn):
+        from sigdb import SignatureDB, build_from_manifest
+        text = b"\x90" * 34 + insn + b"\x90" * 12 + b"\xc3"
+        image = pe_image(tmp_path / "lib.dll", text)
+        (tmp_path / "map.csv").write_text(f"address,name,size\n0x{CODE_VA:X},f,{len(text)}\n")
+        db = SignatureDB(":memory:")
+        build_from_manifest(db, {"sources": [{"type": "binary_with_map", "binary": str(image),
+                                              "map": str(tmp_path / "map.csv"), "compiler": "msvc2008"}]})
+        return db, text, db._conn.execute("SELECT crc_len FROM byte_sigs").fetchone()[0]
+
+    def test_switch_table_jump_ends_the_crc(self, tmp_path):
+        _, _, crc_len = self._build(tmp_path, b"\xff\x24\x85" + struct.pack("<I", self.ABS))
+        assert crc_len == 2
+
+    def test_register_plus_absolute_displacement_ends_the_crc(self, tmp_path):
+        _, _, crc_len = self._build(tmp_path, b"\x8a\x80" + struct.pack("<I", self.ABS))
+        assert crc_len == 2
+
+    def test_stack_access_does_not_end_the_crc(self, tmp_path):
+        _, text, crc_len = self._build(tmp_path, b"\x8b\x45\xf8")
+        assert crc_len == len(text) - 32
+
+    def test_switch_table_function_linked_elsewhere_still_matches(self, tmp_path):
+        from common import Binary
+        db, text, _ = self._build(tmp_path, b"\xff\x24\x85" + struct.pack("<I", self.ABS))
+        moved = text[:37] + struct.pack("<I", self.ABS + 0x3000) + text[41:]
+        other = Binary(str(pe_image(tmp_path / "game.exe", moved)))
+        assert db.identify(other, CODE_VA).name == "f"
+
+
+class TestPrefixDedup:
+    def test_a_shared_prefix_with_different_crcs_keeps_both_and_each_matches_its_own(self, tmp_path):
+        from sigdb import SignatureDB, build_from_manifest
+        head = b"\x55\x8b\xec" + b"\x90" * 29
+        a, b = head + b"\x90" * 15 + b"\xc3", head + b"\x91" * 15 + b"\xc3"
+        image = pe_image(tmp_path / "lib.dll", a + b)
+        (tmp_path / "map.csv").write_text(
+            f"address,name,size\n0x{CODE_VA:X},a,{len(a)}\n0x{CODE_VA + len(a):X},b,{len(b)}\n")
+        db = SignatureDB(":memory:")
+        stats = build_from_manifest(db, {"sources": [{"type": "binary_with_map", "binary": str(image),
+                                                      "map": str(tmp_path / "map.csv"), "compiler": "msvc2008"}]})
+        assert stats["added"] == 2 and stats["ambiguous_prefix"] == 0
+        assert [m.name for m in db.match_bytes(a, len(a), "", 0)] == ["a"]
+        assert [m.name for m in db.match_bytes(b, len(b), "", 0)] == ["b"]
+
+    def test_one_manifest_keeps_a_function_once_per_toolchain(self, tmp_path):
+        from sigdb import SignatureDB, build_from_manifest
+        text = b"\x55\x8b\xec" + b"\x90" * 44 + b"\xc3"
+        image = pe_image(tmp_path / "lib.dll", text)
+        (tmp_path / "map.csv").write_text(f"address,name,size\n0x{CODE_VA:X},f,{len(text)}\n")
+        source = {"type": "binary_with_map", "binary": str(image), "map": str(tmp_path / "map.csv")}
+        db = SignatureDB(":memory:")
+        build_from_manifest(db, {"sources": [{**source, "compiler": "msvc2008"}, {**source, "compiler": "msvc2005"},
+                                             {**source, "compiler": "msvc2005_2008"}]})
+        assert db._conn.execute("SELECT compiler FROM byte_sigs ORDER BY compiler").fetchall() == [
+            ("msvc2005",), ("msvc2008",)]
+
+    _PLAIN = "5589E5" + "95" * 29 + " 00 0000 0030 :0000 _plain"
+
+    def test_a_prefix_held_for_another_toolchain_is_imported_whatever_the_order(self, tmp_path):
+        from sigdb import SignatureDB, import_pat
+        pat = tmp_path / "x.pat"
+        pat.write_text(self._PLAIN)
+        db = SignatureDB(":memory:")
+        import_pat(db, str(pat), "msvc2008", "vs2008")
+        stats = import_pat(db, str(pat), "msvc2005", "vs2005")
+        assert stats["added"] == 1 and stats["already_in_db"] == 0
+        code = bytes.fromhex("5589E5") + b"\x95" * 29
+        assert [m.compiler for m in db.match_bytes(code, 0x30, "", 0, frozenset({"8.0"}))] == ["msvc2005"]
+
+    def test_an_overlapping_or_unversioned_label_is_already_in_db(self, tmp_path):
+        from sigdb import SignatureDB, import_pat
+        pat = tmp_path / "x.pat"
+        pat.write_text(self._PLAIN)
+        db = SignatureDB(":memory:")
+        import_pat(db, str(pat), "msvc2008", "vs2008")
+        assert import_pat(db, str(pat), "msvc2005_2008", "both")["already_in_db"] == 1
+        assert import_pat(db, str(pat), "msvc", "bare")["already_in_db"] == 1
+
+
+class TestRel32AtTheEndOfThePrefix:
+    def test_extract_wildcards_rel32_bytes_inside_the_prefix(self):
+        from sigdb import extract_byte_sig
+        code = bytearray(b"\x90" * 64)
+        code[29] = 0xE8
+        mock_b = MagicMock()
+        mock_b.read_va.return_value = bytes(code)
+        _, mask, _, _ = extract_byte_sig(mock_b, 0x1000, func_size=60)
+        assert mask[29] == 0xFF and mask[30:32] == b"\0\0"
+
+    def test_pat_wildcards_rel32_bytes_inside_the_prefix(self):
+        from sigdb import parse_pat_line
+        sig = parse_pat_line("90" * 30 + "E9" + "11" + " 00 0000 0040 :0000 _f")
+        assert sig.mask[30] == 0xFF and sig.mask[31] == 0
+
+
+def _v1_db(path, with_crc_len=False):
+    """A schema-1 database as earlier code wrote it, optionally half-way through the v2 migration."""
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript("""
+        CREATE TABLE schema_version (version INTEGER NOT NULL);
+        INSERT INTO schema_version VALUES (1);
+        CREATE TABLE byte_sigs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+            pattern BLOB NOT NULL, mask BLOB NOT NULL, func_size INTEGER NOT NULL,
+            tail_crc INTEGER NOT NULL DEFAULT 0, compiler TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '');
+        CREATE TABLE structural_sigs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+            block_count INTEGER NOT NULL, edge_count INTEGER NOT NULL, call_count INTEGER NOT NULL,
+            mnemonic_hash INTEGER NOT NULL, constants TEXT NOT NULL DEFAULT '',
+            compiler TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '');
+    """)
+    if with_crc_len:
+        conn.execute("ALTER TABLE byte_sigs ADD COLUMN crc_len INTEGER NOT NULL DEFAULT 0")
+    conn.execute("INSERT INTO byte_sigs (name, pattern, mask, func_size) VALUES ('old', ?, ?, 40)",
+                 (b"\x55" * 32, b"\xff" * 32))
+    conn.commit()
+    conn.close()
+    return path
+
+
+@pytest.fixture
+def read_only():
+    """Make every file in a database's directory read-only for the rest of the test."""
+    import stat
+    made = []
+
+    def make(path):
+        for p in Path(path).parent.iterdir():
+            os.chmod(p, stat.S_IREAD)
+            made.append(p)
+        return path
+    yield make
+    for p in made:
+        os.chmod(p, stat.S_IREAD | stat.S_IWRITE)
+
+
+class TestSchemaMigrationSafety:
+    def test_a_half_migrated_db_finishes_its_migration(self, tmp_path):
+        from sigdb import SignatureDB, SCHEMA_VERSION
+        db = SignatureDB(_v1_db(str(tmp_path / "v1.db"), with_crc_len=True))
+        db.add_byte_sig(name="new", pattern=b"\x56" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0,
+                        crc_len=2, crc16=7)
+        assert db._conn.execute("SELECT version FROM schema_version").fetchone()[0] == SCHEMA_VERSION
+        assert db._conn.execute("SELECT name, crc_len, crc16 FROM byte_sigs ORDER BY id").fetchall() == [
+            ("old", 0, 0), ("new", 2, 7)]
+        db.close()
+
+    def test_a_read_only_version_1_db_can_be_scanned(self, tmp_path, read_only):
+        from sigdb import SignatureDB
+        db = SignatureDB(read_only(_v1_db(str(tmp_path / "v1.db"))))
+        assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0)] == ["old"]
+        db.close()
+
+    def test_a_read_only_current_db_can_be_scanned(self, tmp_path, read_only):
+        from sigdb import SignatureDB
+        path = str(tmp_path / "v2.db")
+        db = SignatureDB(path)
+        db.add_byte_sig(name="f", pattern=b"\x55" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0)
+        db.close()
+        db = SignatureDB(read_only(path))
+        assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0)] == ["f"]
+        db.close()
+
+    def test_import_pat_into_a_version_1_db(self, tmp_path):
+        from sigdb import SignatureDB, import_pat
+        pat = tmp_path / "x.pat"
+        pat.write_text(PAT_FIXTURE)
+        db = SignatureDB(_v1_db(str(tmp_path / "v1.db")))
+        assert import_pat(db, str(pat), "msvc2008", "test")["added"] == 1
+        assert db._conn.execute("SELECT name, crc_len, crc16 FROM byte_sigs ORDER BY id").fetchall() == [
+            ("old", 0, 0), ("_good", 2, 0xABCD)]
+        db.close()
+
+
+class TestVs2015RichHeader:
+    def test_a_vs2015_image_is_14_plus_only(self):
+        from sigdb import msvc_toolchains
+        raw = _rich_stub([
+            (0x00FF << 16 | 23026, 1),     # cvtres 14.00
+            (0x0102 << 16 | 23026, 1),     # linker 14.00
+            (0x0104 << 16 | 23026, 20),    # utc1900 C
+            (0x0105 << 16 | 23026, 80),    # utc1900 C++
+            (0x0103 << 16 | 23026, 3),     # masm 14.00
+            (0x0001 << 16 | 0, 120),       # imports
+        ])
+        assert msvc_toolchains(binary_from_sections(raw, [])) == {"14+"}

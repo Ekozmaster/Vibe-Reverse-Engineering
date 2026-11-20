@@ -287,7 +287,7 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
     # -- Sigdb structural match (best-effort) --
     if db_path:
         try:
-            db = SignatureDB(db_path)
+            db = SignatureDB.open_existing(db_path)
             sig = extract_structural_sig(b, start)
             if sig:
                 matches = db.match_structural(
