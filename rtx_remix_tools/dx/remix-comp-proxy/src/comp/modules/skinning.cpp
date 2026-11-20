@@ -4,6 +4,8 @@
 #include "shared/common/config.hpp"
 #include "shared/common/ffp_state.hpp"
 
+#include <limits>
+
 namespace comp
 {
 	skinning::skinning()
@@ -157,6 +159,12 @@ namespace comp
 			entry.first_byte == first_byte && entry.num_verts == num_verts && entry.stride == stride)
 			return &entry;
 
+		// Expanded vertices can be wider than the source stride, so num_verts * SKIN_VTX_SIZE can overflow UINT
+		const UINT64 expanded_bytes = static_cast<UINT64>(num_verts) * SKIN_VTX_SIZE;
+		if (expanded_bytes > (std::numeric_limits<UINT>::max)())
+			return nullptr;
+		const UINT expanded_size = static_cast<UINT>(expanded_bytes);
+
 		evict(entry);
 
 		// The last vertex needs only the bytes the expansion reads, which vertices_in_buffer kept inside the buffer
@@ -167,7 +175,7 @@ namespace comp
 
 		// Create expanded VB
 		IDirect3DVertexBuffer9* exp_vb = nullptr;
-		if (FAILED(dev->CreateVertexBuffer(num_verts * SKIN_VTX_SIZE, D3DUSAGE_WRITEONLY,
+		if (FAILED(dev->CreateVertexBuffer(expanded_size, D3DUSAGE_WRITEONLY,
 			0, D3DPOOL_DEFAULT, &exp_vb, nullptr)))
 		{
 			src_vb->Unlock();
@@ -176,7 +184,7 @@ namespace comp
 
 		// Lock and expand
 		unsigned char* dst_data = nullptr;
-		if (FAILED(exp_vb->Lock(0, num_verts * SKIN_VTX_SIZE, reinterpret_cast<void**>(&dst_data), 0)))
+		if (FAILED(exp_vb->Lock(0, expanded_size, reinterpret_cast<void**>(&dst_data), 0)))
 		{
 			src_vb->Unlock();
 			exp_vb->Release();
