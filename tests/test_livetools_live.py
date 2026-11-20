@@ -114,6 +114,16 @@ class TestCollect:
 
 
 class TestStepTrace:
+    def test_records_the_function_through_its_return(self, target):
+        with target.stays_correct():
+            reply = target.run({"cmd": "steptrace", "addr": target.addr("callee"), "timeout": 5,
+                                "detail": "full"})
+
+        assert reply["ok"], reply
+        trace = reply["trace"]
+        assert trace["insnCount"] > 0
+        assert "ret" in [call["type"] for call in trace["calls"]]
+
     def test_at_a_call_instruction_is_refused(self, target):
         with target.stays_correct():
             reply = target.run({"cmd": "steptrace", "addr": target.addr("call_site"),

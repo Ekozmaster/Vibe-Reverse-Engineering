@@ -218,7 +218,7 @@ def format_snapshot(snap: dict, header: str = "BREAKPOINT HIT") -> str:
     return "\n".join(lines)
 
 
-# ── NEW: trace formatter ──────────────────────────────────────────────────
+# ── trace formatter ──────────────────────────────────────────────────
 
 def format_trace(resp: dict) -> str:
     lines: list[str] = []
@@ -303,7 +303,7 @@ def _fmt_val(val) -> str:
     return str(val)
 
 
-# ── NEW: steptrace formatter ──────────────────────────────────────────────
+# ── steptrace formatter ──────────────────────────────────────────────
 
 def format_steptrace(resp: dict) -> str:
     lines: list[str] = []
@@ -369,7 +369,7 @@ def format_steptrace(resp: dict) -> str:
     return "\n".join(lines)
 
 
-# ── NEW: collect formatter ─────────────────────────────────────────────────
+# ── collect formatter ─────────────────────────────────────────────────
 
 def format_collect(resp: dict) -> str:
     lines: list[str] = []
@@ -403,7 +403,7 @@ def format_collect(resp: dict) -> str:
     return "\n".join(lines)
 
 
-# ── NEW: modules formatter ─────────────────────────────────────────────────
+# ── modules formatter ─────────────────────────────────────────────────
 
 def format_modules(resp: dict) -> str:
     lines: list[str] = []

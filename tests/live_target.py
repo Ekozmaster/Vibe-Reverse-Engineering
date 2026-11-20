@@ -9,15 +9,17 @@ instruction address and every argument value:
     after_call:  count the iteration as good if callee returned 6, else as bad
     spare:       nop
                  Sleep(10) and repeat
-    callee:      return a + b + c
+    callee:      return a + b + c, through a ``bnd ret`` (a prefixed return)
 
 A hook that disturbs an argument, a return address or the stack shows up in
 the ``bad`` counter, or stops the ``good`` counter from advancing.
 
 The same code page holds two more routines a test may use:
 
-    repeater:    fill a buffer with ``rep stosb``, count it in ``reps``,
-                 Sleep(10) and repeat; it runs once a test starts it
+    repeater:    fill ``rep_count`` bytes at ``rep_buffer`` with ``rep stosb``
+                 (``REP_COUNT`` bytes of the data page unless a test sets a
+                 longer run), count it in ``reps``, Sleep(10) and repeat; it
+                 runs once a test starts it
     dormant:     nops and a return that nothing calls, a site for code
                  patches that must never execute
 
@@ -90,6 +92,9 @@ rpc.exports = {
     makeReadExecute: function (address, size) {
         return Memory.protect(ptr(address), size, 'r-x');
     },
+    protection: function (address) {
+        return Process.getRangeByAddress(ptr(address)).protection;
+    },
     startThread: function (entry) {
         return createThread(NULL, 0, ptr(entry), NULL, 0, NULL).toString();
     },
@@ -106,7 +111,8 @@ rpc.exports = {
 REP_COUNT = 64
 
 _DATA_LABELS = {"good": 0x1000, "bad": 0x1004, "stop": 0x1008, "reps": 0x100C,
-                "sleep_ptr": 0x1010, "buffer": 0x1100}
+                "sleep_ptr": 0x1010, "rep_buffer": 0x1018, "rep_count": 0x1020,
+                "buffer": 0x1100}
 _REPEATER = 0x80
 _DORMANT = 0xC0
 _DORMANT_CODE = b"\x90" * 16 + b"\xC3"
@@ -115,7 +121,7 @@ _DORMANT_CODE = b"\x90" * 16 + b"\xC3"
 def _x86_code(base: int) -> tuple[bytes, dict[str, int]]:
     labels = {"loop": 0x00, "second": 0x02, "call_site": 0x06, "after_call": 0x0B,
               "spare": 0x1E, "callee": 0x40, "callee_second": 0x44,
-              "repeater": _REPEATER, "rep": 0x8C, "after_rep": 0x8E, "dormant": _DORMANT,
+              "repeater": _REPEATER, "rep": 0x8E, "after_rep": 0x90, "dormant": _DORMANT,
               **_DATA_LABELS}
     at = {name: base + offset for name, offset in labels.items()}
     code = bytes.fromhex("6A03 6A02 6A01")                              # 00 push 3; push 2; push 1
@@ -132,15 +138,15 @@ def _x86_code(base: int) -> tuple[bytes, dict[str, int]]:
     code += bytes.fromhex("74D0")                                       # 2E je loop
     code += bytes.fromhex("31C0 C20400")                                # 30 xor eax, eax; ret 4
     code = code.ljust(labels["callee"], b"\xCC")
-    code += bytes.fromhex("8B442404 03442408 0344240C C20C00")          # 40 a + b + c; ret 12
+    code += bytes.fromhex("8B442404 03442408 0344240C F2C20C00")        # 40 a + b + c; bnd ret 12
     code = code.ljust(_REPEATER, b"\xCC")
-    code += b"\xBF" + struct.pack("<I", at["buffer"])                   # 80 mov edi, buffer
-    code += b"\xB9" + struct.pack("<I", REP_COUNT)                      # 85 mov ecx, REP_COUNT
-    code += bytes.fromhex("31C0 F3AA")                                  # 8A xor eax, eax; 8C rep stosb
-    code += b"\xFF\x05" + struct.pack("<I", at["reps"])                 # 8E inc dword [reps]
-    code += bytes.fromhex("6A0A")                                       # 94 push 10
-    code += b"\xFF\x15" + struct.pack("<I", at["sleep_ptr"])            # 96 call [sleep_ptr]
-    code += bytes.fromhex("EBE2")                                       # 9C jmp repeater
+    code += b"\x8B\x3D" + struct.pack("<I", at["rep_buffer"])           # 80 mov edi, [rep_buffer]
+    code += b"\x8B\x0D" + struct.pack("<I", at["rep_count"])            # 86 mov ecx, [rep_count]
+    code += bytes.fromhex("31C0 F3AA")                                  # 8C xor eax, eax; 8E rep stosb
+    code += b"\xFF\x05" + struct.pack("<I", at["reps"])                 # 90 inc dword [reps]
+    code += bytes.fromhex("6A0A")                                       # 96 push 10
+    code += b"\xFF\x15" + struct.pack("<I", at["sleep_ptr"])            # 98 call [sleep_ptr]
+    code += bytes.fromhex("EBE0")                                       # 9E jmp repeater
     code = code.ljust(_DORMANT, b"\xCC") + _DORMANT_CODE                # C0 dormant
     return code, at
 
@@ -148,7 +154,7 @@ def _x86_code(base: int) -> tuple[bytes, dict[str, int]]:
 def _x64_code(base: int) -> tuple[bytes, dict[str, int]]:
     labels = {"loop": 0x04, "second": 0x09, "call_site": 0x14, "after_call": 0x19,
               "spare": 0x2C, "callee": 0x60, "callee_second": 0x63,
-              "repeater": _REPEATER, "rep": 0x92, "after_rep": 0x94, "dormant": _DORMANT,
+              "repeater": _REPEATER, "rep": 0x93, "after_rep": 0x95, "dormant": _DORMANT,
               **_DATA_LABELS}
 
     def rip_relative(label: str, next_insn: int) -> bytes:
@@ -170,16 +176,16 @@ def _x64_code(base: int) -> tuple[bytes, dict[str, int]]:
     code += bytes.fromhex("31C0 4883C428 C3")                           # 41 xor eax, eax; add rsp, 0x28; ret
     code = code.ljust(labels["callee"], b"\xCC")
     code += bytes.fromhex("8D0411 4401C0")                              # 60 lea eax, [rcx+rdx]; add eax, r8d
-    code += bytes.fromhex("0F1F440000 0F1F440000 C3")                   # 66 two 5-byte nops; ret
+    code += bytes.fromhex("0F1F440000 0F1F440000 F2C3")                 # 66 two 5-byte nops; bnd ret
     code = code.ljust(_REPEATER, b"\xCC")
     code += bytes.fromhex("4883EC28")                                   # 80 sub rsp, 0x28
-    code += b"\x48\x8D\x3D" + rip_relative("buffer", 0x8B)              # 84 lea rdi, [buffer]
-    code += b"\xB9" + struct.pack("<I", REP_COUNT)                      # 8B mov ecx, REP_COUNT
-    code += bytes.fromhex("31C0 F3AA")                                  # 90 xor eax, eax; 92 rep stosb
-    code += b"\xFF\x05" + rip_relative("reps", 0x9A)                    # 94 inc dword [reps]
-    code += bytes.fromhex("B90A000000")                                 # 9A mov ecx, 10
-    code += b"\xFF\x15" + rip_relative("sleep_ptr", 0xA5)               # 9F call [sleep_ptr]
-    code += bytes.fromhex("EBDD")                                       # A5 jmp 0x84
+    code += b"\x48\x8B\x3D" + rip_relative("rep_buffer", 0x8B)          # 84 mov rdi, [rep_buffer]
+    code += b"\x8B\x0D" + rip_relative("rep_count", 0x91)               # 8B mov ecx, [rep_count]
+    code += bytes.fromhex("31C0 F3AA")                                  # 91 xor eax, eax; 93 rep stosb
+    code += b"\xFF\x05" + rip_relative("reps", 0x9B)                    # 95 inc dword [reps]
+    code += bytes.fromhex("B90A000000")                                 # 9B mov ecx, 10
+    code += b"\xFF\x15" + rip_relative("sleep_ptr", 0xA6)               # A0 call [sleep_ptr]
+    code += bytes.fromhex("EBDC")                                       # A6 jmp 0x84
     code = code.ljust(_DORMANT, b"\xCC") + _DORMANT_CODE                # C0 dormant
     return code, {name: base + offset for name, offset in labels.items()}
 
@@ -205,6 +211,11 @@ class Loop:
     def start_thread(self) -> None:
         """Run the loop on one more thread, sharing this copy's code and counters."""
         self._target.helper.start_thread(self.addr("loop"))
+
+    def set_repeat(self, buffer: int, count: int) -> None:
+        """Make the repeater fill *count* bytes at *buffer* from its next pass on."""
+        data = struct.pack("<QI", buffer, count)
+        self._target.run({"cmd": "mem_write", "addr": self.addr("rep_buffer"), "hex": data.hex()})
 
     def start_repeater(self) -> None:
         """Run the repeater on its own thread, once per copy of the code."""
@@ -313,7 +324,7 @@ class LiveTarget:
         base = int(self.helper.allocate(2 * _PAGE), 16)
         sleep = int(self.helper.export_address("kernel32.dll", "Sleep"), 16)
         code, labels = _CODE[self.arch](base)
-        data = struct.pack("<IIIIQ", 0, 0, 0, 0, sleep)
+        data = struct.pack("<IIIIQQI", 0, 0, 0, 0, sleep, labels["buffer"], REP_COUNT)
         self.run({"cmd": "mem_write", "addr": hex_addr(base), "hex": code.hex()})
         self.run({"cmd": "mem_write", "addr": hex_addr(labels["good"]), "hex": data.hex()})
         self.helper.make_read_execute(hex_addr(base), _PAGE)

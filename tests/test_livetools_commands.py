@@ -40,6 +40,7 @@ class FakeAgent:
         self.frozen_addr: str | None = None
         self.frozen_thread = 100
         self.calls: list[str] = []
+        self.frozen_checks = 0
         self.on_unfreeze = lambda step: None
         self.on_cancel_step = lambda: None
         self.bp_refusal: str | None = None
@@ -49,6 +50,7 @@ class FakeAgent:
         return []
 
     def is_frozen(self):
+        self.frozen_checks += 1
         return self.frozen_addr is not None
 
     def get_frozen_addr(self):
@@ -61,12 +63,14 @@ class FakeAgent:
 
     def remove_bp(self, addr):
         self.calls.append("remove_bp")
+        if self.frozen_addr is not None and int(self.frozen_addr, 16) == int(addr, 16):
+            self.frozen_addr = None
         return {"ok": True}
 
     def unfreeze(self, step):
+        self.calls.append("unfreeze")
         if self.frozen_addr is None:
             return False
-        self.calls.append("unfreeze")
         self.frozen_addr = None
         self.on_unfreeze(step)
         return True
@@ -81,10 +85,8 @@ class FakeAgent:
         return {"addr": self.frozen_addr, "threadId": self.frozen_thread, "hitCount": 0,
                 "regs": {}, "stack": [], "disasm": []}
 
-    def disasm_at(self, addr, count):
-        mnemonic, _, operands = _CODE[addr].partition(" ")
-        return [{"addr": addr, "mnemonic": mnemonic, "opStr": operands,
-                 "size": 5, "str": _CODE[addr]}]
+    def original_instruction(self, addr):
+        return {"str": _CODE[addr], "isCall": _CODE[addr].startswith("call")}
 
     def install_trace(self, addr, config):
         self.traces.append((addr, config))
@@ -208,20 +210,12 @@ class TestStepTrace:
 
 
 class TestBreakpoint:
-    def test_delete_removes_it_before_releasing_the_thread_frozen_there(self, daemon, agent):
+    def test_delete_leaves_releasing_the_thread_frozen_there_to_the_agent(self, daemon, agent):
         agent.frozen_addr = "0x0000000000401040"
 
         reply = daemon.handle({"cmd": "bp_del", "addr": ENTRY})
 
         assert reply["ok"] and reply["state"] == "RUNNING"
-        assert agent.calls == ["remove_bp", "unfreeze"]
-
-    def test_delete_leaves_a_thread_frozen_elsewhere_alone(self, daemon, agent):
-        agent.frozen_addr = CALL_SITE
-
-        reply = daemon.handle({"cmd": "bp_del", "addr": ENTRY})
-
-        assert reply["ok"] and reply["state"] == "FROZEN"
         assert agent.calls == ["remove_bp"]
 
     def test_add_reports_why_the_agent_refused(self, daemon, agent):
@@ -247,6 +241,15 @@ class TestWatch:
         reply = daemon.handle({"cmd": "watch", "timeout": 0})
 
         assert reply["ok"] and reply["snapshot"]["addr"] == ENTRY
+
+
+    def test_a_step_failure_reported_outside_a_step_does_not_wake_it(self, daemon, agent):
+        daemon._on_message({"type": "send", "payload": {"type": "step_failed", "error": "late"}}, None)
+
+        reply = daemon.handle({"cmd": "watch", "timeout": 0.3})
+
+        assert not reply["ok"] and reply["timeout"]
+        assert agent.frozen_checks < 20
 
 
 class TestResume:
@@ -357,6 +360,16 @@ class TestCommandLine:
         cli.cmd_collect(cli.build_parser().parse_args(["collect", CALL_SITE, "--probe"]))
 
         assert sent[0]["probe"] is True
+
+
+class TestDetach:
+    def test_a_daemon_whose_state_file_vanished_counts_as_gone(self, monkeypatch, capsys):
+        monkeypatch.setattr(client, "is_daemon_alive", lambda: True)
+        monkeypatch.setattr(client, "read_state", lambda: None)
+
+        cli.cmd_detach(cli.build_parser().parse_args(["detach"]))
+
+        assert "already gone" in capsys.readouterr().out
 
 
 class TestFormatSnapshot:

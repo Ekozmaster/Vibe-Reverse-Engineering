@@ -51,6 +51,10 @@ _STEP_INTERRUPTED = (
     "thread {other} reached a breakpoint before thread {stepped} finished its step. The step "
     "was ended: thread {other} is the one frozen now, and thread {stepped} is running."
 )
+_STEP_CUT_SHORT = (
+    "the thread reached the breakpoint at {addr} before its step ended. The step was ended "
+    "there."
+)
 
 class Daemon:
     def __init__(self, target: str, *, spawn: bool = False):
@@ -65,6 +69,7 @@ class Daemon:
         self._cleaned_up = False
 
         self._hit: dict | None = None
+        self._stepping = False
         self._step_failure: str | None = None
         self._hit_event = threading.Event()
         self._lock = threading.Lock()
@@ -146,8 +151,9 @@ class Daemon:
 
             elif ptype == "step_failed":
                 with self._lock:
-                    self._step_failure = payload.get("error", "step failed")
-                    self._hit_event.set()
+                    if self._stepping:
+                        self._step_failure = payload.get("error", "step failed")
+                        self._hit_event.set()
 
             elif ptype == "trace_batch":
                 tid = payload.get("traceId", 0)
@@ -208,7 +214,7 @@ class Daemon:
         except Exception as exc:
             return {**self._base_resp(), "ok": False, "error": str(exc)}
 
-    # ── existing commands (unchanged) ──────────────────────────────────────
+    # ── commands ───────────────────────────────────────────────────────────
 
     def _cmd_status(self, cmd: dict) -> dict:
         return {**self._base_resp(), "ok": True}
@@ -224,12 +230,8 @@ class Daemon:
         return resp
 
     def _cmd_bp_del(self, cmd: dict) -> dict:
-        """Remove a breakpoint. A thread frozen at it is released as well."""
-        addr = cmd["addr"]
-        frozen_addr = self.api.get_frozen_addr()
-        result = self.api.remove_bp(addr)
-        if result.get("ok") and frozen_addr and int(frozen_addr, 16) == int(addr, 16):
-            self.api.unfreeze(None)
+        """Remove a breakpoint. The agent releases a thread frozen at it as well."""
+        result = self.api.remove_bp(cmd["addr"])
         return {**self._base_resp(), **result}
 
     def _cmd_bp_list(self, cmd: dict) -> dict:
@@ -333,15 +335,18 @@ class Daemon:
         with self._lock:
             self._hit = None
             self._step_failure = None
+            self._stepping = True
             self._hit_event.clear()
-        if before is None or not self.api.unfreeze(mode):
-            return {**self._base_resp(), "ok": False, "error": "not frozen"}
-
-        timeout = cmd.get("timeout", 10)
-        if not self._hit_event.wait(timeout=timeout):
-            self.api.cancel_step()
-        with self._lock:
-            failure = self._step_failure
+        try:
+            if before is None or not self.api.unfreeze(mode):
+                return {**self._base_resp(), "ok": False, "error": "not frozen"}
+            timeout = cmd.get("timeout", 10)
+            if not self._hit_event.wait(timeout=timeout):
+                self.api.cancel_step()
+        finally:
+            with self._lock:
+                self._stepping = False
+                failure = self._step_failure
         if failure is not None:
             return {**self._base_resp(), "ok": False, "error": failure}
         # A thread may have frozen just as the step was given up; it is reported.
@@ -350,9 +355,12 @@ class Daemon:
             return {**self._base_resp(), "ok": False,
                     "error": _STEP_GIVEN_UP.format(timeout=timeout)}
         stepped = before["threadId"]
-        stopped_thread = reply["snapshot"]["threadId"]
-        if stopped_thread != stepped:
-            reply["stepInterrupted"] = _STEP_INTERRUPTED.format(stepped=stepped, other=stopped_thread)
+        snapshot = reply["snapshot"]
+        if snapshot["threadId"] != stepped:
+            reply["stepInterrupted"] = _STEP_INTERRUPTED.format(
+                stepped=stepped, other=snapshot["threadId"])
+        elif snapshot.get("stepCut"):
+            reply["stepInterrupted"] = _STEP_CUT_SHORT.format(addr=snapshot["addr"])
         return reply
 
     def _cmd_scan(self, cmd: dict) -> dict:
@@ -379,13 +387,14 @@ class Daemon:
         A function hook traps the return through the slot on top of the stack
         at the hooked address, which holds a return address only at a function
         entry. A ``call`` instruction is the one kind of non-entry address that
-        its own bytes give away.
+        its own bytes give away. The agent reports the program's instruction,
+        not a jump or int3 of its own written over it.
         """
         for addr in addrs:
-            first = self.api.disasm_at(addr, 1)[0]
-            if first["mnemonic"] == "call":
+            insn = self.api.original_instruction(addr)
+            if insn["isCall"]:
                 return _FUNCTION_HOOK_ON_A_CALL.format(
-                    addr=addr, insn=first["str"], command=command, remedy=_REMEDY[command])
+                    addr=addr, insn=insn["str"], command=command, remedy=_REMEDY[command])
         return None
 
     def _trace_hook_refusal(self, cmd: dict, addrs: list[str]) -> str | None:
@@ -396,7 +405,7 @@ class Daemon:
             return _PROBE_SEES_NO_RETURN
         return None
 
-    # ── NEW: trace ─────────────────────────────────────────────────────────
+    # ── trace ──────────────────────────────────────────────────────────────
 
     def _cmd_trace(self, cmd: dict) -> dict:
         addr = cmd["addr"]
@@ -457,7 +466,7 @@ class Daemon:
                 "count": len(samples), "output": str(output) if output else None,
                 "hookDiag": hook_diag}
 
-    # ── NEW: collect ───────────────────────────────────────────────────────
+    # ── collect ────────────────────────────────────────────────────────────
 
     def _cmd_collect(self, cmd: dict) -> dict:
         addrs = cmd.get("addrs", [])
@@ -558,7 +567,7 @@ class Daemon:
                 "fenceCount": self.api.get_fence_counter(),
                 "hookDiags": hook_diags}
 
-    # ── NEW: steptrace ─────────────────────────────────────────────────────
+    # ── steptrace ──────────────────────────────────────────────────────────
 
     def _cmd_steptrace(self, cmd: dict) -> dict:
         addr = cmd["addr"]
@@ -596,7 +605,7 @@ class Daemon:
         return {**self._base_resp(), "ok": True, "trace": trace_data,
                 "output": str(output) if output else None}
 
-    # ── NEW: modules ───────────────────────────────────────────────────────
+    # ── modules ────────────────────────────────────────────────────────────
 
     def _cmd_modules(self, cmd: dict) -> dict:
         modules = self.api.enumerate_modules()
@@ -643,7 +652,7 @@ class Daemon:
         result = self.api.sample_dip_callers(count)
         return {**self._base_resp(), "ok": True, **result}
 
-    # ── memory write watchpoint ─────────────────────────────────────────────
+    # ── memory access watch ────────────────────────────────────────────────
 
     def _cmd_memwatch_start(self, cmd: dict) -> dict:
         addr = cmd["addr"]

@@ -147,11 +147,12 @@ def _spawn_daemon(target: str, *, spawn: bool = False) -> None:
 
 
 def cmd_detach(_args: argparse.Namespace) -> None:
-    if not client.is_daemon_alive():
+    state = client.read_state() if client.is_daemon_alive() else None
+    if state is None:
         client.STATE_FILE.unlink(missing_ok=True)
         print("Detached (daemon was already gone).")
         return
-    daemon_pid = client.read_state()["pid"]
+    daemon_pid = state["pid"]
     try:
         resp = client.send_command({"cmd": "detach"})
         print(client.format_status_line(resp))
@@ -197,7 +198,7 @@ def cmd_bp(args: argparse.Namespace) -> None:
         if resp.get("ok"):
             print(f"Breakpoint at {addr} removed.")
         else:
-            print(f"[error] {resp.get('error', resp.get('msg', 'unknown'))}")
+            print(f"[error] {resp.get('error', 'unknown')}")
     elif action == "list":
         resp = client.send_command({"cmd": "bp_list"})
         print(client.format_status_line(resp))
@@ -301,7 +302,7 @@ def cmd_mem_write(args: argparse.Namespace) -> None:
     if resp.get("ok"):
         print(f"Wrote {len(hex_bytes)//2} bytes to {addr}.")
     else:
-        print(f"[error] {resp.get('error', resp.get('msg', 'unknown'))}")
+        print(f"[error] {resp.get('error', 'unknown')}")
 
 
 def cmd_mem_alloc(args: argparse.Namespace) -> None:
@@ -312,7 +313,7 @@ def cmd_mem_alloc(args: argparse.Namespace) -> None:
     if resp.get("ok"):
         print(f"Allocated {args.size} bytes at {resp['addr']} (rwx)")
     else:
-        print(f"[error] {resp.get('error', resp.get('msg', 'unknown'))}")
+        print(f"[error] {resp.get('error', 'unknown')}")
 
 
 def cmd_disasm(args: argparse.Namespace) -> None:
@@ -392,7 +393,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
             print(f"  {m['addr']}  ({m['size']} bytes)")
 
 
-# ── NEW: trace command ─────────────────────────────────────────────────────
+# ── trace command ─────────────────────────────────────────────────────
 
 def cmd_trace(args: argparse.Namespace) -> None:
     if not _require_attached():
@@ -417,7 +418,7 @@ def cmd_trace(args: argparse.Namespace) -> None:
     print(client.format_trace(resp))
 
 
-# ── NEW: steptrace command ─────────────────────────────────────────────────
+# ── steptrace command ─────────────────────────────────────────────────
 
 def cmd_steptrace(args: argparse.Namespace) -> None:
     if not _require_attached():
@@ -440,7 +441,7 @@ def cmd_steptrace(args: argparse.Namespace) -> None:
     print(client.format_steptrace(resp))
 
 
-# ── NEW: collect command ───────────────────────────────────────────────────
+# ── collect command ───────────────────────────────────────────────────
 
 def cmd_collect(args: argparse.Namespace) -> None:
     if not _require_attached():
@@ -486,7 +487,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
     print(client.format_collect(resp))
 
 
-# ── NEW: modules command ───────────────────────────────────────────────────
+# ── modules command ───────────────────────────────────────────────────
 
 def cmd_modules(args: argparse.Namespace) -> None:
     if not _require_attached():
@@ -502,7 +503,7 @@ def cmd_modules(args: argparse.Namespace) -> None:
     print(client.format_modules(resp))
 
 
-# ── NEW: dipcnt command ───────────────────────────────────────────────────
+# ── dipcnt command ───────────────────────────────────────────────────
 
 def cmd_dipcnt(args: argparse.Namespace) -> None:
     action = getattr(args, "action", None)
@@ -510,11 +511,11 @@ def cmd_dipcnt(args: argparse.Namespace) -> None:
         dev_ptr = getattr(args, "dev_ptr")
         resp = client.send_command({"cmd": "dipcnt_on", "devPtrAddr": dev_ptr})
         print(client.format_status_line(resp))
-        print("DIP counter ON." if resp.get("ok") else f"[error] {resp.get('msg', '?')}")
+        print("DIP counter ON." if resp.get("ok") else f"[error] {resp.get('error', 'unknown')}")
     elif action == "off":
         resp = client.send_command({"cmd": "dipcnt_off"})
         print(client.format_status_line(resp))
-        print("DIP counter OFF." if resp.get("ok") else f"[error] {resp.get('msg', '?')}")
+        print("DIP counter OFF." if resp.get("ok") else f"[error] {resp.get('error', 'unknown')}")
     elif action == "read":
         resp = client.send_command({"cmd": "dipcnt_read"})
         print(client.format_status_line(resp))
@@ -533,19 +534,19 @@ def cmd_dipcnt(args: argparse.Namespace) -> None:
             for c in callers:
                 print(f"    {c['addr']}  x{c['count']}")
         else:
-            print(f"  [error] {resp.get('msg', '?')}")
+            print(f"  [error] {resp.get('error', 'unknown')}")
     else:
         print("Usage: python -m livetools dipcnt [on|off|read|callers]")
 
 
-# ── NEW: analyze command ───────────────────────────────────────────────────
+# ── analyze command ───────────────────────────────────────────────────
 
 def cmd_analyze(args: argparse.Namespace) -> None:
     from .analyze import run_analyze
     run_analyze(args)
 
 
-# ── NEW: vishook command ──────────────────────────────────────────────────
+# ── vishook command ──────────────────────────────────────────────────
 
 def cmd_vishook(args: argparse.Namespace) -> None:
     action = getattr(args, "action", None)
@@ -565,14 +566,14 @@ def cmd_vishook(args: argparse.Namespace) -> None:
             print(f"  Callers >= 0x{thr:X}: force visible")
             print(f"  Callers <  0x{thr:X}: call original")
         else:
-            print(f"[error] {resp.get('msg', resp.get('error', 'unknown'))}")
+            print(f"[error] {resp.get('error', 'unknown')}")
     elif action == "off":
         resp = client.send_command({"cmd": "vishook_off"})
         print(client.format_status_line(resp))
         if resp.get("ok"):
             print("Visibility override OFF.  Original jmp restored.")
         else:
-            print(f"[error] {resp.get('msg', resp.get('error', 'unknown'))}")
+            print(f"[error] {resp.get('error', 'unknown')}")
     elif action == "stats":
         resp = client.send_command({"cmd": "vishook_stats"})
         print(client.format_status_line(resp))
@@ -585,7 +586,7 @@ def cmd_vishook(args: argparse.Namespace) -> None:
         print("Usage: python -m livetools vishook [on|off|stats]")
 
 
-# ── NEW: memwatch command ─────────────────────────────────────────────────
+# ── memwatch command ─────────────────────────────────────────────────
 
 def cmd_memwatch(args: argparse.Namespace) -> None:
     action = getattr(args, "action", None)

@@ -193,7 +193,7 @@ class TestStep:
         with target.stays_correct():
             _freeze_at(target, "call_site")
             _step(target, "over")
-            target.run({"cmd": "bp_del", "addr": target.addr("call_site")})
+            assert target.run({"cmd": "bp_del", "addr": target.addr("call_site")})["state"] == "FROZEN"
             target.run({"cmd": "resume"})
 
         assert target.run({"cmd": "bp_list"})["breakpoints"] == []
@@ -209,6 +209,29 @@ class TestStep:
 
         assert not reply["ok"] and "given up" in reply["error"]
         assert reply["state"] == "RUNNING"
+        assert target.loop.live_bytes("loop", _LOOP_BODY) == target.loop.built_bytes("loop", _LOOP_BODY)
+
+    def test_over_stopped_by_a_breakpoint_in_the_callee_says_so(self, target):
+        _freeze_at(target, "call_site")
+        target.run({"cmd": "bp_add", "addr": target.addr("callee_second")})
+
+        reply = target.run({"cmd": "step", "mode": "over"})
+
+        assert reply["ok"], reply
+        assert _pc(reply["snapshot"], target.arch) == _at(target, "callee_second")
+        assert "breakpoint" in reply["stepInterrupted"]
+
+    def test_over_a_call_whose_return_site_is_hooked_is_refused(self, target):
+        _freeze_at(target, "call_site")
+        target.daemon.api.install_fence(target.addr("after_call"))
+        try:
+            reply = target.run({"cmd": "step", "mode": "over"})
+        finally:
+            target.daemon.api.remove_fence()
+
+        assert not reply["ok"] and "fence hook" in reply["error"], reply
+        target.run({"cmd": "bp_del", "addr": target.addr("call_site")})
+        target.wait_for_iterations(3)
         assert target.loop.live_bytes("loop", _LOOP_BODY) == target.loop.built_bytes("loop", _LOOP_BODY)
 
     def test_without_a_frozen_thread_is_an_error(self, target):
@@ -340,6 +363,25 @@ class TestHookConflicts:
         assert target.run({"cmd": "bp_add", "addr": target.addr("loop")})["ok"]
         assert target.loop.live_bytes("dormant", 16) == target.loop.built_bytes("dormant", 16)
 
+    def test_function_hook_on_a_probed_call_site_is_refused(self, target):
+        target.daemon.api.install_fence(target.addr("call_site"))
+        try:
+            with target.stays_correct():
+                reply = target.run({"cmd": "trace", "addr": target.addr("call_site"),
+                                    "count": 1, "timeout": 1})
+        finally:
+            target.daemon.api.remove_fence()
+
+        assert not reply["ok"] and "call instruction" in reply["error"], reply
+
+    def test_mem_write_keeps_the_page_protection(self, target):
+        target.helper.make_read_execute(target.addr("dormant"), 1)
+
+        reply = target.run({"cmd": "mem_write", "addr": _offset(target, "dormant", 1), "hex": "90"})
+
+        assert reply["ok"], reply
+        assert target.helper.protection(target.addr("dormant")) == "r-x"
+
     def test_mem_write_over_a_breakpoint_is_refused(self, target):
         target.run({"cmd": "bp_add", "addr": _offset(target, "dormant", 2)})
 
@@ -369,14 +411,14 @@ class TestVishook:
 
         reply = _vishook_on(target, target.addr("dormant"))
 
-        assert not reply["ok"] and "64-bit" in reply["msg"]
+        assert not reply["ok"] and "64-bit" in reply["error"]
 
     def test_over_a_breakpoint_is_refused(self, x86_target):
         x86_target.run({"cmd": "bp_add", "addr": _offset(x86_target, "dormant", 4)})
 
         reply = _vishook_on(x86_target, x86_target.addr("dormant"))
 
-        assert not reply["ok"] and "breakpoint" in reply["msg"]
+        assert not reply["ok"] and "breakpoint" in reply["error"]
         assert x86_target.loop.live_bytes("dormant", 4) == x86_target.loop.built_bytes("dormant", 4)
 
     def test_breakpoint_inside_its_jump_is_refused(self, x86_target):
@@ -402,6 +444,16 @@ class TestVishook:
 
         assert not reply["ok"] and "vishook" in reply["error"]
 
+    def test_keeps_the_page_protection(self, x86_target):
+        x86_target.helper.make_read_execute(x86_target.addr("dormant"), 1)
+        assert _vishook_on(x86_target, x86_target.addr("dormant"))["ok"]
+        on = x86_target.helper.protection(x86_target.addr("dormant"))
+
+        x86_target.run({"cmd": "vishook_off"})
+
+        assert on == "r-x"
+        assert x86_target.helper.protection(x86_target.addr("dormant")) == "r-x"
+
     def test_off_restores_the_original_bytes(self, x86_target):
         _vishook_on(x86_target, x86_target.addr("dormant"))
 
@@ -422,6 +474,22 @@ class TestUnload:
         loop.wait_for_iterations(5)
         assert loop.live_bytes("loop", _LOOP_BODY) == loop.built_bytes("loop", _LOOP_BODY)
         assert loop.bad == 0
+
+    def test_detach_while_a_thread_runs_a_long_repeated_instruction_leaves_it_running(
+            self, fresh_target):
+        loop = fresh_target.loop
+        size = 64 << 20
+        loop.set_repeat(int(fresh_target.helper.allocate(size), 16), size)
+        loop.start_repeater()
+        _freeze_at(fresh_target, "rep")
+        fresh_target.run({"cmd": "resume"})
+        reps = loop.reps
+
+        fresh_target.detach_daemon()
+        fresh_target.attach_daemon()
+
+        _wait_until(lambda: loop.reps > reps + 1)
+        assert fresh_target.alive
 
     def test_detach_removes_the_vishook(self, fresh_target):
         if fresh_target.arch != "x86":

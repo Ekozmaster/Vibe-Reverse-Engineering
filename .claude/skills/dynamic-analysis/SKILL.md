@@ -53,7 +53,7 @@ python -m livetools step [over|into|out]      # run the frozen thread one step, 
 python -m livetools resume                    # unfreeze target
 ```
 
-`step over` (the default) runs one instruction and lets a `call` run until it returns. `step into` runs one instruction and enters a call. `step out` runs until the current function has returned to its caller. A repeated string instruction (`rep movsb`, `rep stosd`, ...) always runs to its end, in every mode. A step that has not ended after 10 seconds (a call that blocks, a function that keeps looping) is given up with an error and the thread runs on. A step also ends early, with an error naming the cause and the thread running on, when the stepped instruction raises an exception of its own or a call is followed by an `int3` the program put there. If another thread reaches a breakpoint before the step ends, the step is ended, that thread is the one frozen, and the reply says so with a `[note]` line before the snapshot.
+`step over` (the default) runs one instruction and lets a `call` run until it returns. `step into` runs one instruction and enters a call. `step out` runs until the current function has returned to its caller. A repeated string instruction (`rep movsb`, `rep stosd`, ...) always runs to its end, in every mode. A step that has not ended after 10 seconds (a call that blocks, a function that keeps looping) is given up with an error and the thread runs on. A step also ends early, with an error naming the cause and the thread running on, when the stepped instruction raises an exception of its own, or when the instruction after a call holds an `int3` the program put there or lies in the bytes of a `trace`/`collect` hook, a fence or the vishook. If a breakpoint is reached before the step ends, by the stepping thread (inside the call a `step over` runs, or the function a `step out` leaves) or by another thread, the step is ended, the thread at that breakpoint is the one frozen, and the reply says so with a `[note]` line before the snapshot.
 
 **What a breakpoint is.** One `int3` byte written over the first byte of the instruction. The thread that reaches it freezes before that instruction runs, with its registers, stack and code exactly as the program left them, and a breakpoint may sit on any instruction.
 
@@ -62,7 +62,7 @@ python -m livetools resume                    # unfreeze target
 - `bp del` on the breakpoint a thread is frozen at also resumes that thread. After a `step` the thread is frozen somewhere else, and `bp del` leaves it frozen.
 - `detach` removes every breakpoint and the vishook, and releases the frozen thread.
 - `disasm` and `mem read` show the `int3` (`CC`) of a breakpoint that is set, except at the address a thread is frozen at, where the original byte is back.
-- Breakpoints, hooks, the vishook and `mem write` never share bytes. `trace`, `collect` and its fence refuse an address whose first bytes hold a breakpoint or the vishook's jump; `bp add` refuses an address inside the bytes of an active hook or the vishook's jump; `vishook on` refuses a site whose 5 bytes hold a breakpoint or a hook; `mem write` refuses a range that holds any of them (remove it, write, then set it again); and `steptrace` refuses to start while any breakpoint is set. `bp add` also refuses an address that already holds an `int3`, such as the padding between functions.
+- Breakpoints, hooks, the vishook and `mem write` never share bytes. `trace`, `collect` and its fence refuse an address whose first bytes hold a breakpoint or the vishook's jump; `bp add` refuses an address inside the bytes of an active hook or the vishook's jump; `vishook on` refuses a site whose 5 bytes hold a breakpoint or a hook; `mem write` refuses a range that holds any of them (remove it, write, then set it again) and leaves each page it writes with the protection it had; and `steptrace` refuses to start while any breakpoint is set. `bp add` also refuses an address that already holds an `int3`, such as the padding between functions.
 - A `steptrace` whose function is not called, or does not return, within its timeout is removed, and `bp add` works again.
 
 ### Patch + Scan (anytime)
@@ -175,7 +175,7 @@ Output format:
   LEAVE  eax=00000001  retval=00000001
 ```
 
-`<addr>` must be a **function entry**. The hook traps the function's return through the slot on top of the stack, which holds a return address only at an entry. A `call` instruction is refused with an error that says so. The check looks at that one instruction only: a function whose first instruction is a `call` is refused as well (use `--probe` on it), and any other address inside a function is not detected, so there the hook overwrites that stack slot for as long as the trace runs.
+`<addr>` must be a **function entry**. The hook traps the function's return through the slot on top of the stack, which holds a return address only at an entry. A `call` instruction is refused with an error that says so, also when a probe or fence already sits on it. The check looks at that one instruction only: a function whose first instruction is a `call` is refused as well (use `--probe` on it), and any other address inside a function is not detected, so there the hook overwrites that stack slot for as long as the trace runs.
 
 **`--probe` records at an instruction instead.** It hooks the instruction itself and leaves the stack alone, so `<addr>` may be any instruction. Use it on the call sites that `xrefs.py`, `vtable.py calls` and the DX scripts report:
 
@@ -393,7 +393,7 @@ Disasm @ EIP:
   00401006  push  ebp
 ```
 
-After a `step` the first line reads `=== STEP COMPLETE === 0x00401006`, with the breakpoint and hit count added only when the step ended on a breakpoint.
+After a `step` the first line reads `=== STEP COMPLETE === 0x00401006`, with the breakpoint and hit count added only when the step ended on a breakpoint. A step cut short by a breakpoint (see `step`) is headed `=== BREAKPOINT HIT ===` instead.
 
 Status line in every response:
 ```
