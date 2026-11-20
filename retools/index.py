@@ -81,6 +81,11 @@ _SOURCE_PRIORITY = {"bootstrap": 0, "ghidra": 10}
 _PRIORITY_KEY = {"funcs": "address"}
 
 
+def _refuse_attach(action: int, *_details: str | None) -> int:
+    """sqlite3 authorizer for read-only connections: everything but attaching a database."""
+    return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_ATTACH else sqlite3.SQLITE_OK
+
+
 def _is_addr_col(col: str) -> bool:
     return col == "address" or col.endswith("_ea") or col == "from_func"
 
@@ -191,9 +196,16 @@ class GameIndex:
 
     @classmethod
     def open_ro(cls, path: str) -> sqlite3.Connection:
-        """Open *path* read-only via a file: URI (never mutates the index)."""
+        """Open *path* read-only: the index cannot change and no other file can be created.
+
+        ``mode=ro`` covers only the file it opens, so attaching is refused as
+        well: ``ATTACH DATABASE`` and ``VACUUM INTO`` would otherwise create
+        the database they name.
+        """
         uri = f"file:{Path(path).as_posix()}?mode=ro"
-        return sqlite3.connect(uri, uri=True)
+        conn = sqlite3.connect(uri, uri=True)
+        conn.set_authorizer(_refuse_attach)
+        return conn
 
     @staticmethod
     def default_db_path(game: str) -> str:

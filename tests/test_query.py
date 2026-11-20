@@ -53,6 +53,21 @@ class TestRunQuery:
         conn.close()
         assert res["error"] is not None  # read-only connection
 
+    @pytest.mark.parametrize("statement", [
+        "ATTACH DATABASE '{other}' AS other",
+        "VACUUM INTO '{other}'",
+    ])
+    def test_statement_that_would_create_another_file_is_refused(self, tmp_path, statement):
+        from index import GameIndex
+        from query import run_query
+        db = _make_db(tmp_path)
+        other = tmp_path / "other.db"
+        conn = GameIndex.open_ro(db)
+        res = run_query(conn, statement.format(other=other.as_posix()))
+        conn.close()
+        assert res["error"] is not None
+        assert not other.exists()
+
 
 class TestCli:
     def test_missing_db_directs_user(self, tmp_path, capsys):
