@@ -5,15 +5,17 @@ process's code and stack exactly as the program left them. ``step`` then runs
 the program one instruction at a time from wherever a thread is frozen.
 """
 
+import contextlib
 import struct
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
-pytest.importorskip("frida")
+frida = pytest.importorskip("frida")
 
 from live_target import ARGS, REP_COUNT, RESULT, hex_addr
 from livetools import server
@@ -54,6 +56,14 @@ def _offset(target, label: str, delta: int) -> str:
     return hex_addr(_at(target, label) + delta)
 
 
+def _detach(target, timeout: float = 20.0) -> None:
+    """Detach the daemon from *target*, failing if that takes longer than *timeout*."""
+    detaching = threading.Thread(target=target.detach_daemon, daemon=True)
+    detaching.start()
+    detaching.join(timeout)
+    assert not detaching.is_alive(), "the daemon is still detaching"
+
+
 def _wait_until(condition, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while not condition():
@@ -73,8 +83,10 @@ rpc.exports = {
 """
 
 
-# Parks one thread inside a kernel32 call, where the agent has let go of its
-# script lock, so a test can run a command at exactly that point.
+# Parks one thread inside a call of an export (of kernel32.dll unless a module
+# is named), where the agent has let go of its script lock, so a test can run a
+# command at exactly that point. ``open()`` lets the thread go and unhooks the
+# export; ``release()`` only lets the thread go.
 _GATE_JS = r"""
 var kernel32 = Process.getModuleByName('kernel32.dll');
 var createEvent = new NativeFunction(kernel32.getExportByName('CreateEventW'),
@@ -87,17 +99,21 @@ var listener = null;
 var parked = false;
 
 rpc.exports = {
-    park: function (exportName, threadId, when) {
+    park: function (exportName, threadId, when, moduleName) {
+        var module = moduleName ? Process.getModuleByName(moduleName) : kernel32;
         var callbacks = {};
         callbacks[when] = function () {
             if (parked || this.threadId !== threadId) return;
             parked = true;
             waitForSingleObject(gate, 0xFFFFFFFF);
         };
-        listener = Interceptor.attach(kernel32.getExportByName(exportName), callbacks);
+        listener = Interceptor.attach(module.getExportByName(exportName), callbacks);
     },
     parked: function () {
         return parked;
+    },
+    release: function () {
+        setEvent(gate);
     },
     open: function () {
         setEvent(gate);
@@ -108,6 +124,91 @@ rpc.exports = {
 """
 
 
+# Wraps the agent so that a call it makes fails on request: ``fail(name, times)``
+# makes the next ``times`` calls of ``Memory.patchCode``, ``Instruction.parse``,
+# ``Interceptor.flush``, the kernel32 function ``CreateEventW`` or a hook's
+# ``detach`` throw; given a thread id as well, only calls made on that thread
+# count. A failing ``detach`` has unhooked first. ``attachCount()`` is how many
+# hooks the agent has asked Frida for.
+_FAULTY_JS = r"""
+var faults = {};
+var attachCount = 0;
+
+function fails(name) {
+    var fault = faults[name];
+    if (fault === undefined || fault.times <= 0) return false;
+    if (fault.threadId !== null && fault.threadId !== Process.getCurrentThreadId()) return false;
+    fault.times--;
+    return true;
+}
+
+function failing(object, objectName) {
+    var copy = {};
+    Object.getOwnPropertyNames(object).forEach(function (property) {
+        var value = object[property];
+        if (typeof value !== 'function') {
+            copy[property] = value;
+            return;
+        }
+        copy[property] = function () {
+            var name = objectName + '.' + property;
+            if (fails(name)) throw new Error('injected failure of ' + name);
+            return value.apply(object, arguments);
+        };
+    });
+    return copy;
+}
+
+var failingDetach = {
+    flush: function () {
+        if (fails('Interceptor.flush')) throw new Error('injected failure of Interceptor.flush');
+        Interceptor.flush();
+    },
+    attach: function (address, callbacks) {
+        attachCount++;
+        var listener = Interceptor.attach(address, callbacks);
+        return {
+            detach: function () {
+                listener.detach();
+                if (fails('detach')) throw new Error('injected failure of detach');
+            }
+        };
+    }
+};
+
+var createEvent = Process.getModuleByName('kernel32.dll').getExportByName('CreateEventW');
+
+function FailingNativeFunction(address, returns, parameters, options) {
+    var call = options === undefined ? new NativeFunction(address, returns, parameters)
+                                     : new NativeFunction(address, returns, parameters, options);
+    if (!address.equals(createEvent)) return call;
+    return function () {
+        if (fails('CreateEventW')) throw new Error('injected failure of CreateEventW');
+        return call.apply(null, arguments);
+    };
+}
+
+(function (Memory, Instruction, Interceptor, NativeFunction) { %s
+})(failing(Memory, 'Memory'), failing(Instruction, 'Instruction'), failingDetach, FailingNativeFunction);
+
+rpc.exports.fail = function (name, times, threadId) {
+    faults[name] = { times: times, threadId: threadId === undefined ? null : threadId };
+};
+rpc.exports.attachCount = function () { return attachCount; };
+"""
+
+
+@pytest.fixture
+def faulty_target(fresh_target, tmp_path, monkeypatch):
+    """A target of its own whose agent fails a call when told to: ``daemon.api.fail(name, times)``."""
+    agent = tmp_path / "faulty_agent.js"
+    agent.write_text(_FAULTY_JS % server.AGENT_JS.read_text(encoding="utf-8"), encoding="utf-8")
+    fresh_target.detach_daemon()
+    monkeypatch.setattr(server, "AGENT_JS", agent)
+    fresh_target.attach_daemon()
+    return fresh_target
+
+
 @pytest.fixture
 def gate(target):
     """``park(export, thread, "onEnter" | "onLeave")`` holds that thread's next call until ``open()``."""
@@ -116,6 +217,34 @@ def gate(target):
     yield script.exports_sync
     script.exports_sync.open()
     script.unload()
+
+
+@pytest.fixture
+def own_gate(fresh_target):
+    """A gate in a session of its own, which stays when the daemon detaches from the target.
+
+    It parks threads in ``NtContinue``, which does not return. Frida never
+    sees a call of it end, and waits for that before any script is unloaded
+    once the hook is taken out, so the hook and its session stay until the
+    target is gone.
+    """
+    session = frida.attach(fresh_target.pid)
+    script = session.create_script(_GATE_JS)
+    script.load()
+    yield script.exports_sync
+    # A target that died took the session with it.
+    with contextlib.suppress(frida.InvalidOperationError):
+        script.exports_sync.release()
+
+
+# Longer than any wait the agent bounds while it takes its changes out of a target.
+_HELD_SECONDS = 5
+
+# nop; nop; xor eax, eax; return from a thread routine
+_RETURNS_AT_ONCE = {"x86": bytes.fromhex("9090 31C0 C20400"), "x64": bytes.fromhex("9090 31C0 C3")}
+
+# 00 jmp 08   08 xor eax, eax   0A inc eax   0C cmp eax, 3   0F ret
+_JUMP_THEN_ITS_TARGET = bytes.fromhex("EB06 909090909090 31C0 FFC0 83F803 C3")
 
 
 _THREADS_JS = r"""
@@ -273,6 +402,88 @@ class TestBreakpoint:
 
         assert target.loop.live_bytes("loop", 8) == built
         assert target.loop.live_bytes("after_call", 3) == target.loop.built_bytes("after_call", 3)
+
+    def test_deleting_it_after_its_memory_was_unmapped_succeeds(self, target):
+        gone = target.write_code(bytes.fromhex("90C3"))
+        target.run({"cmd": "bp_add", "addr": hex_addr(gone)})
+        target.release(gone)
+
+        reply = target.run({"cmd": "bp_del", "addr": hex_addr(gone)})
+
+        assert reply["ok"] and reply["bpCount"] == 0, reply
+
+    def test_that_cannot_be_written_is_not_set(self, faulty_target):
+        site = faulty_target.addr("after_call")
+        faulty_target.daemon.api.fail("Memory.patchCode", 2)
+
+        failed = [faulty_target.run({"cmd": "bp_add", "addr": site}) for _ in range(2)]
+        reply = faulty_target.run({"cmd": "bp_add", "addr": site})
+
+        assert [attempt["ok"] for attempt in failed] == [False, False], failed
+        assert reply["ok"] and reply["bpCount"] == 1
+        assert faulty_target.run({"cmd": "watch", "timeout": 5})["ok"]
+
+    def test_whose_thread_cannot_be_sent_on_is_removed(self, faulty_target):
+        loop = faulty_target.loop
+        _freeze_at(faulty_target, "after_call")
+        faulty_target.daemon.api.fail("Instruction.parse", 1)
+
+        faulty_target.run({"cmd": "resume"})
+
+        _wait_until(lambda: faulty_target.run({"cmd": "bp_list"})["breakpoints"] == [])
+        loop.wait_for_iterations(3)
+        assert loop.live_bytes("loop", _LOOP_BODY) == loop.built_bytes("loop", _LOOP_BODY)
+        assert loop.bad == 0
+
+    def test_whose_instruction_cannot_be_put_back_for_its_thread_is_removed(
+            self, faulty_target, capfd):
+        code = _RETURNS_AT_ONCE[faulty_target.arch]
+        entry = faulty_target.write_code(code)
+        faulty_target.run({"cmd": "bp_add", "addr": hex_addr(entry)})
+        threads = _threads(faulty_target)
+        faulty_target.daemon.api.fail("Memory.patchCode", 1)
+
+        thread = threads.start(hex_addr(entry))
+
+        assert threads.has_exited(thread, 5000)
+        assert faulty_target.alive
+        assert faulty_target.run({"cmd": "bp_list"})["breakpoints"] == []
+        live = faulty_target.run({"cmd": "mem_read", "addr": hex_addr(entry), "size": len(code)})
+        assert bytes.fromhex(live["hex"]) == code
+        assert "injected failure of Memory.patchCode" in capfd.readouterr().err
+
+    def test_that_can_neither_stop_its_thread_nor_be_removed_stays_set(self, faulty_target, capfd):
+        entry = faulty_target.write_code(_RETURNS_AT_ONCE[faulty_target.arch])
+        faulty_target.run({"cmd": "bp_add", "addr": hex_addr(entry)})
+        threads = _threads(faulty_target)
+        faulty_target.daemon.api.fail("CreateEventW", 1)
+        faulty_target.daemon.api.fail("Memory.patchCode", 1)
+
+        thread = threads.start(hex_addr(entry))
+        hit = faulty_target.run({"cmd": "watch", "timeout": 5})
+        faulty_target.run({"cmd": "resume"})
+
+        assert hit["ok"] and int(hit["snapshot"]["addr"], 16) == entry, hit
+        assert threads.has_exited(thread, 5000)
+        _detach(faulty_target)
+        reported = capfd.readouterr().err
+        assert "injected failure of CreateEventW" in reported
+        assert "injected failure of Memory.patchCode" in reported
+        assert "still in the breakpoint handler" not in reported
+        assert faulty_target.alive
+
+    def test_passed_before_an_arrival_that_fails_fires_again(self, faulty_target):
+        loop = faulty_target.loop
+        thread = _freeze_at(faulty_target, "loop")["threadId"]
+        faulty_target.run({"cmd": "bp_add", "addr": loop.addr("second")})
+        faulty_target.daemon.api.fail("CreateEventW", 1, thread)
+
+        faulty_target.run({"cmd": "resume"})
+        hit = faulty_target.run({"cmd": "watch", "timeout": 5})
+
+        assert hit["ok"] and int(hit["snapshot"]["addr"], 16) == _at(faulty_target, "loop"), hit
+        assert set(_hit_counts(faulty_target)) == {_at(faulty_target, "loop")}
+        assert loop.live_bytes("second", 1) == loop.built_bytes("second", 1)
 
     def test_on_a_breakpoint_instruction_is_refused(self, target):
         padding = f"0x{_at(target, 'callee') - 1:08X}"
@@ -473,6 +684,35 @@ class TestStep:
         _wait_until(lambda: stepped.reps >= reps + 2)
         assert target.run({"cmd": "status"})["state"] == "RUNNING"
 
+    def test_whose_arrival_fails_reports_why_at_once(self, faulty_target):
+        thread = _freeze_at(faulty_target, "loop")["threadId"]
+        faulty_target.daemon.api.fail("CreateEventW", 1, thread)
+
+        reply = faulty_target.run({"cmd": "step", "mode": "into", "timeout": 5})
+
+        assert not reply["ok"] and "injected failure of CreateEventW" in reply["error"], reply
+        assert faulty_target.run({"cmd": "watch", "timeout": 5})["ok"]
+
+    def test_that_its_thread_cannot_start_reports_why_at_once(self, faulty_target):
+        thread = _freeze_at(faulty_target, "loop")["threadId"]
+        faulty_target.daemon.api.fail("Instruction.parse", 1, thread)
+
+        reply = faulty_target.run({"cmd": "step", "mode": "into", "timeout": 5})
+
+        assert not reply["ok"] and "injected failure of Instruction.parse" in reply["error"], reply
+        faulty_target.loop.wait_for_iterations(3)
+
+    def test_over_a_call_whose_return_cannot_be_met_reports_why_at_once(self, faulty_target):
+        loop = faulty_target.loop
+        thread = _freeze_at(faulty_target, "call_site")["threadId"]
+        faulty_target.daemon.api.fail("CreateEventW", 1, thread)
+
+        reply = faulty_target.run({"cmd": "step", "mode": "over", "timeout": 5})
+
+        assert not reply["ok"] and "injected failure of CreateEventW" in reply["error"], reply
+        assert loop.live_bytes("after_call", 1) == loop.built_bytes("after_call", 1)
+        assert faulty_target.run({"cmd": "watch", "timeout": 5})["ok"]
+
 _COUNT_REGISTER = {"x86": "ecx", "x64": "rcx"}
 
 
@@ -492,6 +732,22 @@ class TestRepeatedInstruction:
 
         assert second["hitCount"] == first["hitCount"] + 1
         assert target.loop.reps == reps + 1
+
+    def test_resume_from_a_breakpoint_on_it_passes_it_when_the_next_instruction_is_hooked(self, target):
+        first = _freeze_at(target, "rep")
+        probe = {}
+        probing = threading.Thread(target=lambda: probe.update(target.run(
+            {"cmd": "trace", "addr": target.addr("after_rep"), "count": 1, "timeout": 5,
+             "probe": True})))
+        probing.start()
+        _wait_until(lambda: target.loop.live_bytes("after_rep", 1) == b"\xE9")
+
+        target.run({"cmd": "resume"})
+        second = target.run({"cmd": "watch", "timeout": 5})
+        probing.join()
+
+        assert second["ok"] and second["snapshot"]["hitCount"] == first["hitCount"] + 1
+        assert probe["ok"] and probe["count"] == 1
 
     def test_step_over_from_a_breakpoint_on_it_runs_it_to_the_end(self, target):
         frozen = _freeze_at(target, "rep")
@@ -577,6 +833,41 @@ class TestHookConflicts:
         assert not reply["ok"]
         assert "overlap" in reply["error"], reply
         assert target.loop.live_bytes("dormant", 16) == target.loop.built_bytes("dormant", 16)
+
+    def test_hook_whose_removal_fails_gives_its_bytes_up(self, faulty_target):
+        site = faulty_target.addr("call_site")
+        faulty_target.daemon.api.fail("detach", 1)
+
+        trace = faulty_target.run({"cmd": "trace", "addr": site, "count": 0, "timeout": 0.5,
+                                   "probe": True})
+        reply = faulty_target.run({"cmd": "bp_add", "addr": site})
+
+        assert not trace["ok"] and "injected failure of detach" in trace["error"], trace
+        assert reply["ok"], reply
+
+    def test_probe_on_a_jump_is_refused_before_frida_is_asked_for_a_hook(self, faulty_target):
+        code = faulty_target.write_code(_JUMP_THEN_ITS_TARGET)
+        asked = faulty_target.daemon.api.attach_count()
+
+        reply = faulty_target.run({"cmd": "trace", "addr": hex_addr(code), "count": 1,
+                                   "timeout": 0.2, "probe": True})
+
+        assert not reply["ok"] and "bp add" in reply["error"], reply
+        assert hex_addr(code + 8)[2:] in reply["error"], reply
+        assert faulty_target.daemon.api.attach_count() == asked
+
+    def test_hook_that_fails_once_frida_has_placed_it_is_taken_out_again(self, faulty_target):
+        loop = faulty_target.loop
+        faulty_target.daemon.api.fail("Interceptor.flush", 1)
+
+        trace = faulty_target.run({"cmd": "trace", "addr": loop.addr("callee"), "count": 1,
+                                   "timeout": 1})
+        after = loop.live_bytes("callee", 8)
+        reply = faulty_target.run({"cmd": "bp_add", "addr": loop.addr("callee")})
+
+        assert not trace["ok"] and "injected failure of Interceptor.flush" in trace["error"], trace
+        assert after == loop.built_bytes("callee", 8)
+        assert reply["ok"], reply
 
     def test_two_hooks_at_one_address_both_run(self, target, tmp_path):
         with target.stays_correct():
@@ -749,6 +1040,136 @@ class TestUnload:
         fresh_target.attach_daemon()
 
         loop.wait_for_iterations(5)
+        assert loop.live_bytes("loop", _LOOP_BODY) == loop.built_bytes("loop", _LOOP_BODY)
+        assert loop.bad == 0
+
+    def test_detach_restores_the_code_around_a_breakpoint_whose_memory_was_unmapped(
+            self, fresh_target, capfd):
+        loop = fresh_target.loop
+        gone = fresh_target.write_code(bytes.fromhex("90C3"))
+        fresh_target.run({"cmd": "bp_add", "addr": hex_addr(gone)})
+        _freeze_at(fresh_target, "loop")
+        fresh_target.run({"cmd": "bp_add", "addr": loop.addr("after_call")})
+        fresh_target.release(gone)
+
+        _detach(fresh_target)
+        fresh_target.attach_daemon()
+
+        loop.wait_for_iterations(5)
+        assert loop.live_bytes("loop", _LOOP_BODY) == loop.built_bytes("loop", _LOOP_BODY)
+        assert loop.bad == 0
+        assert "shutdown:" not in capfd.readouterr().err
+
+    def test_detach_reports_a_breakpoint_it_cannot_remove_and_removes_the_others(
+            self, faulty_target, capfd):
+        loop = faulty_target.loop
+        stuck = faulty_target.write_code(bytes.fromhex("90C3"))
+        faulty_target.run({"cmd": "bp_add", "addr": hex_addr(stuck)})
+        _freeze_at(faulty_target, "after_call")
+        faulty_target.daemon.api.fail("Memory.patchCode", 1)
+
+        _detach(faulty_target)
+        faulty_target.attach_daemon()
+
+        (report,) = [line for line in capfd.readouterr().err.splitlines() if "shutdown:" in line]
+        assert "breakpoint at" in report and f"{stuck:X}: injected failure" in report
+        loop.wait_for_iterations(5)
+        assert loop.live_bytes("loop", _LOOP_BODY) == loop.built_bytes("loop", _LOOP_BODY)
+
+    def test_detach_reports_a_thread_that_does_not_leave_the_handler(self, fresh_target, capfd):
+        loop = fresh_target.loop
+        thread = _freeze_at(fresh_target, "loop")["threadId"]
+        gate = fresh_target.daemon.session.create_script(_GATE_JS)
+        gate.load()
+        gate.exports_sync.park("CreateEventW", thread, "onEnter")
+        fresh_target.run({"cmd": "resume"})
+        _wait_until(gate.exports_sync.parked)
+        reported = []
+
+        def report_seen() -> bool:
+            reported.append(capfd.readouterr().err)
+            return "1 thread still in the breakpoint handler" in "".join(reported)
+
+        detaching = threading.Thread(target=fresh_target.detach_daemon, daemon=True)
+        detaching.start()
+        _wait_until(report_seen, timeout=15)
+        gate.exports_sync.open()
+        detaching.join(15)
+
+        assert not detaching.is_alive()
+        fresh_target.attach_daemon()
+        loop.wait_for_iterations(5)
+        assert loop.live_bytes("loop", _LOOP_BODY) == loop.built_bytes("loop", _LOOP_BODY)
+
+    def test_detach_waits_for_a_thread_that_still_owes_its_single_step(
+            self, fresh_target, own_gate, capfd):
+        loop = fresh_target.loop
+        thread = _freeze_at(fresh_target, "loop")["threadId"]
+        own_gate.park("NtContinue", thread, "onEnter", "ntdll.dll")
+        fresh_target.run({"cmd": "resume"})
+        _wait_until(own_gate.parked)
+        agent = fresh_target.daemon.script
+        reported = []
+
+        def wait_reported() -> bool:
+            reported.append(capfd.readouterr().err)
+            return f"detach is waiting for thread {thread}" in "".join(reported)
+
+        reply = fresh_target.run({"cmd": "detach"})
+        detaching = threading.Thread(target=fresh_target.detach_daemon, daemon=True)
+        detaching.start()
+        try:
+            _wait_until(wait_reported, timeout=10)
+            agent_stays = detaching.is_alive() and not agent.is_destroyed
+        finally:
+            own_gate.release()
+        detaching.join(15)
+
+        assert agent_stays
+        assert f"thread {thread}" in reply["waitingOn"]
+        assert not detaching.is_alive()
+        assert fresh_target.alive
+        fresh_target.attach_daemon()
+        loop.wait_for_iterations(5)
+        assert loop.live_bytes("loop", _LOOP_BODY) == loop.built_bytes("loop", _LOOP_BODY)
+        assert loop.bad == 0
+
+    def test_a_daemon_that_dies_leaves_its_agent_for_a_thread_that_still_owes_its_single_step(
+            self, fresh_target, own_gate, tmp_path):
+        loop = fresh_target.loop
+        tests_dir = Path(__file__).resolve().parent
+        script = tmp_path / "second_daemon.py"
+        script.write_text(
+            "import sys, time\n"
+            f"sys.path.insert(0, {str(tests_dir)!r})\n"
+            "from live_target import server\n"
+            f"daemon = server.Daemon({str(fresh_target.pid)!r})\n"
+            "daemon.attach()\n"
+            f"daemon.handle({{'cmd': 'bp_add', 'addr': {loop.addr('loop')!r}}})\n"
+            "hit = daemon.handle({'cmd': 'watch', 'timeout': 5})\n"
+            "print(hit['snapshot']['threadId'], flush=True)\n"
+            "sys.stdin.readline()\n"
+            "daemon.handle({'cmd': 'resume'})\n"
+            "print('resumed', flush=True)\n"
+            "time.sleep(600)\n"
+        )
+        second = subprocess.Popen([sys.executable, str(script)], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True)
+        try:
+            thread = int(second.stdout.readline())
+            own_gate.park("NtContinue", thread, "onEnter", "ntdll.dll")
+            second.stdin.write("\n")
+            second.stdin.flush()
+            assert second.stdout.readline().strip() == "resumed"
+            _wait_until(own_gate.parked)
+        finally:
+            second.kill()
+            second.wait()
+        time.sleep(_HELD_SECONDS)
+        own_gate.release()
+
+        loop.wait_for_iterations(5)
+        assert fresh_target.alive
         assert loop.live_bytes("loop", _LOOP_BODY) == loop.built_bytes("loop", _LOOP_BODY)
         assert loop.bad == 0
 

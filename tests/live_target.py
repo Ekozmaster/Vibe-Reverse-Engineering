@@ -55,6 +55,8 @@ _HELPER_JS = r"""
 var kernel32 = Process.getModuleByName('kernel32.dll');
 var virtualAlloc = new NativeFunction(kernel32.getExportByName('VirtualAlloc'),
     'pointer', ['pointer', 'size_t', 'uint32', 'uint32']);
+var virtualFree = new NativeFunction(kernel32.getExportByName('VirtualFree'),
+    'int', ['pointer', 'size_t', 'uint32']);
 var createThread = new NativeFunction(kernel32.getExportByName('CreateThread'),
     'pointer', ['pointer', 'size_t', 'pointer', 'pointer', 'uint32', 'pointer']);
 
@@ -88,6 +90,9 @@ rpc.exports = {
     },
     allocate: function (size) {
         return virtualAlloc(NULL, size, 0x3000, 0x40).toString();
+    },
+    release: function (address) {
+        return virtualFree(ptr(address), 0, 0x8000) !== 0;
     },
     makeReadExecute: function (address, size) {
         return Memory.protect(ptr(address), size, 'r-x');
@@ -332,6 +337,16 @@ class LiveTarget:
         loop = Loop(self, base, labels, code)
         loop.wait_for_iterations(3)
         return loop
+
+    def write_code(self, code: bytes) -> int:
+        """Write *code* to a page of its own, which nothing executes, and return its address."""
+        base = int(self.helper.allocate(_PAGE), 16)
+        self.run({"cmd": "mem_write", "addr": hex_addr(base), "hex": code.hex()})
+        return base
+
+    def release(self, base: int) -> None:
+        """Unmap the pages allocated at *base*."""
+        assert self.helper.release(hex_addr(base))
 
     def run(self, command: dict) -> dict:
         """Send *command* to the daemon the way the CLI does and return its reply."""

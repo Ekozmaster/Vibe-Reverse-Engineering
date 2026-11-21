@@ -6,6 +6,7 @@ The CLI's ``attach`` command spawns this as a detached background process.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import signal
@@ -14,6 +15,7 @@ import struct
 import sys
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -55,6 +57,12 @@ _STEP_CUT_SHORT = (
     "the thread reached the breakpoint at {addr} before its step ended. The step was ended "
     "there."
 )
+_DETACH_WAITS_FOR_STEP = (
+    "detach is waiting for thread {threads} to raise the single-step exception it was sent on "
+    "with. Unloading the agent first would leave that exception without a handler and crash "
+    "{target}, so the daemon (pid {daemon}) stays until the thread has run. Its breakpoints are "
+    "removed already. Killing the daemon leaves the agent in {target} to wait for the thread."
+)
 
 class Daemon:
     def __init__(self, target: str, *, spawn: bool = False):
@@ -67,6 +75,7 @@ class Daemon:
         self.pid: int | None = None
         self.target_name = target
         self._cleaned_up = False
+        self._wrote_state_file = False
 
         self._hit: dict | None = None
         self._stepping = False
@@ -80,6 +89,8 @@ class Daemon:
         self._trace_events: dict[int, threading.Event] = {}
 
         self._steptrace_event = threading.Event()
+
+        self._shutdown_failures_reported: set[str] = set()
 
     # ── Frida setup ────────────────────────────────────────────────────────
 
@@ -375,10 +386,20 @@ class Daemon:
         return {**self._base_resp(), "ok": True, "results": results}
 
     def _cmd_detach(self, cmd: dict) -> dict:
-        """Stop the daemon. Unloading the agent removes its breakpoints and
-        releases a frozen thread."""
-        self._running = False
-        return {**self._base_resp(), "ok": True, "msg": "detaching"}
+        """Take the agent's changes out of the target and stop the daemon.
+
+        The reply carries what the agent could not undo (``shutdown``) and, if a
+        thread still owes a single-step exception, why the daemon has not gone
+        yet (``waitingOn``): it unloads the agent only once that thread has run.
+        """
+        try:
+            failures, waiting = self._shut_agent_down(self.api) if self.api else ([], None)
+        finally:
+            self._running = False
+        reply = {**self._base_resp(), "ok": True, "msg": "detaching", "shutdown": failures}
+        if waiting is not None:
+            reply["waitingOn"] = waiting
+        return reply
 
     # ── hook placement ─────────────────────────────────────────────────────
 
@@ -430,11 +451,7 @@ class Daemon:
         timeout = cmd.get("timeout", 30)
         count = config["count"]
 
-        ev = threading.Event()
-        with self._lock:
-            self._trace_batches.setdefault(trace_id, [])
-            self._trace_done.setdefault(trace_id, False)
-            self._trace_events[trace_id] = ev
+        ev = self._expect_trace(trace_id)
 
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -461,8 +478,8 @@ class Daemon:
                 for s in samples:
                     f.write(json.dumps(s) + "\n")
 
-        hook_diag = {"addr": addr, "hookVerified": result.get("hookVerified"),
-                     "prologue": result.get("prologue")}
+        hook_diag = {"addr": addr, "bytesTaken": result.get("bytesTaken"),
+                     "followedTo": result.get("followedTo"), "prologue": result.get("prologue")}
         return {**self._base_resp(), "ok": True, "samples": samples,
                 "count": len(samples), "output": str(output) if output else None,
                 "hookDiag": hook_diag}
@@ -477,98 +494,140 @@ class Daemon:
         if refusal:
             return {**self._base_resp(), "ok": False, "error": refusal}
 
-        duration = cmd.get("duration", 10)
-        max_records = cmd.get("maxRecords", 0)
-        read_specs = cmd.get("readSpecs", {})
-        labels = cmd.get("labels", {})
-        fence_addr = cmd.get("fence")
-        fence_every = cmd.get("fenceEvery", 0)
-
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         default_name = f"collect_{ts}.jsonl"
         output = cmd.get("output") or default_name
         out_path = Path(output) if os.path.isabs(output) else self._resolve_output_path(output)
 
-        # Opened before anything is hooked: a path that cannot be written leaves the target as it was
-        with open(out_path, "w", encoding="utf-8") as f:
-            if fence_addr:
-                self.api.install_fence(fence_addr)
-
-            trace_ids = []
-            all_events = {}
-            hook_diags: list[dict] = []
-            for addr in addrs:
-                config = {
-                    "readEnter": read_specs.get(addr, cmd.get("read", "")),
-                    "readLeave": cmd.get("readLeave", ""),
-                    "filter": cmd.get("filter", ""),
-                    "count": max_records if max_records > 0 else 0,
-                    "label": labels.get(addr, ""),
-                    "probe": bool(cmd.get("probe")),
-                }
-                result = self.api.install_trace(addr, config)
-                if result.get("ok"):
-                    tid = result["traceId"]
-                    trace_ids.append(tid)
-                    ev = threading.Event()
-                    with self._lock:
-                        self._trace_batches.setdefault(tid, [])
-                        self._trace_done.setdefault(tid, False)
-                        self._trace_events[tid] = ev
-                    all_events[tid] = ev
-                    hook_diags.append({"addr": addr, "ok": True,
-                                       "hookVerified": result.get("hookVerified", None),
-                                       "prologue": result.get("prologue")})
-                else:
-                    hook_diags.append({"addr": addr, "ok": False,
-                                       "error": result.get("error", "unknown")})
-
-            total_collected = 0
-            deadline = time.time() + duration
-            try:
-                while time.time() < deadline:
-                    time.sleep(0.3)
-
-                    for tid in trace_ids:
-                        self.api.flush_traces(tid)
-
-                    with self._lock:
-                        for tid in trace_ids:
-                            batch = self._trace_batches.get(tid, [])
-                            if batch:
-                                for s in batch:
-                                    f.write(json.dumps(s) + "\n")
-                                    total_collected += 1
-                                self._trace_batches[tid] = []
-                                f.flush()
-
-                    all_done = all(self._trace_done.get(t) for t in trace_ids)
-                    if all_done:
-                        break
-                    if max_records > 0 and total_collected >= max_records:
-                        break
-            finally:
-                for tid in trace_ids:
-                    self.api.remove_trace(tid)
-                if fence_addr:
-                    self.api.remove_fence()
-
-
-        with self._lock:
-            for tid in trace_ids:
-                remaining = self._trace_batches.pop(tid, [])
-                if remaining:
-                    with open(out_path, "a", encoding="utf-8") as f:
-                        for s in remaining:
-                            f.write(json.dumps(s) + "\n")
-                            total_collected += 1
-                self._trace_done.pop(tid, None)
-                self._trace_events.pop(tid, None)
+        trace_ids: list[int] = []
+        hook_diags: list[dict] = []
+        removals: list[Callable[[], object]] = []
+        total_collected = 0
+        failure: Exception | None = None
+        # The file is opened before anything is hooked: a path that cannot be
+        # written leaves the target as it was. Every hook is removed on the way
+        # out, whether or not the hooks after it went in or another came out.
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                total_collected = self._collect_into(
+                    f, cmd, addrs, trace_ids, hook_diags, removals)
+        except Exception as exc:
+            failure = exc
+        unremoved = self._remove_hooks(removals)
+        remaining = self._take_trace_records(trace_ids)
+        if failure is not None:
+            also = f" Removing the hooks failed as well: {'; '.join(unremoved)}" if unremoved else ""
+            raise RuntimeError(f"{failure}{also}") from failure
+        if unremoved:
+            raise RuntimeError("; ".join(unremoved))
+        if remaining:
+            with open(out_path, "a", encoding="utf-8") as f:
+                for s in remaining:
+                    f.write(json.dumps(s) + "\n")
+            total_collected += len(remaining)
 
         return {**self._base_resp(), "ok": True, "output": str(out_path),
                 "totalRecords": total_collected,
                 "fenceCount": self.api.get_fence_counter(),
                 "hookDiags": hook_diags}
+
+    def _collect_into(self, f, cmd: dict, addrs: list[str], trace_ids: list[int],
+                      hook_diags: list[dict], removals: list[Callable[[], object]]) -> int:
+        """Hook *addrs* and write their records to *f* until the collect is over.
+
+        Each hook's removal is appended to *removals* as soon as the hook is
+        in, its trace id to *trace_ids* and what it reported to *hook_diags*,
+        so the caller has them however this ends.
+
+        Returns:
+            How many records were written.
+        """
+        duration = cmd.get("duration", 10)
+        max_records = cmd.get("maxRecords", 0)
+        read_specs = cmd.get("readSpecs", {})
+        labels = cmd.get("labels", {})
+        fence_addr = cmd.get("fence")
+        total_collected = 0
+        if fence_addr:
+            self.api.install_fence(fence_addr)
+            removals.append(self.api.remove_fence)
+        for addr in addrs:
+            config = {
+                "readEnter": read_specs.get(addr, cmd.get("read", "")),
+                "readLeave": cmd.get("readLeave", ""),
+                "filter": cmd.get("filter", ""),
+                "count": max_records if max_records > 0 else 0,
+                "label": labels.get(addr, ""),
+                "probe": bool(cmd.get("probe")),
+            }
+            result = self.api.install_trace(addr, config)
+            hook_diags.append(self._collect_hook_diag(addr, result))
+            if result.get("ok"):
+                trace_ids.append(result["traceId"])
+                removals.append(functools.partial(self.api.remove_trace, result["traceId"]))
+                self._expect_trace(result["traceId"])
+
+        deadline = time.time() + duration
+        while time.time() < deadline:
+            time.sleep(0.3)
+
+            for tid in trace_ids:
+                self.api.flush_traces(tid)
+
+            with self._lock:
+                for tid in trace_ids:
+                    batch = self._trace_batches.get(tid, [])
+                    if batch:
+                        for s in batch:
+                            f.write(json.dumps(s) + "\n")
+                            total_collected += 1
+                        self._trace_batches[tid] = []
+                        f.flush()
+
+            all_done = all(self._trace_done.get(t) for t in trace_ids)
+            if all_done:
+                break
+            if max_records > 0 and total_collected >= max_records:
+                break
+        return total_collected
+
+    @staticmethod
+    def _remove_hooks(removals: list[Callable[[], object]]) -> list[str]:
+        """Run every removal, last hook first, and return what the ones that failed raised."""
+        unremoved = []
+        for remove in reversed(removals):
+            try:
+                remove()
+            except Exception as exc:
+                unremoved.append(str(exc))
+        return unremoved
+
+    def _take_trace_records(self, trace_ids: list[int]) -> list:
+        """Forget the traces *trace_ids* and return the records of theirs not yet written."""
+        remaining = []
+        with self._lock:
+            for tid in trace_ids:
+                remaining.extend(self._trace_batches.pop(tid, []))
+                self._trace_done.pop(tid, None)
+                self._trace_events.pop(tid, None)
+        return remaining
+
+    @staticmethod
+    def _collect_hook_diag(addr: str, result: dict) -> dict:
+        """What collect reports about the hook it asked for at *addr*."""
+        if not result.get("ok"):
+            return {"addr": addr, "ok": False, "error": result.get("error", "unknown")}
+        return {"addr": addr, "ok": True, "bytesTaken": result.get("bytesTaken"),
+                "followedTo": result.get("followedTo"), "prologue": result.get("prologue")}
+
+    def _expect_trace(self, trace_id: int) -> threading.Event:
+        """Make room for the records of trace *trace_id*; the event is set when some arrive."""
+        arrived = threading.Event()
+        with self._lock:
+            self._trace_batches.setdefault(trace_id, [])
+            self._trace_done.setdefault(trace_id, False)
+            self._trace_events[trace_id] = arrived
+        return arrived
 
     # ── steptrace ──────────────────────────────────────────────────────────
 
@@ -674,22 +733,38 @@ class Daemon:
 
     # ── TCP server ─────────────────────────────────────────────────────────
 
-    def serve(self) -> None:
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # One daemon per port. On Windows SO_REUSEADDR would let a second
-        # daemon bind beside a live one and receive half of its commands.
-        if sys.platform == "win32":
-            srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        else:
-            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind((HOST, PORT))
-        srv.listen(4)
-        srv.settimeout(1.0)
+    def run(self) -> None:
+        """Take the port, attach to the target and serve commands until told to stop.
 
+        The port comes first: where another daemon is live, this one fails
+        before it has touched the target or the state file.
+
+        Raises:
+            OSError: The port is taken.
+        """
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            # One daemon per port. On Windows SO_REUSEADDR would let a second
+            # daemon bind beside a live one and receive half of its commands.
+            if sys.platform == "win32":
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind((HOST, PORT))
+            srv.listen(4)
+            srv.settimeout(1.0)
+            self.attach()
+            self._serve(srv)
+        finally:
+            srv.close()
+            self._cleanup()
+
+    def _serve(self, srv: socket.socket) -> None:
         STATE_FILE.write_text(json.dumps({
             "pid": os.getpid(), "port": PORT,
             "target": self.target_name, "targetPid": self.pid,
         }))
+        self._wrote_state_file = True
 
         print(f"[livetools daemon] listening on {HOST}:{PORT}, "
               f"target={self.target_name} pid={self.pid}")
@@ -703,9 +778,6 @@ class Daemon:
                 break
             threading.Thread(target=self._handle_conn, args=(conn,), daemon=True).start()
 
-        srv.close()
-        self._cleanup()
-
     def _handle_conn(self, conn: socket.socket) -> None:
         try:
             conn.settimeout(300)
@@ -716,8 +788,8 @@ class Daemon:
         except Exception as exc:
             try:
                 self._send_raw(conn, json.dumps({"ok": False, "error": str(exc)}).encode())
-            except Exception:
-                pass
+            except OSError:
+                pass  # the client has gone; nobody is left to tell
         finally:
             conn.close()
 
@@ -744,24 +816,62 @@ class Daemon:
         return b"".join(parts)
 
     def _cleanup(self) -> None:
+        """Unload the agent, drop the session and remove the state file this daemon wrote."""
         if self._cleaned_up:
             return
         self._cleaned_up = True
+        # A target that exits clears both from Frida's thread, at any moment.
+        script, session = self.script, self.session
+        self.script = self.session = self.api = None
         try:
-            if self.script:
-                self.script.unload()
-                self.script = None
-        except Exception:
-            pass
+            if script is not None:
+                self._unload(script)
+        finally:
+            try:
+                if session is not None:
+                    session.detach()
+            finally:
+                if self._wrote_state_file:
+                    STATE_FILE.unlink(missing_ok=True)
+                print("[livetools daemon] stopped")
+
+    def _unload(self, script: frida.core.Script) -> None:
+        """Have the agent undo its changes to the target, and unload it once that is safe.
+
+        While a thread owes a single-step exception the agent stays loaded and
+        is asked again; each time it is asked, it waits for that thread itself.
+        """
         try:
-            if self.session:
-                self.session.detach()
-                self.session = None
-        except Exception:
-            pass
-        self.api = None
-        STATE_FILE.unlink(missing_ok=True)
-        print("[livetools daemon] stopped")
+            logged = None
+            while True:
+                _, waiting = self._shut_agent_down(script.exports_sync)
+                if waiting is None:
+                    break
+                if waiting != logged:
+                    print(f"[livetools daemon] {waiting}", file=sys.stderr)
+                    logged = waiting
+            script.unload()
+        except frida.InvalidOperationError:
+            pass  # the target exited and took the script with it
+
+    def _shut_agent_down(self, api) -> tuple[list[str], str | None]:
+        """Ask the agent once to take its changes out of the target.
+
+        Returns:
+            What it could not undo, each failure also logged the first time it
+            is reported, and why the agent cannot be unloaded yet, or None if it can.
+        """
+        result = api.shutdown()
+        for failure in result["failures"]:
+            if failure not in self._shutdown_failures_reported:
+                self._shutdown_failures_reported.add(failure)
+                print(f"[livetools daemon] shutdown: {failure}", file=sys.stderr)
+        owing = result["owedSteps"]
+        if not owing:
+            return result["failures"], None
+        return result["failures"], _DETACH_WAITS_FOR_STEP.format(
+            threads=", ".join(str(thread) for thread in owing),
+            target=self.target_name, daemon=os.getpid())
 
 
 def main() -> None:
@@ -781,12 +891,9 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
 
     try:
-        daemon.attach()
-        daemon.serve()
+        daemon.run()
     except Exception as exc:
         print(f"[livetools daemon] fatal: {exc}", file=sys.stderr)
-    finally:
-        daemon._cleanup()
 
 
 if __name__ == "__main__":

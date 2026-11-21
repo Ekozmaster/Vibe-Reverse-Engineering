@@ -153,9 +153,15 @@ def cmd_detach(_args: argparse.Namespace) -> None:
         print("Detached (daemon was already gone).")
         return
     daemon_pid = state["pid"]
+    waiting = None
     try:
         resp = client.send_command({"cmd": "detach"})
         print(client.format_status_line(resp))
+        for failure in resp.get("shutdown", []):
+            print(f"[shutdown] {failure}")
+        waiting = resp.get("waitingOn")
+        if waiting:
+            print(waiting)
     except (ConnectionError, OSError):
         pass  # the daemon may close the connection as it shuts down
     # The daemon's stderr is DAEMON_LOG, so the next attach can only reopen
@@ -163,6 +169,8 @@ def cmd_detach(_args: argparse.Namespace) -> None:
     if not client.wait_for_exit(daemon_pid, _DAEMON_EXIT_SECONDS):
         print(f"[error] The daemon (pid {daemon_pid}) has not exited after "
               f"{_DAEMON_EXIT_SECONDS} s.", file=sys.stderr)
+        if waiting:
+            print(f"[error] {waiting} It logs to {client.DAEMON_LOG}.", file=sys.stderr)
         sys.exit(1)
     print("Detached.")
     client.STATE_FILE.unlink(missing_ok=True)
@@ -813,6 +821,16 @@ def build_parser() -> argparse.ArgumentParser:
             "instruction add --probe, which records the registers and --read\n"
             "data each time the instruction is reached. A probe has no caller,\n"
             "no return value and no --read-leave.\n\n"
+            "Either hook is a jump written over the instructions at ADDR: at\n"
+            "least 5 bytes, more in a 64-bit process when no memory near ADDR\n"
+            "is free. ADDR is refused when a return or a jump ends the code\n"
+            "before 5 bytes, when a branch further on jumps back into the\n"
+            "bytes replaced, and when a probe is asked for on a jump (Frida\n"
+            "would hook where it leads). A branch into those bytes from code\n"
+            "before ADDR is not detected and lands inside the jump: check the\n"
+            "disassembly, and where a jump does not fit use bp add, which\n"
+            "changes one byte. The output says how many bytes the hook\n"
+            "replaced.\n\n"
             "Read spec format (semicolon-separated):\n"
             "  register:       ecx, eax, ebp, ...\n"
             "  memory:         [reg+OFFSET]:SIZE:TYPE\n"
@@ -836,10 +854,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sp.add_argument("addr",
-        help="Function entry to hook, or with --probe any instruction (hex)")
+        help="Function entry to hook, or with --probe an instruction with room "
+             "for a 5-byte jump (hex)")
     sp.add_argument("--probe", action="store_true",
         help="Record each time ADDR is reached instead of hooking a function, "
-             "so ADDR may be any instruction (e.g. a call site)")
+             "so ADDR need not be a function entry (e.g. a call site). The jump "
+             "it writes replaces at least 5 bytes: see above for where it fits")
     sp.add_argument("--count", type=int, default=10,
         help="Number of calls to capture (default: 10)")
     sp.add_argument("--read", default=None,
@@ -897,11 +917,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Optionally partition records into intervals via fence hooks.\n\n"
             "The addresses must be function entries, as for trace. With --probe\n"
             "every address is hooked as an instruction probe instead (see\n"
-            "trace --help) and may be any instruction, e.g. a call site.\n\n"
+            "trace --help) and need not be a function entry, e.g. a call site.\n"
+            "trace --help says where the jump of a hook fits.\n\n"
             "The fence concept:\n"
             "  --fence ADDR   Count an interval each time ADDR is reached, e.g.\n"
-            "                 the game's call to DX Present. ADDR may be any\n"
-            "                 instruction. Every trace record includes the\n"
+            "                 the game's call to DX Present. ADDR is hooked as\n"
+            "                 a probe. Every trace record includes the\n"
             "                 current interval ID, enabling per-frame or\n"
             "                 per-N-calls analysis.\n\n"
             "Output: JSONL file in patches/<exe>/traces/ by default.\n\n"
@@ -923,7 +944,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sp.add_argument("addrs", nargs="+",
-        help="One or more function entries to hook, or with --probe any instructions (hex)")
+        help="One or more function entries to hook, or with --probe instructions "
+             "with room for a 5-byte jump (hex)")
     sp.add_argument("--probe", action="store_true",
         help="Hook every address as an instruction probe instead of a function "
              "(see trace --help)")
@@ -938,8 +960,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--read@", dest="read_at", action="append", default=None,
         help='Per-address read spec: ADDR=SPEC (e.g. 0x401000="ecx; [esp+4]:12:float32")')
     sp.add_argument("--fence", default=None,
-        help="Address that marks an interval each time it is reached; any "
-             "instruction (e.g. the call to DX Present)")
+        help="Address that marks an interval each time it is reached; hooked "
+             "as a probe (e.g. the call to DX Present)")
     sp.add_argument("--fence-every", type=int, default=0,
         help="Mark interval every N calls to first traced addr")
     sp.add_argument("--label", action="append", default=None,
