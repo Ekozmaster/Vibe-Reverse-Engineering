@@ -442,7 +442,7 @@ class Daemon:
             "label": cmd.get("label", ""),
             "probe": bool(cmd.get("probe")),
         }
-        result = self.api.install_trace(addr, config)
+        result = self._install_trace(addr, config)
         if not result.get("ok"):
             return {**self._base_resp(), "ok": False,
                     "error": result.get("error", "install_trace failed")}
@@ -560,7 +560,7 @@ class Daemon:
                 "label": labels.get(addr, ""),
                 "probe": bool(cmd.get("probe")),
             }
-            result = self.api.install_trace(addr, config)
+            result = self._install_trace(addr, config)
             hook_diags.append(self._collect_hook_diag(addr, result))
             if result.get("ok"):
                 trace_ids.append(result["traceId"])
@@ -611,6 +611,17 @@ class Daemon:
                 self._trace_done.pop(tid, None)
                 self._trace_events.pop(tid, None)
         return remaining
+
+    def _install_trace(self, addr: str, config: dict) -> dict:
+        """Install a trace hook; the result of one that went in says how many bytes its jump replaced.
+
+        The agent is asked for the count in a call of its own: Frida writes
+        the jump when the installing call returns.
+        """
+        result = self.api.install_trace(addr, config)
+        if result.get("ok"):
+            result["bytesTaken"] = self.api.trace_hook_bytes(result["traceId"])
+        return result
 
     @staticmethod
     def _collect_hook_diag(addr: str, result: dict) -> dict:

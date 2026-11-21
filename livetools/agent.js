@@ -373,8 +373,10 @@ function hookPlacement(address, what, isProbe) {
 
 // Hooks `address` with a function hook ({onEnter, onLeave}) or, given one
 // function, a probe. Returns { detach, site, bytesTaken }: `site` is where
-// Frida wrote its jump, which is not `address` where the program jumps on from
-// there, and bytesTaken is how many of the program's bytes it replaced.
+// Frida writes its jump, which is not `address` where the program jumps on from
+// there, and bytesTaken() is how many of the program's bytes the jump has
+// replaced. Frida commits the jump when the thread that attached leaves the
+// script, so the count is the caller's to ask for in a later call.
 function attachHook(address, what, callbacks) {
     var placement = hookPlacement(address, what, typeof callbacks === 'function');
     if (placement.refusal !== null) throw new Error(placement.refusal);
@@ -391,19 +393,12 @@ function attachHook(address, what, callbacks) {
         }
     }
     try {
-        // Frida writes its jump when the calling thread leaves the script, or on a flush.
         Interceptor.flush();
-        var bytesTaken = replacedBytes(site, original);
-        if (bytesTaken === 0) {
-            throw new Error('Frida wrote no jump at 0x' + ptrToHex(site) + ', where the ' + what +
-                ' hook asked for at 0x' + ptrToHex(address) + ' was expected: the bytes it did ' +
-                'replace are unknown, so the hook was removed again.');
-        }
-        return { detach: detach, site: site, bytesTaken: bytesTaken };
     } catch (e) {
         detach();
         throw e;
     }
+    return { detach: detach, site: site, bytesTaken: function () { return replacedBytes(site, original); } };
 }
 
 // ── read-spec parser & evaluator ──────────────────────────────────────────
@@ -726,7 +721,7 @@ function installTrace(addrStr, config) {
         maxCount: maxCount, collected: 0, done: false,
         getCollected: function () { return collected; }
     };
-    return { ok: true, traceId: id, bytesTaken: listener.bytesTaken,
+    return { ok: true, traceId: id,
              followedTo: listener.site.equals(ptr(addrStr)) ? null : '0x' + ptrToHex(listener.site),
              prologue: prologue };
 }
@@ -2031,6 +2026,9 @@ rpc.exports = {
     // tracing
     originalInstruction: function (addrStr) { return originalInstruction(ptr(addrStr)); },
     installTrace: function (addrStr, config) { return installTrace(addrStr, config); },
+    traceHookBytes: function (traceId) {
+        return traces[traceId] ? traces[traceId].listener.bytesTaken() : null;
+    },
     removeTrace: function (traceId) { return removeTrace(traceId); },
     flushTraces: function (traceId) { return flushTraces(traceId); },
     checkPrologue: function (addrStr) { return checkPrologue(addrStr); },

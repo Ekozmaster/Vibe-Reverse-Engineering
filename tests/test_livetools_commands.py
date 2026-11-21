@@ -116,6 +116,9 @@ class FakeAgent:
         self.traces.append((addr, config))
         return {"ok": True, "traceId": len(self.traces)}
 
+    def trace_hook_bytes(self, trace_id):
+        return 5
+
     def flush_traces(self, trace_id):
         return {"ok": True, "done": True, "collected": 0}
 
