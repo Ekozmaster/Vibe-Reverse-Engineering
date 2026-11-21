@@ -60,9 +60,10 @@ python -m livetools resume                    # unfreeze target
 - One thread is frozen at a time. Every other thread keeps running; when one reaches a breakpoint its hit is counted and it runs on. The exception is the breakpoint the frozen thread sits on: its original byte is back while that thread is frozen, so other threads run through that address unseen and uncounted.
 - A breakpoint on a repeated string instruction counts one hit per execution of the whole instruction. Releasing a thread from it raises one exception per iteration, so a breakpoint on a `rep movs` that copies megabytes stalls that thread noticeably.
 - `bp del` on the breakpoint a thread is frozen at also resumes that thread. After a `step` the thread is frozen somewhere else, and `bp del` leaves it frozen.
-- `detach` removes every breakpoint and the vishook, and releases the frozen thread.
+- `detach` removes every breakpoint and the vishook, releases the frozen thread, and takes back the trap flag of a thread whose step has not finished before the agent unloads.
+- `bp` and `step` need a Windows process. `trace`, `collect`, `steptrace` and `mem` load in any process Frida attaches to.
 - `disasm` and `mem read` show the `int3` (`CC`) of a breakpoint that is set, except at the address a thread is frozen at, where the original byte is back.
-- Breakpoints, hooks, the vishook and `mem write` never share bytes. `trace`, `collect` and its fence refuse an address whose first bytes hold a breakpoint or the vishook's jump; `bp add` refuses an address inside the bytes of an active hook or the vishook's jump; `vishook on` refuses a site whose 5 bytes hold a breakpoint or a hook; `mem write` refuses a range that holds any of them (remove it, write, then set it again) and leaves each page it writes with the protection it had; and `steptrace` refuses to start while any breakpoint is set. `bp add` also refuses an address that already holds an `int3`, such as the padding between functions.
+- Breakpoints, hooks, the vishook and `mem write` never share bytes; two hooks share bytes only when both sit at the same address. `trace`, `collect` and its fence refuse an address whose first bytes hold a breakpoint or the vishook's jump, or overlap the bytes of a hook at another address (5 bytes in a 32-bit process, 14 in a 64-bit one); `bp add` refuses an address inside the bytes of an active hook or the vishook's jump; `vishook on` refuses a site whose 5 bytes hold a breakpoint or a hook; `mem write` refuses a range that holds any of them (remove it, write, then set it again) and leaves each page it writes with the protection it had; and `steptrace` refuses to start while any breakpoint is set. `bp add` also refuses an address that already holds an `int3`, such as the padding between functions.
 - A `steptrace` whose function is not called, or does not return, within its timeout is removed, and `bp add` works again.
 
 ### Patch + Scan (anytime)
@@ -247,7 +248,7 @@ The addresses are function entries, as for `trace`. If one of them is a `call` i
 
 The **fence** concept: `--fence ADDR` counts an interval each time ADDR is reached, for example the game's call to DX Present or the entry of a per-frame function. A fence is a probe, so ADDR may be any instruction. Every trace record includes the current interval ID. Enables per-frame analysis, per-N-calls partitioning, and cross-function correlation.
 
-Output: JSONL in `patches/<exe_name>/traces/` by default (gitignored).
+Output: JSONL in `patches/<exe_name>/traces/` by default (gitignored). The output file is opened before anything is hooked, so a path that cannot be written is an error that leaves the target untouched, and the hooks are removed when collecting fails part-way.
 
 ### modules -- List loaded DLLs
 

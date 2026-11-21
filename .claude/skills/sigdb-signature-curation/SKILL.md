@@ -19,10 +19,10 @@ Import only names for code that compiles identically in other binaries: statical
 - Layout-dependence check must cover every absolute operand, including indexed ones: `jmp dword ptr [eax*4 + abs32]` (switch tables) and `mov al, [eax + abs32]` are not wildcarded by a check that only looks at `mem.index == 0`. Such a CRC16 then rejects the same function in any other binary, and `match_bytes` rejects on mismatch rather than scoring low. Test any change with an `FF 24 85 <abs32>` case.
 - Dedup of unique byte prefixes must key on `(pattern, mask, crc_len, crc16)` and check `already_in_db` only against rows whose toolchain labels overlap the new import. Otherwise import order decides which compiler's functions survive (a msvc2008 import first drops shared msvc2005 prefixes, then the toolchain filter rejects the 2008 row).
 - Validate before publishing: build from a subset, scan the source exe (expect near 100%), scan a second game on the same library version, and score the hits by hand.
-- Build and test candidates on copies. Opening a DB never writes to it; the first write (`build`, `import-pat`) switches it to WAL and migrates a schema-1 DB in place, so copy `retools/data/signatures.db` first, scan the same binaries with the old copy and the candidate, diff the hits, and confirm `git status retools/data/` is clean.
+- Build and test candidates on copies. `scan` and `identify` open a DB read-only and refuse a file that is not a signature database; the first write (`build`, `import-pat`) switches it to WAL and migrates a schema-1 DB in place, so copy `retools/data/signatures.db` first, scan the same binaries with the old copy and the candidate, diff the hits, and confirm `git status retools/data/` is clean.
 - After editing `retools/sigdb.py`, run `python -m pytest tests/test_sigdb.py -q` and the CI lint: `ruff check --select F --ignore F401,F541,F841 --exclude tools,rtx_remix_tools/dx/remix-comp-proxy/deps .`
 
 - Publish a database that older code refuses (a new schema) to a named branch of the Hugging Face signature repo, never to `main`. Create the branch from `main`, commit there, then confirm `main`'s sha is unchanged and that `resolve/<branch>/signatures.db` serves the new size. The PR must say the file moves to `main` at merge.
 - Load `HF_TOKEN` from the repo `.env` with `set -a; . ./.env; set +a` before the upload, and never echo it.
 
-Measured facts about candidate sources are in `references/decomp-sources.md`.
+Keep measured facts about a candidate source under `patches/_research/`, not in a tracked file.
