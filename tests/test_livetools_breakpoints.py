@@ -1081,9 +1081,6 @@ class TestUnload:
         thread = _freeze_at(fresh_target, "loop")["threadId"]
         gate = fresh_target.daemon.session.create_script(_GATE_JS)
         gate.load()
-        gate.exports_sync.park("CreateEventW", thread, "onEnter")
-        fresh_target.run({"cmd": "resume"})
-        _wait_until(gate.exports_sync.parked)
         reported = []
 
         def report_seen() -> bool:
@@ -1091,9 +1088,15 @@ class TestUnload:
             return "1 thread still in the breakpoint handler" in "".join(reported)
 
         detaching = threading.Thread(target=fresh_target.detach_daemon, daemon=True)
-        detaching.start()
-        _wait_until(report_seen, timeout=15)
-        gate.exports_sync.open()
+        try:
+            gate.exports_sync.park("CreateEventW", thread, "onEnter")
+            fresh_target.run({"cmd": "resume"})
+            _wait_until(gate.exports_sync.parked)
+            detaching.start()
+            _wait_until(report_seen, timeout=15)
+        finally:
+            # A thread left parked would block every later unload, the fixture's among them
+            gate.exports_sync.open()
         detaching.join(15)
 
         assert not detaching.is_alive()
