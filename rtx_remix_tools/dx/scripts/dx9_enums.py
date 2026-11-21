@@ -1,63 +1,18 @@
 """D3D9 method names and enums, with the decoders the scripts turn call arguments into text with."""
 import struct
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from graphics.directx.dx9.tracer.d3d9_methods import D3D9_METHODS
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # IDirect3DDevice9 Vtable (32-bit, offset = slot * 4)
 # ═══════════════════════════════════════════════════════════════════════
 
-D3D9_DEVICE_VTABLE = {
-    0x00: "QueryInterface", 0x04: "AddRef", 0x08: "Release",
-    0x0C: "TestCooperativeLevel", 0x10: "GetAvailableTextureMem",
-    0x14: "EvictManagedResources", 0x18: "GetDirect3D", 0x1C: "GetDeviceCaps",
-    0x20: "GetDisplayMode", 0x24: "GetCreationParameters",
-    0x28: "SetCursorProperties", 0x2C: "SetCursorPosition", 0x30: "ShowCursor",
-    0x34: "CreateAdditionalSwapChain", 0x38: "GetSwapChain",
-    0x3C: "GetNumberOfSwapChains", 0x40: "Reset", 0x44: "Present",
-    0x48: "GetBackBuffer", 0x4C: "GetRasterStatus", 0x50: "SetDialogBoxMode",
-    0x54: "SetGammaRamp", 0x58: "GetGammaRamp", 0x5C: "CreateTexture",
-    0x60: "CreateVolumeTexture", 0x64: "CreateCubeTexture",
-    0x68: "CreateVertexBuffer", 0x6C: "CreateIndexBuffer",
-    0x70: "CreateRenderTarget", 0x74: "CreateDepthStencilSurface",
-    0x78: "UpdateSurface", 0x7C: "UpdateTexture", 0x80: "GetRenderTargetData",
-    0x84: "GetFrontBufferData", 0x88: "StretchRect", 0x8C: "ColorFill",
-    0x90: "CreateOffscreenPlainSurface", 0x94: "SetRenderTarget",
-    0x98: "GetRenderTarget", 0x9C: "SetDepthStencilSurface",
-    0xA0: "GetDepthStencilSurface", 0xA4: "BeginScene", 0xA8: "EndScene",
-    0xAC: "Clear", 0xB0: "SetTransform", 0xB4: "GetTransform",
-    0xB8: "MultiplyTransform", 0xBC: "SetViewport", 0xC0: "GetViewport",
-    0xC4: "SetMaterial", 0xC8: "GetMaterial", 0xCC: "SetLight",
-    0xD0: "GetLight", 0xD4: "LightEnable", 0xD8: "GetLightEnable",
-    0xDC: "SetClipPlane", 0xE0: "GetClipPlane", 0xE4: "SetRenderState",
-    0xE8: "GetRenderState", 0xEC: "CreateStateBlock", 0xF0: "BeginStateBlock",
-    0xF4: "EndStateBlock", 0xF8: "SetClipStatus", 0xFC: "GetClipStatus",
-    0x100: "GetTexture", 0x104: "SetTexture", 0x108: "GetTextureStageState",
-    0x10C: "SetTextureStageState", 0x110: "GetSamplerState",
-    0x114: "SetSamplerState", 0x118: "ValidateDevice",
-    0x11C: "SetPaletteEntries", 0x120: "GetPaletteEntries",
-    0x124: "SetCurrentTexturePalette", 0x128: "GetCurrentTexturePalette",
-    0x12C: "SetScissorRect", 0x130: "GetScissorRect",
-    0x134: "SetSoftwareVertexProcessing", 0x138: "GetSoftwareVertexProcessing",
-    0x13C: "SetNPatchMode", 0x140: "GetNPatchMode",
-    0x144: "DrawPrimitive", 0x148: "DrawIndexedPrimitive",
-    0x14C: "DrawPrimitiveUP", 0x150: "DrawIndexedPrimitiveUP",
-    0x154: "ProcessVertices", 0x158: "CreateVertexDeclaration",
-    0x15C: "SetVertexDeclaration", 0x160: "GetVertexDeclaration",
-    0x164: "SetFVF", 0x168: "GetFVF", 0x16C: "CreateVertexShader",
-    0x170: "SetVertexShader", 0x174: "GetVertexShader",
-    0x178: "SetVertexShaderConstantF", 0x17C: "GetVertexShaderConstantF",
-    0x180: "SetVertexShaderConstantI", 0x184: "GetVertexShaderConstantI",
-    0x188: "SetVertexShaderConstantB", 0x18C: "GetVertexShaderConstantB",
-    0x190: "SetStreamSource", 0x194: "GetStreamSource",
-    0x198: "SetStreamSourceFreq", 0x19C: "GetStreamSourceFreq",
-    0x1A0: "SetIndices", 0x1A4: "GetIndices",
-    0x1A8: "CreatePixelShader", 0x1AC: "SetPixelShader",
-    0x1B0: "GetPixelShader", 0x1B4: "SetPixelShaderConstantF",
-    0x1B8: "GetPixelShaderConstantF", 0x1BC: "SetPixelShaderConstantI",
-    0x1C0: "GetPixelShaderConstantI", 0x1C4: "SetPixelShaderConstantB",
-    0x1C8: "GetPixelShaderConstantB", 0x1CC: "DrawRectPatch",
-    0x1D0: "DrawTriPatch", 0x1D4: "DeletePatch", 0x1D8: "CreateQuery",
-}
+D3D9_DEVICE_VTABLE = {spec.slot * 4: spec.name for spec in D3D9_METHODS.values()}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -305,7 +260,7 @@ D3DSAMP = {
 }
 
 D3DTEXF = {0: "NONE", 1: "POINT", 2: "LINEAR", 3: "ANISOTROPIC",
-           4: "PYRAMIDALQUAD", 5: "GAUSSIANQUAD"}
+           6: "PYRAMIDALQUAD", 7: "GAUSSIANQUAD", 8: "CONVOLUTIONMONO"}
 D3DTADDRESS = {1: "WRAP", 2: "MIRROR", 3: "CLAMP", 4: "BORDER", 5: "MIRRORONCE"}
 
 SAMP_VALUE_DECODERS = {
@@ -379,9 +334,8 @@ D3DFMT = {
     0x59565955: "UYVY", 0x32595559: "YUY2",
     0x47424752: "R8G8_B8G8", 0x42475247: "G8R8_G8B8",
     0x3154454D: "MULTI2_ARGB8",
-    # NVIDIA specific
-    0x34324E49: "INTZ",  # shadow map depth
-    0x46313152: "R1F",   # raw
+    # Driver FourCC, not in d3d9types.h
+    0x5A544E49: "INTZ",  # depth buffer readable as a texture
 }
 
 
@@ -397,6 +351,27 @@ def decode_format(val):
         except struct.error:
             pass  # wider than a dword: no FourCC
     return f"UNKNOWN(0x{val:X})"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# D3DVERTEXELEMENT9
+# ═══════════════════════════════════════════════════════════════════════
+
+_MAX_STREAM = 4             # games bind few streams; a larger number is other data
+_LAST_DECLTYPE = 17         # D3DDECLTYPE_UNUSED
+_LAST_DECLUSAGE = 13        # D3DDECLUSAGE_SAMPLE
+
+
+def is_vertex_element(raw):
+    """Whether *raw* starts with a plausible D3DVERTEXELEMENT9: its stream, type and usage are in range.
+
+    Tells the first element of a vertex declaration from other data a
+    pointer argument may lead to.
+    """
+    if len(raw) < 8:
+        return False
+    stream, _offset, decl_type, _method, usage, _usage_index = struct.unpack_from("<HHBBBB", raw)
+    return stream <= _MAX_STREAM and decl_type <= _LAST_DECLTYPE and usage <= _LAST_DECLUSAGE
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -56,25 +56,31 @@ def _displacement_encodings(vtable_offset):
     return encodings
 
 
-def _find_modrm(text_data, text_va, opcode, modrms, displacement):
-    """Every place *opcode*, one of the ModRM bytes *modrms*, then *displacement* sit.
+def _find_modrm(text_data, text_va, opcode, modrms, displacement, first_va, end_va):
+    """Every place from *first_va* up to *end_va* where *opcode*, one of the ModRM bytes *modrms*, then *displacement* sit.
 
-    One pass over the section for all the ModRM bytes; hits may overlap.
+    One pass over the stretch for all the ModRM bytes; hits may overlap, and
+    one that starts before *end_va* may run past it.
 
     Returns: [(va, modrm), ...] in address order.
     """
     modrm_class = b"".join(re.escape(bytes([modrm])) for modrm in sorted(modrms))
     pattern = re.compile(re.escape(bytes([opcode])) + b"([" + modrm_class + b"])" + re.escape(displacement),
                          re.DOTALL)
+    stop = end_va - text_va + 1 + len(displacement)
     hits = []
-    hit = pattern.search(text_data)
+    hit = pattern.search(text_data, first_va - text_va, stop)
     while hit is not None:
         hits.append((text_va + hit.start(), hit.group(1)[0]))
-        hit = pattern.search(text_data, hit.start() + 1)
+        hit = pattern.search(text_data, hit.start() + 1, stop)
     return hits
 
 
-def scan_vtable_calls(text_data, text_va, vtable_offset, interface=DEVICE):
+def _whole_section(text_data, text_va):
+    return text_va, text_va + len(text_data)
+
+
+def scan_vtable_calls(text_data, text_va, vtable_offset, interface=DEVICE, region=None):
     """Find COM method calls: call [reg+vtable_offset], in each encoding (see _displacement_encodings).
 
     A hit counts only when it is a whole call instruction that is not shown
@@ -83,21 +89,27 @@ def scan_vtable_calls(text_data, text_va, vtable_offset, interface=DEVICE):
     Args:
         interface: Declared parameter count by vtable offset of the interface
             whose method is sought.
+        region: (start va, end va) the sites are sought in, the end left
+            out; the whole section when None. Only the hits in it are
+            checked, against the code in front of them wherever in the
+            section that lies.
 
     Returns: [(va, reg_name), ...] in address order.
     """
+    start_va, end_va = region or _whole_section(text_data, text_va)
     param_count = interface.get(vtable_offset)
     results = []
     for mod_bits, displacement, bases in _displacement_encodings(vtable_offset):
         reg_by_modrm = {mod_bits | _CALL_REG | rm: reg_name for rm, reg_name in bases.items()}
         results.extend((va, reg_by_modrm[modrm])
-                       for va, modrm in _find_modrm(text_data, text_va, 0xFF, reg_by_modrm, displacement)
+                       for va, modrm in _find_modrm(text_data, text_va, 0xFF, reg_by_modrm, displacement,
+                                                    start_va, end_va)
                        if _is_com_method_call(text_data, text_va, va, param_count))
     results.sort()
     return results
 
 
-def scan_vtable_mov(text_data, text_va, vtable_offset, interface=DEVICE):
+def scan_vtable_mov(text_data, text_va, vtable_offset, interface=DEVICE, region=None):
     """Find method-pointer loads: mov reg, [reg+vtable_offset] that the code then calls through.
 
     In each encoding (see _displacement_encodings). A load counts only when it is a
@@ -114,15 +126,22 @@ def scan_vtable_mov(text_data, text_va, vtable_offset, interface=DEVICE):
     Args:
         interface: Declared parameter count by vtable offset of the interface
             whose method is sought.
+        region: (start va, end va) the sites are sought in, the end left
+            out; the whole section when None. A later call in it is a site
+            wherever its load is. Only the loads that can lead to a site in
+            it are checked.
 
     Returns: [(va, description), ...] in address order.
     """
+    start_va, end_va = region or _whole_section(text_data, text_va)
+    first_load_va = _earliest_load_called_from(text_data, text_va, start_va)
     param_count = interface.get(vtable_offset)
     results = []
     for mod_bits, displacement, bases in _displacement_encodings(vtable_offset):
         description_by_modrm = {mod_bits | (dst_idx << 3) | src_idx: f"mov {dst_name}, [{src_name}+0x{vtable_offset:03X}]"
                                 for src_idx, src_name in bases.items() for dst_idx, dst_name in _GP_REGS.items()}
-        for va, modrm in _find_modrm(text_data, text_va, 0x8B, description_by_modrm, displacement):
+        for va, modrm in _find_modrm(text_data, text_va, 0x8B, description_by_modrm, displacement,
+                                     first_load_va, end_va):
             if not _is_com_method_call(text_data, text_va, va, param_count):
                 continue
             load = description_by_modrm[modrm]
@@ -130,18 +149,17 @@ def scan_vtable_mov(text_data, text_va, vtable_offset, interface=DEVICE):
             results.extend((call.address, f"call {call.op_str} ({load} at 0x{va:08X})")
                            for call in _later_calls(text_data, text_va, va)
                            if _is_com_method_call(text_data, text_va, call.address, param_count))
-    results.sort()
-    return results
+    return sorted(site for site in results if start_va <= site[0] < end_va)
 
 
-def scan_all_patterns(text_data, text_va, vtable_offset, interface=DEVICE):
-    """Find call and mov patterns for a vtable offset of *interface*.
+def scan_all_patterns(text_data, text_va, vtable_offset, interface=DEVICE, region=None):
+    """Find call and mov patterns for a vtable offset of *interface*, in *region* when one is given.
 
     Returns: [(va, description), ...]
     """
     results = [(va, f"call [{reg}+0x{vtable_offset:03X}]")
-               for va, reg in scan_vtable_calls(text_data, text_va, vtable_offset, interface)]
-    results.extend(scan_vtable_mov(text_data, text_va, vtable_offset, interface))
+               for va, reg in scan_vtable_calls(text_data, text_va, vtable_offset, interface, region)]
+    results.extend(scan_vtable_mov(text_data, text_va, vtable_offset, interface, region))
     results.sort()
     return results
 
@@ -168,6 +186,8 @@ _decoder.detail = True
 _LOOKBACK = 96          # bytes before a site that decoding may start from
 _TRUSTED = 48           # bytes before a site that instructions are taken from
 _MAX_INSN = 15          # longest x86 instruction
+_FUNCTION_ALIGNMENT = 16    # compilers pad up to a multiple of this before a function
+_PADDING_BYTES = frozenset((0xCC, 0x90))    # int3 and nop
 _SWEEP_BATCH_INSNS = 4096  # instructions per capstone call in the section sweep
 # Registers a called function returns unchanged, in every x86 calling convention
 _CALLEE_SAVED = frozenset((x86.X86_REG_EBX, x86.X86_REG_ESI, x86.X86_REG_EDI, x86.X86_REG_EBP))
@@ -228,15 +248,27 @@ class StackArg(NamedTuple):
 def _trusted_start(text_data, text_va, site_va):
     """Address of the earliest instruction before *site_va* that is certain.
 
-    *site_va* itself when none is. None when no decoding ends exactly at
-    *site_va*: the site then lies inside another instruction, or in data.
+    *site_va* itself when none is. None when the site lies inside another
+    instruction, or in data: no decoding ends exactly at *site_va*, or the
+    decodings from the stretch more than _TRUSTED bytes before it step over
+    it and none of them ends at it. A decoding that starts nearer can begin
+    inside the instruction that holds the site and still arrive, so it
+    speaks for the site only when it starts where a function does (data in
+    front of a function decodes into instructions that run over its first
+    bytes), or when no decoding from the far stretch gets anywhere near the
+    site: the section, or a function that follows data, starts too close to
+    it.
     """
     site_off = site_va - text_va
     first = max(0, site_off - _LOOKBACK)
+    trusted_from = site_off - _TRUSTED
 
     # following[o]: where the instruction at offset o ends, kept only for
-    # offsets from which decoding arrives exactly at the site
+    # offsets from which decoding arrives exactly at the site.
+    # stepping_over: the offsets from which decoding runs past the site
+    # without stopping at it.
     following = {}
+    stepping_over = set()
     for off in range(site_off - 1, first - 1, -1):
         insn = next(_decoder.disasm_lite(text_data[off:off + _MAX_INSN], text_va + off), None)
         if insn is None:
@@ -244,11 +276,20 @@ def _trusted_start(text_data, text_va, site_va):
         end = off + insn[1]
         if end == site_off or end in following:
             following[off] = end
+        elif end > site_off or end in stepping_over:
+            stepping_over.add(off)
     if not following:
         return None
 
     arriving = sorted(following)
-    voters = [off for off in arriving if off < site_off - _TRUSTED] or arriving[:1]
+    voters = [off for off in arriving if off < trusted_from]
+    if not voters:
+        if any(off < trusted_from for off in stepping_over):
+            voters = [off for off in arriving if _starts_function(text_data, text_va, off)]
+            if not voters:
+                return None
+        else:
+            voters = arriving[:1]
     passing = dict.fromkeys(arriving, 0)
     for off in voters:
         passing[off] = 1
@@ -257,8 +298,16 @@ def _trusted_start(text_data, text_va, site_va):
             passing[following[off]] += passing[off]
 
     certain = [off for off in arriving
-               if off >= site_off - _TRUSTED and passing[off] == len(voters)]
+               if off >= trusted_from and passing[off] == len(voters)]
     return text_va + (certain[0] if certain else site_off)
+
+
+def _starts_function(text_data, text_va, off):
+    """Whether a function is seen to start at offset *off*: a direct call goes there, or alignment padding ends there."""
+    va = text_va + off
+    return va in _call_targets(text_data, text_va) or (
+        va % _FUNCTION_ALIGNMENT == 0
+        and text_data[off - 1] in _PADDING_BYTES and text_data[off] not in _PADDING_BYTES)
 
 
 def _instructions_before_call(text_data, text_va, site_va):
@@ -352,6 +401,24 @@ def _calls_through(text_data, text_va, load):
         end = start + _LOOKAHEAD
 
 
+# call ebx / ebp / esi / edi: the calls a method pointer is kept across (see _calls_through)
+_CALL_KEPT_REGISTER = re.compile(rb"\xFF[\xD3\xD5\xD6\xD7]")
+
+
+def _earliest_load_called_from(text_data, text_va, va):
+    """Lowest address of a method-pointer load that _calls_through can find a call at or after *va* for.
+
+    The first call lies within _LOOKAHEAD bytes of its load, and each later
+    one that close to the call before it.
+    """
+    off = va - text_va
+    while True:
+        earlier_call = _CALL_KEPT_REGISTER.search(text_data, max(0, off - _LOOKAHEAD), off + 1)
+        if earlier_call is None:
+            return text_va + max(0, off - _LOOKAHEAD)
+        off = earlier_call.start()
+
+
 def _stack_arg(insn, operand, source):
     if operand.type == x86.X86_OP_IMM:
         return StackArg(insn.address, operand.imm & 0xFFFFFFFF, source)
@@ -382,25 +449,42 @@ def _is_dword_store(insn, store):
             and store.mem.index == x86.X86_REG_INVALID and store.mem.disp % 4 == 0)
 
 
-@lru_cache(maxsize=2)
 def _jump_targets(text_data, text_va):
     """Every address a direct jump in the code section goes to.
 
-    One linear sweep of the whole section, so a jump is found however far it
-    is from its target and whichever side of it. Data in the section decodes
-    into jumps that do not exist; their targets only make the argument walk
-    stop early.
+    Data in the section decodes into jumps that do not exist; their targets
+    only make the argument walk stop early.
+    """
+    return _branch_targets(text_data, text_va)[0]
+
+
+def _call_targets(text_data, text_va):
+    """Every address a direct call in the code section goes to."""
+    return _branch_targets(text_data, text_va)[1]
+
+
+@lru_cache(maxsize=2)
+def _branch_targets(text_data, text_va):
+    """(direct jump targets, direct call targets) of the code section.
+
+    One linear sweep of the whole section, so a branch is found however far
+    it is from its target and whichever side of it.
     """
     sweep = Cs(CS_ARCH_X86, CS_MODE_32)
     sweep.skipdata = True
-    targets = set()
+    jumps, calls = set(), set()
     for _address, _size, mnemonic, operands in disasm_batches(sweep, text_data, text_va, _SWEEP_BATCH_INSNS, lite=True):
         if mnemonic[0] == 'j' or mnemonic.startswith('loop'):
-            try:
-                targets.add(int(operands, 16))
-            except ValueError:
-                pass  # through a register or memory: no target to read
-    return frozenset(targets)
+            targets = jumps
+        elif mnemonic == 'call':
+            targets = calls
+        else:
+            continue
+        try:
+            targets.add(int(operands, 16))
+        except ValueError:
+            pass  # through a register or memory: no target to read
+    return frozenset(jumps), frozenset(calls)
 
 
 class _WalkEnd(enum.Enum):
@@ -622,9 +706,8 @@ def _loads_ecx_for_the_callee(insns, call, jump_targets):
     """Whether the code loads ecx and only *call* can read what it loaded.
 
     Nothing between the load and the call reads ecx, and no conditional
-    jump lies between them that could take the value elsewhere. Only a mov
-    or lea into ecx counts as a load: a pop or a string instruction writes
-    it by the way.
+    jump lies between them that could take the value elsewhere (see
+    _gives_ecx_a_value for what counts as a load).
     """
     first, _entered = _straight_line_start(insns, len(insns), jump_targets)
     for index in range(len(insns) - 1, first - 1, -1):
@@ -632,9 +715,29 @@ def _loads_ecx_for_the_callee(insns, call, jump_targets):
         if _flow(insn) is not _Flow.STRAIGHT:
             return False
         if _writes(insn, x86.X86_REG_ECX):
-            return (insn.id in (x86.X86_INS_MOV, x86.X86_INS_LEA) and insn.operands[0].type == x86.X86_OP_REG
+            return (_gives_ecx_a_value(insn)
                     and not any(_reads(later, x86.X86_REG_ECX) for later in (*insns[index + 1:], call)))
     return False
+
+
+def _gives_ecx_a_value(insn):
+    """A mov or lea that sets all 32 bits of ecx to something other than what ecx held.
+
+    A pop or a string instruction writes ecx by the way, a mov into cl or
+    cx leaves the rest of it, and mov ecx, ecx and lea ecx, [ecx+0] are
+    the padding compilers align code with.
+    """
+    if insn.id not in (x86.X86_INS_MOV, x86.X86_INS_LEA):
+        return False
+    target, source = insn.operands
+    if target.type != x86.X86_OP_REG or target.reg != x86.X86_REG_ECX:
+        return False
+    if source.type == x86.X86_OP_REG:
+        return source.reg != x86.X86_REG_ECX
+    if insn.id == x86.X86_INS_LEA:
+        address = source.mem
+        return (address.base, address.index, address.disp) != (x86.X86_REG_ECX, x86.X86_REG_INVALID, 0)
+    return True
 
 
 def _passes_another_this(text_data, text_va, site_va, insns):
@@ -902,15 +1005,14 @@ def method_args(text_data, text_va, site_va, method):
     return dict(zip(names, values))
 
 
-def method_immediates(text_data, text_va, site_va, method):
-    """Like method_args, keeping only immediates.
+def immediates(args):
+    """The constants among the arguments method_args returned.
 
     Returns:
         {"this": ..., <parameter name>: ...} with the immediate put on the
         stack for each argument, or None where the argument came from a
         register or memory, or was not recovered.
     """
-    args = method_args(text_data, text_va, site_va, method)
     return {name: arg.value if arg else None for name, arg in args.items()}
 
 
@@ -926,6 +1028,34 @@ def arg_text(arg):
     if arg.value is None:
         return f"<{arg.source}>"
     return str(arg.value)
+
+
+def args_text(args):
+    """The arguments of one call as they read in a report, `this` left out: "State=22  Value=<eax>"."""
+    return "  ".join(f"{name}={arg_text(arg)}" for name, arg in args.items() if name != "this")
+
+
+_UNDECODED_CALLS_LISTED = 10
+
+
+def print_undecoded_calls(method, undecoded, show_all):
+    """List the calls of *method* a report leaves out because an argument it needs is not a constant.
+
+    Prints nothing when there are none.
+
+    Args:
+        undecoded: [(site va, arguments from method_args), ...].
+        show_all: List every call rather than the first _UNDECODED_CALLS_LISTED.
+    """
+    if not undecoded:
+        return
+    print(f"\n  {method}: {len(undecoded)} call site(s) not decoded, an argument is not a constant:")
+    calls = sorted(undecoded, key=lambda call: call[0])
+    listed = calls if show_all else calls[:_UNDECODED_CALLS_LISTED]
+    for va, args in listed:
+        print("    " + ": ".join(filter(None, (f"0x{va:08X}", args_text(args)))))
+    if len(listed) < len(calls):
+        print(f"    ... and {len(calls) - len(listed)} more")
 
 
 # ═══════════════════════════════════════════════════════════════════════

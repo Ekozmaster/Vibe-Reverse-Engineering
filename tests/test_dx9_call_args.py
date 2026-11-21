@@ -6,8 +6,10 @@ for, count a pushed register as an argument, and say nothing about an argument
 the code in front of the call does not settle.
 """
 
+import struct
 import sys
 from pathlib import Path
+from random import Random
 
 import pytest
 
@@ -21,10 +23,13 @@ from d3d9_calls import (
 )
 
 SET_RENDER_STATE = 0xE4
+BEGIN_SCENE = 0xA4
 SET_TRANSFORM = 0xB0
 SET_VS_CONSTANT_F = 0x178
 CREATE_TEXTURE = 0x5C
 PRESENT = 0x44
+QUERY_INTERFACE = 0x00
+RELEASE = 0x08
 
 _CALL_NEAR = bytes([0xE8, 0, 0, 0, 0])
 _NO_PRESENT_ARGUMENTS = (push(0), push(0), push(0), push(0))
@@ -33,6 +38,19 @@ _TEST_EAX = bytes([0x85, 0xC0])
 _STORE_ECX_AT_ESP = bytes([0x89, 0x0C, 0x24])           # mov [esp], ecx
 _ADD_ESP_4 = bytes([0x83, 0xC4, 0x04])
 _RET = bytes([0xC3])
+_PADDING = bytes([0xCC]) * 16
+# More code than the walk back trusts a decoding across, so decodings from before it fall into step
+_REAL_CODE = bytes([
+    0x8B, 0x45, 0x08,               # mov eax, [ebp+8]
+    0x85, 0xC0,                     # test eax, eax
+    0x56,                           # push esi
+    0x8B, 0xF1,                     # mov esi, ecx
+    0x33, 0xD2,                     # xor edx, edx
+    0x89, 0x55, 0xF8,               # mov [ebp-8], edx
+    0x83, 0xC0, 0x04,               # add eax, 4
+    0x5E,                           # pop esi
+    0x90,                           # nop
+]) * 4
 
 
 def _store(disp: int, value: int) -> bytes:
@@ -46,8 +64,12 @@ def _jump_if_equal_over(*chunks: bytes) -> bytes:
     return bytes([0x74, len(skipped)]) + skipped
 
 
+def _immediates_at(code: Code, site_va: int, method: str) -> dict:
+    return calls.immediates(calls.method_args(code.data, TEXT_VA, site_va, method))
+
+
 def _immediates(code: Code, label: str, method: str) -> dict:
-    return calls.method_immediates(code.data, TEXT_VA, code.calls[label], method)
+    return _immediates_at(code, code.calls[label], method)
 
 
 class TestArgumentsByName:
@@ -219,7 +241,7 @@ class TestWhereTheWalkStops:
         after_load = chunks[chunks.index(self._LOAD_METHOD):]
         load_va = code.calls["pointer_join"] - sum(len(chunk) for chunk in after_load)
 
-        assert calls.method_immediates(code.data, TEXT_VA, load_va, "SetRenderState") == {
+        assert _immediates_at(code, load_va, "SetRenderState") == {
             "this": None, "State": None, "Value": None}
 
 
@@ -229,14 +251,14 @@ class TestSitesThatAreNotCalls:
         code = Code().add("indirect", load_method, push(4), PUSH_ESI, push(8), PUSH_ECX, _CALL_EAX)
         mov_va = code.calls["indirect"] - len(push(4) + PUSH_ESI + push(8) + PUSH_ECX) - len(load_method)
 
-        assert calls.method_immediates(code.data, TEXT_VA, mov_va, "SetVertexShaderConstantF") == {
+        assert _immediates_at(code, mov_va, "SetVertexShaderConstantF") == {
             "this": None, "StartRegister": 8, "pConstantData": None, "Vector4fCount": 4}
 
     def test_field_read_at_a_method_offset_has_no_arguments(self):
         read_field = bytes([0x8B, 0x86]) + (SET_VS_CONSTANT_F).to_bytes(4, "little")   # mov eax, [esi+0x178]
         code = Code().add("field", push(16), push(32), _CALL_NEAR, read_field)
 
-        assert calls.method_immediates(code.data, TEXT_VA, code.calls["field"], "SetVertexShaderConstantF") == {
+        assert _immediates_at(code, code.calls["field"], "SetVertexShaderConstantF") == {
             "this": None, "StartRegister": None, "pConstantData": None, "Vector4fCount": None}
 
     def test_call_bytes_inside_another_instruction_have_no_arguments(self):
@@ -245,8 +267,107 @@ class TestSitesThatAreNotCalls:
         code = Code().add("embedded", push(4), push(8), mov_with_call_bytes)
         inside = code.calls["embedded"] + 1
 
-        assert calls.method_immediates(code.data, TEXT_VA, inside, "SetVertexShaderConstantF") == {
+        assert _immediates_at(code, inside, "SetVertexShaderConstantF") == {
             "this": None, "StartRegister": None, "pConstantData": None, "Vector4fCount": None}
+
+    @pytest.mark.parametrize("vtable_offset, instruction", [
+        (PRESENT, bytes([0xB8, 0x51, 0xFF, 0x52, 0x44])),                  # mov eax, 0x4452FF51
+        (QUERY_INTERFACE, bytes([0xE8, 0x50, 0xFF, 0x10, 0x00])),          # call rel32
+        (RELEASE, bytes([0xC7, 0x45, 0xFC, 0x56, 0xFF, 0x50, 0x08])),      # mov dword ptr [ebp-4], 0x0850FF56
+    ])
+    def test_call_bytes_inside_an_instruction_that_real_code_leads_to_are_not_found(self, vtable_offset, instruction):
+        code = Code().add("embedded", _REAL_CODE, instruction)
+
+        assert calls.scan_vtable_calls(code.data, TEXT_VA, vtable_offset) == []
+
+    def test_call_in_a_function_that_follows_data_no_decoding_gets_through_is_found(self):
+        jump_table = bytes([0xFF]) * 80                                    # FF FF is no instruction
+        code = Code()
+        code.add_data("table", jump_table)
+        code.add("query_interface", load_device(), push(0), push(0), PUSH_ECX, bytes([0xFF, 0x12]))   # call [edx]
+
+        assert calls.scan_vtable_calls(code.data, TEXT_VA, QUERY_INTERFACE) == [
+            (code.calls["query_interface"], "edx")]
+
+    def test_call_right_after_the_start_of_the_section_is_found(self):
+        code_data = load_device() + b"".join(_NO_PRESENT_ARGUMENTS) + PUSH_ECX + call_method(PRESENT, short=True)
+        call_va = TEXT_VA + len(code_data) - 3
+
+        assert calls.scan_vtable_calls(code_data, TEXT_VA, PRESENT) == [(call_va, "edx")]
+
+
+class TestCallsShortlyAfterData:
+    """A function that starts right after data: the data decodes into instructions that run into it."""
+
+    _CALL_THROUGH = {"eax": 0x90, "ecx": 0x91, "edx": 0x92}                # ModRM of call [reg+disp32]
+    # (object and vtable loads ending in the push of `this`, register the vtable is in)
+    _OPENINGS = [
+        (bytes([0xA1]) + struct.pack("<I", DEVICE_GLOBAL) + bytes([0x8B, 0x08, 0x50]), "ecx"),
+        (load_device() + PUSH_ECX, "edx"),
+        (bytes([0x8B, 0x41, 0x04, 0x8B, 0x10, 0x50]), "edx"),              # mov eax, [ecx+4] / mov edx, [eax]
+        (bytes([0x8B, 0x44, 0x24, 0x04, 0x8B, 0x08, 0x50]), "ecx"),        # mov eax, [esp+4] / mov ecx, [eax]
+        (bytes([0x56, 0x8B, 0x71, 0x08, 0x8B, 0x06, 0x56]), "eax"),        # push esi / mov esi, [ecx+8] / ...
+        (bytes([0x8B, 0x01, 0x51]), "eax"),                                # mov eax, [ecx] / push ecx
+        (bytes([0x8B, 0x11, 0x51]), "edx"),                                # mov edx, [ecx] / push ecx
+        (bytes([0x55, 0x8B, 0xEC, 0x8B, 0x45, 0x08, 0x8B, 0x08, 0x50]), "ecx"),
+        (bytes([0x53, 0x8B, 0x5C, 0x24, 0x08, 0x8B, 0x03, 0x53]), "eax"),  # push ebx / mov ebx, [esp+8] / ...
+    ]
+
+    @classmethod
+    def _begin_scene(cls, opening: bytes, vtable_reg: str) -> bytes:
+        return opening + bytes([0xFF, cls._CALL_THROUGH[vtable_reg]]) + struct.pack("<I", BEGIN_SCENE)
+
+    @staticmethod
+    def _called_functions(preludes_and_bodies: list[tuple[bytes, bytes]]) -> tuple[bytes, list[int]]:
+        """Ordinary code that calls each body directly, then each prelude with its body right after it.
+
+        Returns:
+            (section bytes, offset of each body).
+        """
+        callers_at = len(_PADDING + _REAL_CODE)
+        after_callers = callers_at + len(_CALL_NEAR) * len(preludes_and_bodies) + len(_RET) + len(_PADDING)
+        bodies_at, laid_out = [], b""
+        for prelude, body in preludes_and_bodies:
+            bodies_at.append(after_callers + len(laid_out) + len(prelude))
+            laid_out += prelude + body + _RET
+        callers = b"".join(
+            bytes([0xE8]) + struct.pack("<i", body_at - (callers_at + len(_CALL_NEAR) * (index + 1)))
+            for index, body_at in enumerate(bodies_at))
+        return _PADDING + _REAL_CODE + callers + _RET + _PADDING + laid_out + _PADDING, bodies_at
+
+    def test_call_in_a_directly_called_function_that_follows_a_jump_table_is_found(self):
+        random = Random(1998)
+        functions, call_offsets = [], []
+        for _table in range(300):
+            jump_table = b"".join(struct.pack("<I", TEXT_VA + random.randrange(0x20000))
+                                  for _entry in range(random.randrange(2, 12)))
+            for opening, vtable_reg in self._OPENINGS:
+                functions.append((jump_table, self._begin_scene(opening, vtable_reg)))
+                call_offsets.append(len(opening))
+        data, bodies_at = self._called_functions(functions)
+        expected = {TEXT_VA + body_at + call_offset for body_at, call_offset in zip(bodies_at, call_offsets)}
+
+        found = {va for va, _reg in calls.scan_vtable_calls(data, TEXT_VA, BEGIN_SCENE)}
+
+        assert found == expected
+
+    @pytest.mark.parametrize("blob, padding", [
+        (b"SetRenderState failed\0\0", 1), (struct.pack("<5H", 1, 2, 3, 4, 5), 1), (struct.pack("<5H", 1, 2, 3, 4, 5), 2),
+    ], ids=["text", "words", "words_two_bytes"])
+    def test_call_in_an_aligned_function_a_few_padding_bytes_after_data_is_found(self, blob, padding):
+        opening, vtable_reg = self._OPENINGS[0]
+        before = _REAL_CODE + _RET + blob + bytes([0xCC]) * padding
+        data = bytes([0xCC]) * (-len(before) % 16) + before + self._begin_scene(opening, vtable_reg) + _RET
+        call_va = TEXT_VA + len(data) - len(_RET) - 6
+
+        assert calls.scan_vtable_calls(data, TEXT_VA, BEGIN_SCENE) == [(call_va, vtable_reg)]
+
+    def test_call_bytes_after_a_padding_byte_in_an_immediate_off_the_function_alignment_are_not_found(self):
+        push_with_call_bytes = bytes([0x68, 0xCC, 0x56, 0xFF, 0x50])       # push 0x50FF56CC, then 08 ...
+        before = _REAL_CODE + push_with_call_bytes[:2]
+        data = bytes([0xCC]) * (-len(before) % 16 + 1) + before + push_with_call_bytes[2:] + bytes([RELEASE, 0x00])
+
+        assert calls.scan_vtable_calls(data, TEXT_VA, RELEASE) == []
 
 
 class TestCallScan:
@@ -257,6 +378,21 @@ class TestCallScan:
         found = calls.scan_vtable_calls(code.data, TEXT_VA, PRESENT)
 
         assert found == [(code.calls["short"], "edx"), (code.calls["long"], "edx")]
+
+    def test_region_limits_the_sites_and_the_hits_that_are_checked(self, monkeypatch):
+        code = Code()
+        for label in ("before", "inside", "after"):
+            code.add(label, push(1), push(22), PUSH_ECX, call_method(SET_RENDER_STATE))
+        checked = []
+        is_com_method_call = calls._is_com_method_call
+        monkeypatch.setattr(calls, "_is_com_method_call", lambda text_data, text_va, site_va, param_count: (
+            checked.append(site_va) or is_com_method_call(text_data, text_va, site_va, param_count)))
+        inside = code.calls["inside"]
+
+        found = calls.scan_all_patterns(code.data, TEXT_VA, SET_RENDER_STATE, region=(inside, inside + 1))
+
+        assert found == [(inside, "call [edx+0x0E4]")]
+        assert checked == [inside]
 
     def test_finds_a_call_through_ebp(self):
         through_ebp = bytes([0xFF, 0x95]) + (SET_RENDER_STATE).to_bytes(4, "little")   # call [ebp+0xE4]
@@ -304,7 +440,7 @@ class TestMethodPointerLoadScan:
                           push32(128), push32(256), load_short, PUSH_ECX, _CALL_EAX)
         [(load_va, _)] = calls.scan_vtable_mov(code.data, TEXT_VA, CREATE_TEXTURE)
 
-        pushed = calls.method_immediates(code.data, TEXT_VA, load_va, "CreateTexture")
+        pushed = _immediates_at(code, load_va, "CreateTexture")
 
         assert (pushed["Width"], pushed["Height"], pushed["Format"]) == (256, 128, 21)
 
@@ -323,7 +459,7 @@ class TestMethodPointerLoadScan:
                           push(2), push(7), push(0), PUSH_EAX, call_edx)
         [(load_va, _)] = calls.scan_vtable_mov(code.data, TEXT_VA, set_sampler_state)
 
-        assert calls.method_immediates(code.data, TEXT_VA, load_va, "SetSamplerState") == {
+        assert _immediates_at(code, load_va, "SetSamplerState") == {
             "this": None, "Sampler": 0, "Type": 7, "Value": 2}
 
     def test_a_call_between_load_and_call_is_passed_when_the_method_sits_in_a_saved_register(self):
@@ -334,7 +470,7 @@ class TestMethodPointerLoadScan:
                           push(2), push(0), push(4), PUSH_ESI, call_edi)
         [(load_va, _)] = calls.scan_vtable_mov(code.data, TEXT_VA, draw_primitive)
 
-        assert calls.method_immediates(code.data, TEXT_VA, load_va, "DrawPrimitive") == {
+        assert _immediates_at(code, load_va, "DrawPrimitive") == {
             "this": None, "PrimitiveType": 4, "StartVertex": 0, "PrimitiveCount": 2}
 
     _LOAD_INTO_ESI = bytes([0x8B, 0xB1]) + SET_RENDER_STATE.to_bytes(4, "little")    # mov esi, [ecx+0xE4]
@@ -355,10 +491,29 @@ class TestMethodPointerLoadScan:
         sites = calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE)
 
         assert [va for va, _ in sites] == [load_va, second_call_va]
-        assert calls.method_immediates(code.data, TEXT_VA, load_va, "SetRenderState") == {
+        assert _immediates_at(code, load_va, "SetRenderState") == {
             "this": None, "State": 22, "Value": 1}
-        assert calls.method_immediates(code.data, TEXT_VA, second_call_va, "SetRenderState") == {
+        assert _immediates_at(code, second_call_va, "SetRenderState") == {
             "this": None, "State": 7, "Value": 0}
+
+    def test_region_holding_only_a_later_call_reports_it(self):
+        apart = bytes([0x90]) * 40
+        third_group = (push(1), push(7), PUSH_EAX, self._CALL_ESI)
+        code = Code().add("hoisted", self._LOAD_INTO_ESI, *self._FIRST_GROUP, apart, *self._SECOND_GROUP, apart,
+                          *third_group)
+        third_call_va = code.calls["hoisted"]
+        load_va = TEXT_VA + code.data.index(self._LOAD_INTO_ESI)
+
+        sites = calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE, region=(third_call_va, third_call_va + 1))
+
+        assert sites == [(third_call_va, f"call esi (mov esi, [ecx+0x0E4] at 0x{load_va:08X})")]
+
+    def test_region_holding_only_the_load_reports_no_later_call(self):
+        code, load_va, _second_call_va = self._hoisted()
+
+        sites = calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE, region=(load_va, load_va + 1))
+
+        assert sites == [(load_va, "mov esi, [ecx+0x0E4]")]
 
     def test_a_later_call_names_the_load_it_calls_through(self):
         code, load_va, _ = self._hoisted()
@@ -557,6 +712,25 @@ class TestComThis:
 
         assert _found_calls(code, SET_RENDER_STATE) == [code.calls["cleanup"]]
 
+    @pytest.mark.parametrize("ecx_write", [
+        bytes([0x8D, 0x49, 0x00]),                              # lea ecx, [ecx+0]: three bytes of padding
+        bytes([0x8B, 0xC9]),                                    # mov ecx, ecx: two bytes of padding
+        bytes([0xB1, 0x01]),                                    # mov cl, 1
+    ], ids=["lea_padding", "mov_padding", "low_byte"])
+    def test_write_that_gives_ecx_no_new_value_is_not_a_register_argument(self, ecx_write):
+        code = Code().add("com", push(1), _CALL_NEAR, ecx_write, PUSH_EAX, call_method(SET_RENDER_STATE))
+
+        assert _found_calls(code, SET_RENDER_STATE) == [code.calls["com"]]
+
+    @pytest.mark.parametrize("ecx_load", [
+        bytes([0x8B, 0x49, 0x04]),                              # mov ecx, [ecx+4]
+        bytes([0x8D, 0x49, 0x08]),                              # lea ecx, [ecx+8]
+    ], ids=["member_object", "base_subobject"])
+    def test_ecx_loaded_from_what_ecx_led_to_is_a_register_argument(self, ecx_load):
+        code = Code().add("thiscall", push(1), _CALL_NEAR, ecx_load, PUSH_EAX, call_method(SET_RENDER_STATE))
+
+        assert _found_calls(code, SET_RENDER_STATE) == []
+
     def test_method_pointer_loaded_into_ecx_is_read_by_the_call(self):
         # mov ecx, [edx+0xE4] / push 1 / push 22 / push eax / call ecx
         load_into_ecx = bytes([0x8B, 0x8A]) + SET_RENDER_STATE.to_bytes(4, "little")
@@ -610,6 +784,11 @@ class TestArgumentCount:
                 .add("full", *_NO_PRESENT_ARGUMENTS, PUSH_ECX, call_method(PRESENT)))
 
         assert _found_calls(code, PRESENT) == [code.calls["full"]]
+
+    def test_too_few_pushes_since_a_return_is_dropped(self):
+        code = Code().add("short", push(1), _RET, push(22), PUSH_ECX, call_method(SET_RENDER_STATE))
+
+        assert _found_calls(code, SET_RENDER_STATE) == []
 
     def test_arguments_pushed_before_an_inner_call_are_not_missing(self):
         # dev = GetDevice() after its arguments are pushed: push 1 / push 22 / call GetDevice / push eax

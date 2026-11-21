@@ -18,7 +18,9 @@ from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section, print_header
-from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
+from dx9_calls import (
+    scan_vtable_calls, scan_vtable_mov, method_args, immediates, print_undecoded_calls,
+)
 from dx9_enums import D3DTSS, D3DSAMP, decode_tss_value, decode_samp_value
 
 METHODS = {
@@ -49,9 +51,13 @@ def main():
 
     stage_counts = defaultdict(int)
     all_tex = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
+    undecoded = []
     for va, reg in all_tex:
-        stage = method_immediates(text_data, text_va, va, "SetTexture")["Stage"]
-        if stage is not None and stage <= 16:
+        call_args = method_args(text_data, text_va, va, "SetTexture")
+        stage = immediates(call_args)["Stage"]
+        if stage is None:
+            undecoded.append((va, call_args))
+        elif stage <= 16:
             stage_counts[stage] += 1
             if args.all:
                 print(f"    0x{va:08X}: stage={stage}")
@@ -62,6 +68,7 @@ def main():
             print(f"    Stage {stage}: {stage_counts[stage]} call sites")
     else:
         print(f"  (no stage arguments decoded -- likely register-loaded)")
+    print_undecoded_calls("SetTexture", undecoded, args.all)
 
     # -- SetTextureStageState --
     offset = 0x10C
@@ -73,10 +80,14 @@ def main():
     tss_data = defaultdict(lambda: defaultdict(list))  # stage -> type -> [values]
     all_tss = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
 
+    undecoded = []
     for va, reg in all_tss:
-        pushed = method_immediates(text_data, text_va, va, "SetTextureStageState")
+        call_args = method_args(text_data, text_va, va, "SetTextureStageState")
+        pushed = immediates(call_args)
         stage, tss_type, value = pushed["Stage"], pushed["Type"], pushed["Value"]
-        if None not in (stage, tss_type, value) and stage <= 7 and tss_type in D3DTSS:
+        if None in (stage, tss_type, value):
+            undecoded.append((va, call_args))
+        elif stage <= 7 and tss_type in D3DTSS:
             tss_data[stage][tss_type].append(value)
 
     if tss_data:
@@ -96,6 +107,7 @@ def main():
                 print(f"    {type_name:30s} = {', '.join(decoded)}")
     else:
         print(f"  (no TSS arguments decoded -- likely register-loaded or via D3DX)")
+    print_undecoded_calls("SetTextureStageState", undecoded, args.all)
 
     # -- SetSamplerState --
     offset = 0x114
@@ -107,10 +119,14 @@ def main():
     samp_data = defaultdict(lambda: defaultdict(list))  # sampler -> type -> [values]
     all_samp = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
 
+    undecoded = []
     for va, reg in all_samp:
-        pushed = method_immediates(text_data, text_va, va, "SetSamplerState")
+        call_args = method_args(text_data, text_va, va, "SetSamplerState")
+        pushed = immediates(call_args)
         sampler, samp_type, value = pushed["Sampler"], pushed["Type"], pushed["Value"]
-        if None not in (sampler, samp_type, value) and sampler <= 16 and samp_type in D3DSAMP:
+        if None in (sampler, samp_type, value):
+            undecoded.append((va, call_args))
+        elif sampler <= 16 and samp_type in D3DSAMP:
             samp_data[sampler][samp_type].append(value)
 
     if samp_data:
@@ -130,6 +146,7 @@ def main():
                 print(f"    {type_name:20s} = {', '.join(decoded)}")
     else:
         print(f"  (no sampler arguments decoded -- likely register-loaded)")
+    print_undecoded_calls("SetSamplerState", undecoded, args.all)
 
     # -- Overall summary --
     total_sites = sum(

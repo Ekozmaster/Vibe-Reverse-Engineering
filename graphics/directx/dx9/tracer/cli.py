@@ -29,10 +29,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import sys
 import time
+from enum import Enum, auto
+from functools import partial
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 
 def cmd_codegen(args: argparse.Namespace) -> None:
@@ -52,17 +55,19 @@ def cmd_codegen(args: argparse.Namespace) -> None:
         sys.stdout.write(code)
 
 
+# How long the capture may go without reporting anything new
 _WAIT_TIMEOUT_SECONDS = 120.0
 _POLL_SECONDS = 0.3
-# A tracer writes its first progress line as it takes the trigger
-_PROGRESS_GRACE_SECONDS = 2.0
+# The tracers clamp the frame count of a trigger file to the same limit
+MAX_CAPTURE_FRAMES = 100000
 
 
 class _Progress(NamedTuple):
-    """The one line of the tracer's progress file.
+    """A progress line the tracer wrote about one capture.
 
-    "<frame> <calls>" while capturing, then " done" on the last write; or
-    "0 0 failed <reason>" from a tracer that could not start the capture.
+    "<frame> <calls> <id>" while capturing, then " done" on the last write; or
+    "0 0 <id> failed <reason>" from a tracer that could not start the capture.
+    <id> is the id in the trigger file that started the capture.
 
     Attributes:
         frame: Frames the capture has finished.
@@ -76,21 +81,31 @@ class _Progress(NamedTuple):
     failure: str | None = None
 
 
-def _read_progress(path: Path) -> _Progress | None:
-    """The tracer's progress; None while there is no whole line to read.
+class _NoProgress(Enum):
+    """Why the progress file says nothing about a capture."""
+    # The tracer rewrites the file in place, so a line without its newline is one it is still writing
+    BEING_WRITTEN = auto()
+    # No file, or a whole line about another capture
+    NOT_REPORTED = auto()
 
-    The tracer rewrites the file in place, so a line without its newline is
-    one it is still writing.
-    """
+
+def _read_progress(path: Path, capture_id: str) -> _Progress | _NoProgress:
+    """What the progress file says about the capture started by the trigger carrying *capture_id*."""
     try:
         # A failure names a path, in the ANSI code page of the game's machine
         line = path.read_text(errors="replace")
-        if not line.endswith("\n"):
-            return None
-        frame, calls, *outcome = line.split(maxsplit=3)
-        progress = _Progress(int(frame), int(calls))
-    except (OSError, ValueError):
-        return None
+    except FileNotFoundError:
+        return _NoProgress.NOT_REPORTED
+    if not line.endswith("\n"):
+        return _NoProgress.BEING_WRITTEN
+    fields = line.split(maxsplit=4)
+    if len(fields) < 3 or fields[2] != capture_id:
+        return _NoProgress.NOT_REPORTED
+    try:
+        progress = _Progress(int(fields[0]), int(fields[1]))
+    except ValueError:
+        return _NoProgress.NOT_REPORTED
+    outcome = fields[3:]
     if outcome[:1] == ["failed"]:
         return progress._replace(failure=" ".join(outcome[1:]).strip() or "no reason given")
     return progress._replace(done=outcome == ["done"])
@@ -100,44 +115,53 @@ def _frames_short(progress: _Progress, frames: int) -> str:
     return f"the capture stopped at frame {progress.frame} of {frames}"
 
 
-def _wait_for_capture(trigger_path: Path, progress_path: Path, frames: int) -> str | None:
-    """Follow a capture until the tracer reports it written in full.
+def _taken_without_report(trigger_path: Path, progress_path: Path) -> str:
+    return (f"a tracer took the trigger but reported no progress for it. Either it could not write "
+            f"{progress_path} (dxtrace_proxy.log, or the remix-comp-proxy log, says so), or it predates "
+            f"progress reports that name their trigger: then copy the current "
+            f"graphics/directx/dx9/tracer/bin/d3d9.dll, or a current remix-comp-proxy build, "
+            f"to {trigger_path.parent}")
+
+
+def _wait_for_capture(trigger_path: Path, progress_path: Path, frames: int, capture_id: str) -> str | None:
+    """Follow the capture started by the trigger carrying *capture_id* until the tracer reports it written in full.
 
     Returns:
         None once the tracer reports the capture done at frame *frames* or
         later; otherwise the reason the capture was not seen to finish.
     """
-    start = time.time()
-    taken_at = None
+    start = last_change = time.monotonic()
     progress = None
-    while time.time() - start < _WAIT_TIMEOUT_SECONDS:
+    while time.monotonic() - last_change < _WAIT_TIMEOUT_SECONDS:
         time.sleep(_POLL_SECONDS)
-        seen = _read_progress(progress_path)
-        if seen is not None and seen.failure is not None:
+        # The tracer writes its first progress line before it takes the trigger: a progress
+        # file read after the trigger is seen gone holds that line or a later one
+        taken = not trigger_path.exists()
+        seen = _read_progress(progress_path, capture_id)
+        if seen is _NoProgress.NOT_REPORTED and taken and progress is None:
+            return _taken_without_report(trigger_path, progress_path)
+        if not isinstance(seen, _Progress):
+            continue
+        if seen.failure is not None:
             return f"the tracer could not start the capture: {seen.failure}"
-        if seen is not None and seen != progress:
+        if seen != progress:
             progress = seen
-            print(f"\r  [frame {seen.frame}] {seen.calls} calls captured ({time.time() - start:.1f}s)  ",
+            last_change = time.monotonic()
+            print(f"\r  [frame {seen.frame}] {seen.calls} calls captured ({last_change - start:.1f}s)  ",
                   end="", flush=True)
-        if progress is not None and progress.done:
+        if progress.done:
             return None if progress.frame >= frames else _frames_short(progress, frames)
-        if taken_at is None and not trigger_path.exists():
-            taken_at = time.time()
-        if taken_at is not None and progress is None and time.time() - taken_at > _PROGRESS_GRACE_SECONDS:
-            return (f"a tracer took the trigger but reported no progress. Either it could not write "
-                    f"{progress_path} or start the capture (dxtrace_proxy.log, or the remix-comp-proxy log, "
-                    f"says which), or it predates progress reports: then copy the current "
-                    f"graphics/directx/dx9/tracer/bin/d3d9.dll, or a current remix-comp-proxy build, "
-                    f"to {trigger_path.parent}")
 
-    if progress is None:
+    if progress is None and trigger_path.exists():
         return (f"no tracer took the trigger within {_WAIT_TIMEOUT_SECONDS:.0f}s. Is the game running, "
-                f"with the tracer's d3d9.dll in {trigger_path.parent}?")
+                f"with the tracer's d3d9.dll in {trigger_path.parent}, and not still writing an earlier capture?")
+    if progress is None:
+        return _taken_without_report(trigger_path, progress_path)
     if progress.frame >= frames:
         return (f"the tracer reached frame {progress.frame} but never reported the capture file written in full. "
                 f"Most likely it predates that report: copy the current graphics/directx/dx9/tracer/bin/d3d9.dll, "
                 f"or a current remix-comp-proxy build, to {trigger_path.parent}")
-    return _frames_short(progress, frames)
+    return f"{_frames_short(progress, frames)} and reported nothing new for {_WAIT_TIMEOUT_SECONDS:.0f}s"
 
 
 def _modified_at(path: Path) -> int | None:
@@ -147,50 +171,82 @@ def _modified_at(path: Path) -> int | None:
         return None
 
 
-def _write_trigger(trigger_path: Path, frames: int) -> None:
-    """Write the trigger file whole, so a tracer polling for it never reads it empty."""
+def _when_released(operation: Callable[[], None]) -> None:
+    """Run a file *operation*, again at each poll for as long as another process holds the file open.
+
+    A tracer reading the trigger file holds it without sharing deletion, which
+    Windows reports to a rename or a removal as a permission error.
+
+    Raises:
+        PermissionError: The file was still held after _WAIT_TIMEOUT_SECONDS.
+    """
+    deadline = time.monotonic() + _WAIT_TIMEOUT_SECONDS
+    while True:
+        try:
+            return operation()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+        time.sleep(_POLL_SECONDS)
+
+
+def _place_trigger(trigger_path: Path, frames: int, capture_id: str, wait_for_release: bool) -> None:
+    """Put the trigger file in place whole, so a tracer polling for it never reads it empty.
+
+    Args:
+        wait_for_release: Wait for a tracer that holds an earlier trigger file open to let go of it.
+
+    Raises:
+        PermissionError: The folder cannot be written, or an earlier trigger file is held open.
+    """
     staging = trigger_path.with_suffix(".tmp")
-    staging.write_text(f"frames={frames}\n")
-    os.replace(staging, trigger_path)
+    try:
+        staging.write_text(f"frames={frames}\nid={capture_id}\n")
+        replace = partial(os.replace, staging, trigger_path)
+        if wait_for_release:
+            _when_released(replace)
+        else:
+            replace()
+    finally:
+        staging.unlink(missing_ok=True)
 
 
-def cmd_trigger(args: argparse.Namespace) -> None:
-    game_dir = Path(args.game_dir) if args.game_dir else Path(".")
+def _take_back_trigger(trigger_path: Path) -> bool:
+    """Remove the trigger file, unless a tracer has taken it.
+
+    Returns:
+        Whether the file was there to remove.
+
+    Raises:
+        PermissionError: The file was still held open after _WAIT_TIMEOUT_SECONDS.
+    """
+    try:
+        _when_released(trigger_path.unlink)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _trigger_capture(game_dir: Path, frames: int, wait: bool) -> None:
     trigger_path = game_dir / "dxtrace_capture.trigger"
     progress_path = game_dir / "dxtrace_progress.txt"
     jsonl_path = game_dir / "dxtrace_frame.jsonl"
 
-    if not game_dir.is_dir():
-        print(f"[error] Directory not found: {game_dir}")
-        sys.exit(1)
-
-    delay = args.delay
-    if delay > 0:
-        for remaining in range(delay, 0, -1):
-            print(f"\r  Triggering capture in {remaining}s... (alt-tab to game now) ", end="", flush=True)
-            time.sleep(1)
-        print("\r  Triggering capture NOW                                        ")
-
-    # Progress left by an earlier capture would read as progress of this one
-    progress_path.unlink(missing_ok=True)
     earlier_capture = _modified_at(jsonl_path)
-    _write_trigger(trigger_path, args.frames)
+    capture_id = secrets.token_hex(8)
+    _place_trigger(trigger_path, frames, capture_id, wait_for_release=wait)
     print(f"  Trigger file created: {trigger_path}")
 
-    if not args.wait:
+    if not wait:
         print("  Use --wait to monitor progress, or run analyze when done.")
         return
 
     print("  Waiting for capture to complete...")
     try:
-        problem = _wait_for_capture(trigger_path, progress_path, args.frames)
+        problem = _wait_for_capture(trigger_path, progress_path, frames, capture_id)
     finally:
         # Left behind, the trigger would start a capture the next time the game runs
-        try:
-            trigger_path.unlink()
-        except FileNotFoundError:
-            pass  # the tracer took it
-        else:
+        if _take_back_trigger(trigger_path):
             print(f"\n  Trigger file removed: {trigger_path}")
     print()
 
@@ -205,6 +261,37 @@ def cmd_trigger(args: argparse.Namespace) -> None:
     size_kb = jsonl_path.stat().st_size / 1024
     print(f"  Capture complete: {jsonl_path} ({size_kb:.1f} KB)")
     print(f"  Run: python -m graphics.directx.dx9.tracer analyze \"{jsonl_path}\" --summary")
+
+
+def cmd_trigger(args: argparse.Namespace) -> None:
+    game_dir = Path(args.game_dir) if args.game_dir else Path(".")
+    if not game_dir.is_dir():
+        print(f"[error] Directory not found: {game_dir}")
+        sys.exit(1)
+
+    delay = args.delay
+    if delay > 0:
+        for remaining in range(delay, 0, -1):
+            print(f"\r  Triggering capture in {remaining}s... (alt-tab to game now) ", end="", flush=True)
+            time.sleep(1)
+        print("\r  Triggering capture NOW                                        ")
+
+    try:
+        _trigger_capture(game_dir, args.frames, args.wait)
+    except PermissionError as error:
+        print(f"\n  [error] a tracer file in {game_dir} is not accessible: {error}")
+        sys.exit(1)
+
+
+def _capture_frames(text: str) -> int:
+    """The --frames value: a count the tracers capture as asked."""
+    try:
+        frames = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if not 1 <= frames <= MAX_CAPTURE_FRAMES:
+        raise argparse.ArgumentTypeError(f"must be between 1 and {MAX_CAPTURE_FRAMES}")
+    return frames
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
@@ -229,7 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
     # trigger
     tr = sub.add_parser("trigger", help="Signal trace proxy to capture frames")
     tr.add_argument("--game-dir", "-d", default=None, help="Target directory (default: cwd)")
-    tr.add_argument("--frames", "-n", type=int, default=2, help="Number of frames to capture")
+    tr.add_argument("--frames", "-n", type=_capture_frames, default=2,
+                    help=f"Number of frames to capture, 1 to {MAX_CAPTURE_FRAMES}")
     tr.add_argument("--delay", type=int, default=3, help="Countdown seconds before trigger")
     tr.add_argument("--wait", "-w", action="store_true",
                     help="Follow the capture until the tracer reports it written in full; "

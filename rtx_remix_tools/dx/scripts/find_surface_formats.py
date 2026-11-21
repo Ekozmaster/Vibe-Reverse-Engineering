@@ -21,7 +21,7 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section, print_header
 from dx9_calls import (
-    scan_vtable_calls, scan_vtable_mov, method_immediates, split_device_hits,
+    scan_vtable_calls, scan_vtable_mov, method_args, immediates, print_undecoded_calls, split_device_hits,
     device_origin_summary,
 )
 from dx9_enums import decode_format, D3DPOOL
@@ -84,11 +84,15 @@ def main():
                 for va in unconfirmed:
                     print(f"    0x{va:08X}")
 
+        undecoded = []
         for va, _ in direct.confirmed + indirect.confirmed:
-            pushed = method_immediates(text_data, text_va, va, name)
+            call_args = method_args(text_data, text_va, va, name)
+            pushed = immediates(call_args)
             fmt, size, pool = pushed["Format"], size_text(pushed), pushed.get("Pool")
 
-            if fmt is not None:
+            if fmt is None:
+                undecoded.append((va, call_args))
+            else:
                 all_formats[fmt] += 1
                 if offset == 0x70:
                     rt_formats[fmt] += 1
@@ -106,6 +110,7 @@ def main():
                 if pool is not None:
                     parts.append(f"pool={D3DPOOL.get(pool, str(pool))}")
                 print(f"    {' '.join(parts)}")
+        print_undecoded_calls(name, undecoded, args.all)
 
     # -- Format Summary --
     print(f"\n\n{'='*60}")

@@ -17,14 +17,13 @@ Usage:
 """
 import argparse
 import sys
-import struct
+from bisect import bisect_left
 from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_pe import load_binary, load_text_section, print_header, va_to_offset
-from dx9_calls import scan_vtable_calls, scan_vtable_mov
-from dx9_enums import D3D9_DEVICE_VTABLE
+from dx9_pe import load_binary, load_text_section, print_header
+from dx9_calls import scan_all_patterns, scan_vtable_calls, scan_vtable_mov
 
 # Draw methods to classify
 DRAW_METHODS = {
@@ -60,46 +59,21 @@ FFP_INDICATORS = {"Transform", "Material", "Light", "LightEnable", "SetFVF"}
 SHADER_INDICATORS = {"VS", "PS", "VSConstF", "PSConstF", "VSConstI"}
 
 
-def scan_context_window(data, sections, image_base, call_va, window_size,
-                         state_offsets):
-    """Scan bytes before call_va for vtable call patterns.
+def state_call_sites(text_data, text_va, state_offsets):
+    """Where each state method is called.
 
-    Returns set of state tags found in the window.
+    Returns:
+        {tag: [va, ...]} in address order, a load of the method pointer
+        that the code then calls through counted at the load.
     """
-    file_off = va_to_offset(sections, image_base, call_va)
-    if file_off is None:
-        return set()
+    return {tag: [va for va, _ in scan_all_patterns(text_data, text_va, vtable_off)]
+            for vtable_off, tag in state_offsets.items()}
 
-    start = max(0, file_off - window_size)
-    window = data[start:file_off]
 
-    found_tags = set()
-
-    for vtable_off, tag in state_offsets.items():
-        offset_bytes = struct.pack('<I', vtable_off)
-
-        # call [reg+disp32]: FF 9x OFFSET
-        for modrm in (0x90, 0x91, 0x92, 0x93, 0x96, 0x97):
-            pattern = bytes([0xFF, modrm]) + offset_bytes
-            if window.find(pattern) != -1:
-                found_tags.add(tag)
-                break
-
-        if tag in found_tags:
-            continue
-
-        # mov reg,[reg+disp32]: 8B xx OFFSET (mod=10)
-        for src in (0, 1, 2, 3, 5, 6, 7):
-            for dst in (0, 1, 2, 3, 5, 6, 7):
-                modrm = 0x80 | (dst << 3) | src
-                pattern = bytes([0x8B, modrm]) + offset_bytes
-                if window.find(pattern) != -1:
-                    found_tags.add(tag)
-                    break
-            if tag in found_tags:
-                break
-
-    return found_tags
+def context_tags(state_sites, call_va, window_size):
+    """Tags of the state methods called in the *window_size* bytes before *call_va*."""
+    return {tag for tag, vas in state_sites.items()
+            if bisect_left(vas, call_va - window_size) < bisect_left(vas, call_va)}
 
 
 def classify_profile(tags):
@@ -169,9 +143,9 @@ def main():
     category_counts = defaultdict(int)
     profile_groups = defaultdict(list)  # frozenset(tags) -> [(va, method)]
 
+    state_sites = state_call_sites(text_data, text_va, STATE_TAGS)
     for va, method in all_draws:
-        tags = scan_context_window(data, sections, image_base, va,
-                                    args.window, STATE_TAGS)
+        tags = context_tags(state_sites, va, args.window)
         category = classify_profile(tags)
         profiles.append((va, method, tags, category))
         category_counts[category] += 1

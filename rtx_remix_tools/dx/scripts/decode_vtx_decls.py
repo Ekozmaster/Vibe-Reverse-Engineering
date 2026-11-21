@@ -19,7 +19,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, find_text_section, va_to_offset
-from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
+from dx9_calls import (
+    scan_vtable_calls, scan_vtable_mov, method_args, immediates, print_undecoded_calls,
+)
+from dx9_enums import is_vertex_element
 
 D3DDECLTYPE = {
     0: "FLOAT1", 1: "FLOAT2", 2: "FLOAT3", 3: "FLOAT4",
@@ -105,7 +108,7 @@ def decode_decl(data, sections, image_base, va):
         print("  ** Has blend weight/indices — SKINNED mesh **")
 
 
-def scan_for_decls(data, sections, image_base):
+def scan_for_decls(data, sections, image_base, show_all):
     """Auto-discover vertex declarations by finding CreateVertexDeclaration calls."""
     found = set()
 
@@ -123,19 +126,17 @@ def scan_for_decls(data, sections, image_base):
     print(f"Found {len(call_vas)} CreateVertexDeclaration call sites")
 
     # Keep the pVertexElements arguments that point at a valid D3DVERTEXELEMENT9
+    undecoded = []
     for call_va in sorted(call_vas):
-        pushed = method_immediates(text_data, text_va, call_va, "CreateVertexDeclaration")
-        addr = pushed["pVertexElements"]
-        off_check = None if addr is None else va_to_offset(sections, image_base, addr)
-        if off_check is None:
+        call_args = method_args(text_data, text_va, call_va, "CreateVertexDeclaration")
+        addr = immediates(call_args)["pVertexElements"]
+        if addr is None:
+            undecoded.append((call_va, call_args))
             continue
-        elem = data[off_check:off_check + 8]
-        if len(elem) < 8:
-            continue
-        stream, offset, typ, method, usage, usage_idx = \
-            struct.unpack_from("<HHBBBB", elem)
-        if stream <= 4 and typ <= 17 and usage <= 13:
+        off_check = va_to_offset(sections, image_base, addr)
+        if off_check is not None and is_vertex_element(data[off_check:off_check + 8]):
             found.add(addr)
+    print_undecoded_calls("CreateVertexDeclaration", undecoded, show_all)
 
     return sorted(found)
 
@@ -147,6 +148,8 @@ def main():
                    help="VA(s) of D3DVERTEXELEMENT9 array(s) (hex, e.g. 0x16EBF50)")
     p.add_argument("--scan", action="store_true",
                    help="Auto-scan for CreateVertexDeclaration call sites")
+    p.add_argument("--all", action="store_true",
+                   help="List every call site that is not decoded, not just the first 10")
     args = p.parse_args()
 
     data, image_base, sections = load_binary(args.binary)
@@ -157,7 +160,7 @@ def main():
 
     if do_scan:
         print("\nAuto-scanning for vertex declarations...")
-        found = scan_for_decls(data, sections, image_base)
+        found = scan_for_decls(data, sections, image_base, args.all)
         if found:
             print(f"Discovered {len(found)} potential vertex declaration addresses:")
             for addr in found:

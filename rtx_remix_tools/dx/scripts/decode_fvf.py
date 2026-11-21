@@ -21,7 +21,9 @@ from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section, print_header
-from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
+from dx9_calls import (
+    scan_vtable_calls, scan_vtable_mov, method_args, immediates, print_undecoded_calls,
+)
 from dx9_enums import decode_fvf, D3DFVF_POSITIONS, D3DFVF_FLAGS
 
 SETFVF_OFFSET = 0x164
@@ -63,6 +65,8 @@ def main():
     p.add_argument("binary", nargs="?", help="Path to PE binary (.exe / .dll)")
     p.add_argument("--decode", nargs="+", type=lambda x: int(x, 0), metavar="FVF",
                    help="Decode specific FVF value(s) (hex, e.g. 0x112)")
+    p.add_argument("--all", action="store_true",
+                   help="List every call site that is not decoded, not just the first 10")
     args = p.parse_args()
 
     if not args.binary and not args.decode:
@@ -103,10 +107,14 @@ def main():
     # Extract FVF values
     # SetFVF(device, FVF) — single DWORD argument
     fvf_values = defaultdict(list)  # fvf -> [call_va, ...]
+    undecoded = []
 
     for va, reg in all_sites:
-        fvf_val = method_immediates(text_data, text_va, va, "SetFVF")["FVF"]
-        if fvf_val is not None and 0 < fvf_val < 0x10000:
+        call_args = method_args(text_data, text_va, va, "SetFVF")
+        fvf_val = immediates(call_args)["FVF"]
+        if fvf_val is None:
+            undecoded.append((va, call_args))
+        elif 0 < fvf_val < 0x10000:
             fvf_values[fvf_val].append(va)
 
     # Decode each unique FVF
@@ -118,6 +126,8 @@ def main():
         if len(sites) <= 5:
             for va in sites:
                 print(f"      0x{va:08X}")
+
+    print_undecoded_calls("SetFVF", undecoded, args.all)
 
     # Summary
     print(f"\n=== FVF Summary ===")

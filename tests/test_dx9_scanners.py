@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rtx_remix_tools" / "dx" / "scripts"))
 
 from d3d9_calls import (
-    PUSH_EAX, PUSH_ECX, Code, call_method, load_device, push, push32, write_pe32, write_pe32_plus,
+    PUSH_EAX, PUSH_ECX, TEXT_VA, Code, call_method, load_device, push, push32, write_pe32, write_pe32_plus,
 )
 import dx9_calls
 from proxy_template import ini_section_in, keys_of, keys_the_proxy_reads
@@ -28,7 +28,8 @@ PRESENT, CREATE_TEXTURE, SET_TRANSFORM, SET_RENDER_STATE = 0x44, 0x5C, 0xB0, 0xE
 CREATE_RENDER_TARGET, BEGIN_SCENE = 0x70, 0xA4
 CREATE_STATE_BLOCK, SET_TEXTURE, SET_TEXTURE_STAGE_STATE, SET_SAMPLER_STATE = 0xEC, 0x104, 0x10C, 0x114
 DRAW_PRIMITIVE, CREATE_VERTEX_DECLARATION, SET_FVF, CREATE_VERTEX_SHADER = 0x144, 0x158, 0x164, 0x16C
-SET_VS_CONSTANT_F, SET_PS_CONSTANT_F = 0x178, 0x1B4
+SET_VS_CONSTANT_F, CREATE_PIXEL_SHADER, SET_PS_CONSTANT_F = 0x178, 0x1A8, 0x1B4
+CREATE_OFFSCREEN_PLAIN_SURFACE = 0x90
 
 # D3DRENDERSTATETYPE
 D3DRS_SRCBLEND, D3DRS_CULLMODE, D3DRS_ZFUNC, D3DRS_ALPHAREF = 19, 22, 23, 24
@@ -273,6 +274,221 @@ class TestOtherDecoders:
         text = report("find_shader_bytecode", known_calls[0])
 
         assert f"0x{known_calls[1].calls['vs_bytecode']:08X}" in text and "vs_3_0" in text
+
+
+@pytest.fixture(scope="module")
+def unsettled_calls(tmp_path_factory):
+    """(path of a binary whose calls each have an argument that is not a constant, Code it was built from)."""
+    code = Code()
+    device = load_device()
+    call_near = bytes([0xE8, 0, 0, 0, 0])
+    code.add("fvf_register", device, PUSH_EAX, PUSH_ECX, call_method(SET_FVF))
+    code.add("fvf_hidden", device, push32(0x112), call_near, PUSH_ECX, call_method(SET_FVF))
+    code.add("texture", device, PUSH_EAX, PUSH_EAX, PUSH_ECX, call_method(SET_TEXTURE))
+    code.add("stage_state", device, push(4), PUSH_EAX, push(2), PUSH_ECX, call_method(SET_TEXTURE_STAGE_STATE))
+    code.add("sampler", device, PUSH_EAX, push(6), push(0), PUSH_ECX, call_method(SET_SAMPLER_STATE))
+    code.add("vertex_shader", device, PUSH_EAX, PUSH_EAX, PUSH_ECX, call_method(CREATE_VERTEX_SHADER))
+    code.add("pixel_shader", device, PUSH_EAX, push32(0x6F3500), call_near, PUSH_ECX,
+             call_method(CREATE_PIXEL_SHADER))
+    code.add("declaration", device, PUSH_EAX, PUSH_EAX, PUSH_ECX, call_method(CREATE_VERTEX_DECLARATION))
+    code.add("constants", device, push(4), PUSH_EAX, PUSH_EAX, PUSH_ECX, call_method(SET_VS_CONSTANT_F))
+    code.add("state", device, push(1), PUSH_EAX, PUSH_ECX, call_method(SET_RENDER_STATE))
+    code.add("vertexblend", device, PUSH_EAX, push32(D3DRS_VERTEXBLEND), PUSH_ECX, call_method(SET_RENDER_STATE))
+    code.add("cull", device, PUSH_EAX, push(D3DRS_CULLMODE), PUSH_ECX, call_method(SET_RENDER_STATE))
+    code.add("transform", device, PUSH_EAX, PUSH_EAX, PUSH_ECX, call_method(SET_TRANSFORM))
+    code.add("surface", device, push(0), PUSH_EAX, push(3), PUSH_EAX, push32(480), push32(640), PUSH_ECX,
+             call_method(CREATE_OFFSCREEN_PLAIN_SURFACE))
+    path = write_pe32(tmp_path_factory.mktemp("dx") / "unsettled_calls.exe", code.data)
+    return path, code
+
+
+class TestCallsWhoseArgumentsAreNotConstants:
+    """A call the summaries cannot use is listed with what the code shows of its arguments."""
+
+    @pytest.mark.parametrize("script, options, label, arguments", [
+        ("decode_fvf", (), "fvf_register", "FVF=<eax>"),
+        ("decode_fvf", (), "fvf_hidden", "FVF=<unknown>"),
+        ("decode_vtx_decls", ("--scan",), "declaration", "pVertexElements=<eax>  ppDecl=<eax>"),
+        ("find_blend_states", (), "state", "State=<eax>  Value=1"),
+        ("find_blend_states", (), "vertexblend", "State=151  Value=<eax>"),
+        ("find_blend_states", (), "transform", "State=<eax>  pMatrix=<eax>"),
+        ("find_matrix_registers", (), "constants", "StartRegister=<eax>  pConstantData=<eax>  Vector4fCount=4"),
+        ("find_matrix_registers", (), "vertex_shader", "pFunction=<eax>  ppShader=<eax>"),
+        ("find_shader_bytecode", (), "vertex_shader", "pFunction=<eax>  ppShader=<eax>"),
+        ("find_shader_bytecode", (), "pixel_shader", "pFunction=<unknown>  ppShader=<unknown>"),
+        ("find_skinning", (), "declaration", "pVertexElements=<eax>  ppDecl=<eax>"),
+        ("find_skinning", (), "fvf_register", "FVF=<eax>"),
+        ("find_skinning", (), "constants", "StartRegister=<eax>  pConstantData=<eax>  Vector4fCount=4"),
+        ("find_skinning", (), "vertexblend", "State=151  Value=<eax>"),
+        ("find_skinning", (), "transform", "State=<eax>  pMatrix=<eax>"),
+        ("find_surface_formats", (), "surface",
+         "Width=640  Height=480  Format=<eax>  Pool=3  ppSurface=<eax>  pSharedHandle=0"),
+        ("find_texture_ops", (), "texture", "Stage=<eax>  pTexture=<eax>"),
+        ("find_texture_ops", (), "stage_state", "Stage=2  Type=<eax>  Value=4"),
+        ("find_texture_ops", (), "sampler", "Sampler=0  Type=6  Value=<eax>"),
+    ])
+    def test_call_is_listed_with_its_arguments(self, unsettled_calls, script, options, label, arguments):
+        binary, code = unsettled_calls
+
+        text = report(script, binary, *options)
+
+        assert f"0x{code.calls[label]:08X}: {arguments}" in text
+
+    @pytest.mark.parametrize("script", ["find_blend_states", "find_skinning"])
+    def test_render_state_that_is_not_a_blend_state_is_not_listed(self, unsettled_calls, script):
+        binary, code = unsettled_calls
+
+        assert f"0x{code.calls['cull']:08X}" not in report(script, binary)
+
+    @pytest.mark.parametrize("script, options", [
+        ("decode_fvf", ()), ("decode_vtx_decls", ("--scan",)), ("find_blend_states", ()),
+        ("find_matrix_registers", ()), ("find_shader_bytecode", ()), ("find_skinning", ()),
+        ("find_surface_formats", ()), ("find_texture_ops", ()),
+    ])
+    def test_calls_with_constant_arguments_are_not_listed(self, known_calls, script, options):
+        assert "not decoded" not in report(script, known_calls[0], *options)
+
+
+@pytest.fixture(scope="module")
+def many_unsettled_calls(tmp_path_factory):
+    """(path of a binary with 11 calls of each method whose arguments are registers, Code it was built from).
+
+    The calls of a method are labelled with its vtable offset and their index: (SET_FVF, 10) is the last.
+    """
+    code = Code()
+    device = load_device()
+    for offset, param_count in [(SET_FVF, 1), (CREATE_VERTEX_DECLARATION, 2), (SET_RENDER_STATE, 2),
+                                (SET_VS_CONSTANT_F, 3), (CREATE_VERTEX_SHADER, 2),
+                                (CREATE_OFFSCREEN_PLAIN_SURFACE, 6), (SET_TEXTURE, 2)]:
+        for index in range(11):
+            code.add((offset, index), device, *[PUSH_EAX] * param_count, PUSH_ECX, call_method(offset))
+    path = write_pe32(tmp_path_factory.mktemp("dx") / "many_unsettled_calls.exe", code.data)
+    return path, code
+
+
+_SCRIPTS_LISTING_UNDECODED_CALLS = [
+    ("decode_fvf", (), SET_FVF), ("decode_vtx_decls", ("--scan",), CREATE_VERTEX_DECLARATION),
+    ("find_blend_states", (), SET_RENDER_STATE), ("find_matrix_registers", (), SET_VS_CONSTANT_F),
+    ("find_matrix_registers", (), CREATE_VERTEX_SHADER), ("find_shader_bytecode", (), CREATE_VERTEX_SHADER),
+    ("find_skinning", (), SET_FVF), ("find_surface_formats", (), CREATE_OFFSCREEN_PLAIN_SURFACE),
+    ("find_texture_ops", (), SET_TEXTURE),
+]
+
+
+class TestLongListsOfUndecodedCalls:
+    @pytest.mark.parametrize("script, options, method", _SCRIPTS_LISTING_UNDECODED_CALLS)
+    def test_list_stops_after_ten_calls(self, many_unsettled_calls, script, options, method):
+        binary, code = many_unsettled_calls
+
+        text = report(script, binary, *options)
+
+        assert f"    0x{code.calls[method, 9]:08X}: " in text
+        assert f"0x{code.calls[method, 10]:08X}" not in text
+        assert "    ... and 1 more" in text
+
+    @pytest.mark.parametrize("script, options, method", _SCRIPTS_LISTING_UNDECODED_CALLS)
+    def test_all_lists_every_call(self, many_unsettled_calls, script, options, method):
+        binary, code = many_unsettled_calls
+
+        text = report(script, binary, *options, "--all")
+
+        assert f"    0x{code.calls[method, 10]:08X}: " in text
+        assert "    ... and 1 more" not in text
+
+    def test_call_of_a_method_without_parameters_is_listed_by_its_address_alone(self, capsys):
+        dx9_calls.print_undecoded_calls("BeginScene", [(TEXT_VA, {"this": None})], show_all=False)
+
+        assert capsys.readouterr().out.splitlines()[-1] == f"    0x{TEXT_VA:08X}"
+
+
+class TestMatrixRegisterReport:
+    def test_undecoded_uploads_are_reported_once(self, unsettled_calls):
+        text = report("find_matrix_registers", unsettled_calls[0])
+
+        assert len(lines_with(text, "not decoded")) == 2      # SetVertexShaderConstantF and CreateVertexShader
+        assert "register-loaded arguments" not in text
+
+
+class TestRegionScan:
+    @pytest.fixture(scope="class")
+    @classmethod
+    def text(cls, known_calls):
+        binary, code = known_calls
+        return report("scan_d3d_region", binary, f"0x{TEXT_VA:X}", f"0x{TEXT_VA + len(code.data):X}")
+
+    def test_call_through_a_one_byte_displacement_is_found(self, text, known_calls):
+        present = text.split("Present (offset 0x44): 1 refs")[1]
+
+        assert present.splitlines()[1].split() == [f"0x{known_calls[1].calls['present']:08X}", "(call)"]
+        assert lines_with(text.split("Key method summary")[1], "Present")[0].split() == ["Present", "1", "refs"]
+
+    def test_method_pointer_load_through_a_one_byte_displacement_is_found(self, text):
+        assert "CreateRenderTarget (offset 0x70): 1 refs" in text
+
+    def test_field_read_at_a_method_offset_is_not_a_reference(self, text, known_calls):
+        assert f"0x{known_calls[1].calls['field']:08X}" not in text
+        assert "SetVertexShaderConstantF (offset 0x178): 3 refs" in text
+
+    def test_only_the_region_is_reported(self, known_calls):
+        binary, code = known_calls
+        start, end = code.calls["zfunc"], code.calls["alpharef"]
+
+        text = report("scan_d3d_region", binary, f"0x{start:X}", f"0x{end:X}")
+
+        assert "SetRenderState (offset 0xE4): 2 refs" in text
+        assert "Total: 2 vtable reference sites" in text
+
+    def test_only_the_hits_in_the_region_are_checked(self, known_calls, monkeypatch):
+        binary, code = known_calls
+        start, end = code.calls["zfunc"], code.calls["alpharef"]
+        checked = []
+        is_com_method_call = dx9_calls._is_com_method_call
+        monkeypatch.setattr(dx9_calls, "_is_com_method_call", lambda text_data, text_va, site_va, param_count: (
+            checked.append(site_va) or is_com_method_call(text_data, text_va, site_va, param_count)))
+
+        report("scan_d3d_region", binary, f"0x{start:X}", f"0x{end:X}")
+
+        # A method pointer loaded up to 64 bytes before the region can be called in it
+        assert checked and all(start - 64 <= site_va < end for site_va in checked)
+
+    def test_region_outside_every_section_is_refused(self, known_calls):
+        with pytest.raises(SystemExit):
+            report("scan_d3d_region", known_calls[0], "0x900000", "0x900100")
+
+
+class TestDrawClassification:
+    def test_state_set_through_ebp_before_a_draw_is_seen(self, tmp_path):
+        set_fvf_through_ebp = bytes([0xFF, 0x95]) + struct.pack("<I", SET_FVF)     # call [ebp+0x164]
+        code = Code().add("draw", push32(0x112), PUSH_ECX, set_fvf_through_ebp,
+                          push(2), push(0), push(4), PUSH_ECX, call_method(DRAW_PRIMITIVE))
+        binary = write_pe32(tmp_path / "game.exe", code.data)
+
+        text = report("classify_draws", binary, "--all")
+
+        assert lines_with(text, f"0x{code.calls['draw']:08X}:")[-1].split()[2:] == ["[ffp", "]", "SetFVF"]
+
+    def test_state_bytes_inside_another_instruction_are_not_state(self, tmp_path):
+        # mov eax, 0x016492FF holds FF 92 64 01, the start of call [edx+0x164]
+        mov_with_call_bytes = bytes([0xB8, 0xFF, 0x92, 0x64, 0x01]) + bytes([0x00, 0x00])
+        code = Code().add("draw", mov_with_call_bytes, push(2), push(0), push(4), PUSH_ECX,
+                          call_method(DRAW_PRIMITIVE))
+        binary = write_pe32(tmp_path / "game.exe", code.data)
+
+        text = report("classify_draws", binary, "--all")
+
+        assert lines_with(text, f"0x{code.calls['draw']:08X}:")[-1].split()[2:] == ["[minimal]", "<none>"]
+
+    def test_state_set_after_the_draw_or_before_the_window_is_not_its_context(self, tmp_path):
+        set_fvf = (push32(0x112), PUSH_ECX, call_method(SET_FVF))
+        draw = (push(2), push(0), push(4), PUSH_ECX, call_method(DRAW_PRIMITIVE))
+        code = Code().add("far", *set_fvf, bytes([0x90]) * 64, *draw).add("after", *draw, *set_fvf[:-1], set_fvf[-1])
+        binary = write_pe32(tmp_path / "game.exe", code.data)
+        draw_after = code.calls["after"] - len(b"".join(set_fvf[:-1])) - len(draw[-1])
+
+        text = report("classify_draws", binary, "--all", "--window", "32")
+
+        assert lines_with(text, f"0x{code.calls['far'] :08X}:")[-1].split()[2:] == ["[minimal]", "<none>"]
+        assert lines_with(text, f"0x{draw_after:08X}:")[-1].split()[2:] == ["[minimal]", "<none>"]
 
 
 def _texture_creation(object_and_vtable: bytes, fmt: int) -> tuple[bytes, ...]:

@@ -17,7 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section, print_header
-from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
+from dx9_calls import (
+    scan_vtable_calls, scan_vtable_mov, method_args, immediates, print_undecoded_calls,
+)
 from dx9_enums import decode_transform_type
 
 
@@ -50,10 +52,14 @@ def main():
     sites += [(va, 'indirect') for va, _ in scan_vtable_mov(text_data, text_va, 0xE4)]
 
     state_usage = defaultdict(list)
+    undecoded_states = []
     for va, _ in sites:
-        pushed = method_immediates(text_data, text_va, va, "SetRenderState")
+        call_args = method_args(text_data, text_va, va, "SetRenderState")
+        pushed = immediates(call_args)
         state_id, value = pushed["State"], pushed["Value"]
-        if state_id in BLEND_STATES and value is not None:
+        if state_id is None or (state_id in BLEND_STATES and value is None):
+            undecoded_states.append((va, call_args))
+        elif state_id in BLEND_STATES:
             state_usage[state_id].append((va, value))
 
     print(f"\n=== Vertex Blend Render States ===\n")
@@ -89,6 +95,8 @@ def main():
                     decoded = "TRUE" if v else "FALSE"
                 print(f"    0x{va:08X}: {decoded} (0x{v:X})")
 
+    print_undecoded_calls("SetRenderState", undecoded_states, args.all)
+
     # ── SetTransform(WORLDMATRIX(n)) scan ───────────────────────────
 
     print(f"\n=== SetTransform — WORLDMATRIX(n) ===\n")
@@ -97,9 +105,13 @@ def main():
     xform_sites += [(va, 'indirect') for va, _ in scan_vtable_mov(text_data, text_va, 0xB0)]
 
     wm_calls = []
+    undecoded_transforms = []
     for va, _ in xform_sites:
-        state = method_immediates(text_data, text_va, va, "SetTransform")["State"]
-        if state is not None and 256 <= state <= 511:
+        call_args = method_args(text_data, text_va, va, "SetTransform")
+        state = immediates(call_args)["State"]
+        if state is None:
+            undecoded_transforms.append((va, call_args))
+        elif 256 <= state <= 511:
             wm_calls.append((va, state))
 
     if wm_calls:
@@ -113,6 +125,8 @@ def main():
                 print(f"    0x{va:08X}: {decode_transform_type(v)}")
     else:
         print("  No WORLDMATRIX transform calls found.")
+
+    print_undecoded_calls("SetTransform", undecoded_transforms, args.all)
 
     # ── Summary ─────────────────────────────────────────────────────
 

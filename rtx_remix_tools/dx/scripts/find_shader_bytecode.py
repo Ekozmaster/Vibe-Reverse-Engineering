@@ -22,14 +22,16 @@ from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section, print_header, va_to_offset
-from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
+from dx9_calls import (
+    scan_vtable_calls, scan_vtable_mov, method_args, immediates, print_undecoded_calls,
+)
 from dx9_shader import validate_shader_token, find_shader_end
 
 CREATE_VS = 0x16C  # CreateVertexShader
 CREATE_PS = 0x1A8  # CreatePixelShader
 
 
-def find_shaders(data, sections, image_base, text_data, text_va, vtable_offset, label):
+def find_shaders(data, sections, image_base, text_data, text_va, vtable_offset, label, show_all):
     """Find shader bytecode at creation call sites.
 
     Returns: [(shader_va, shader_type, major, minor, byte_length), ...]
@@ -46,10 +48,15 @@ def find_shaders(data, sections, image_base, text_data, text_va, vtable_offset, 
 
     found = []
     seen_addrs = set()
+    undecoded = []
 
     for va, reg in all_sites:
-        target_va = method_immediates(text_data, text_va, va, label)["pFunction"]
-        if target_va is None or target_va in seen_addrs:
+        call_args = method_args(text_data, text_va, va, label)
+        target_va = immediates(call_args)["pFunction"]
+        if target_va is None:
+            undecoded.append((va, call_args))
+            continue
+        if target_va in seen_addrs:
             continue
         file_off = va_to_offset(sections, image_base, target_va)
         if file_off is None:
@@ -64,6 +71,7 @@ def find_shaders(data, sections, image_base, text_data, text_va, vtable_offset, 
         seen_addrs.add(target_va)
         found.append((target_va, shader_type, major, minor, byte_len))
 
+    print_undecoded_calls(label, undecoded, show_all)
     return found
 
 
@@ -73,6 +81,8 @@ def main():
     p.add_argument("binary", help="Path to PE binary (.exe / .dll)")
     p.add_argument("--dump-dir", type=Path, metavar="DIR",
                    help="Directory to dump shader bytecode files")
+    p.add_argument("--all", action="store_true",
+                   help="List every call site that is not decoded, not just the first 10")
     args = p.parse_args()
 
     data, image_base, sections = load_binary(args.binary)
@@ -87,7 +97,7 @@ def main():
     for offset, label in [(CREATE_VS, "CreateVertexShader"),
                            (CREATE_PS, "CreatePixelShader")]:
         shaders = find_shaders(data, sections, image_base,
-                               text_data, text_va, offset, label)
+                               text_data, text_va, offset, label, args.all)
         all_shaders.extend(shaders)
 
         if not shaders:

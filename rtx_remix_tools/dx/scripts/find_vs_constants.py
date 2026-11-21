@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section
-from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_args, arg_text
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_args, args_text
 
 
 def main():
@@ -53,8 +53,7 @@ def main():
         for va, reg in all_sites[:50]:
             pushed = method_args(text_data, text_va, va, "SetVertexShaderConstantF")
             print(f"\n  0x{va:08X}: call [{reg}+0x178]")
-            print("    " + "  ".join(f"{name}={arg_text(arg)}"
-                                     for name, arg in pushed.items() if name != "this"))
+            print("    " + args_text(pushed))
 
     # --- DrawIndexedPrimitive (0x148) ---
     print(f"\n\n=== DrawIndexedPrimitive call sites (call [reg+0x148]) ===")

@@ -22,8 +22,10 @@ from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section, print_header, va_to_offset
-from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
-from dx9_shader import validate_shader_token, find_shader_end
+from dx9_calls import (
+    scan_vtable_calls, scan_vtable_mov, method_args, immediates, print_undecoded_calls,
+)
+from dx9_shader import validate_shader_token, find_shader_end, comments
 
 # Vtable offsets
 SVSCF = 0x178    # SetVertexShaderConstantF
@@ -73,48 +75,27 @@ def classify_matrix_name(name):
 def parse_ctab(data, offset, bytecode_len):
     """Parse D3DX shader CTAB from bytecode. Returns list of (name, register, count, rows, columns)."""
     constants = []
-    end = offset + bytecode_len
-    pos = offset + 4  # skip version token
-
-    while pos < end - 4:
-        token = struct.unpack_from('<I', data, pos)[0]
-        # End token
-        if token == 0x0000FFFF:
-            break
-        # Comment token: opcode 0xFFFE, length in upper 16 bits
-        opcode = token & 0xFFFF
-        if opcode == 0xFFFE:
-            dword_count = (token >> 16) & 0xFFFF
-            comment_start = pos + 4
-            comment_end = comment_start + dword_count * 4
-            if comment_end <= end and dword_count >= 2:
-                # Check for CTAB signature
-                if data[comment_start:comment_start + 4] == b'CTAB':
-                    try:
-                        constants = _decode_ctab_block(data, comment_start, comment_end)
-                    except Exception:
-                        pass
-            pos = comment_end
-        else:
-            pos += 4
+    for start, end in comments(data, offset, bytecode_len):
+        if data[start:start + 4] == b'CTAB':
+            constants = _decode_ctab_block(data, start, end)
     return constants
 
 
+_CTAB_HEADER_SIZE = 28
+
+
 def _decode_ctab_block(data, start, end):
-    """Decode a CTAB comment block."""
+    """Decode a CTAB comment block: the 'CTAB' tag, then a D3DXSHADER_CONSTANTTABLE.
+
+    Every offset in the table counts from the table's own start, after the tag.
+    """
     constants = []
-    # CTAB header: 'CTAB' + size + creator + version + constants_count + constant_info_offset + ...
-    if end - start < 28:
+    table = start + 4
+    if end - table < _CTAB_HEADER_SIZE:
         return constants
 
-    size = struct.unpack_from('<I', data, start + 4)[0]
-    # Creator string offset (from start of CTAB)
-    creator_off = struct.unpack_from('<I', data, start + 8)[0]
-    # Version
-    version = struct.unpack_from('<I', data, start + 12)[0]
-    # Constants count and offset
-    num_constants = struct.unpack_from('<I', data, start + 16)[0]
-    const_info_off = struct.unpack_from('<I', data, start + 20)[0]
+    # Size, Creator, Version, then the constant count and the offset of the constant infos
+    num_constants, const_info_off = struct.unpack_from('<II', data, table + 12)
 
     if num_constants > 256 or num_constants == 0:
         return constants
@@ -122,7 +103,7 @@ def _decode_ctab_block(data, start, end):
     # Each constant info: name_offset(4) + register_set(2) + register_index(2) +
     #                     register_count(2) + reserved(2) + type_info_offset(4) +
     #                     default_value_offset(4) + default_value_size(4)
-    info_base = start + const_info_off
+    info_base = table + const_info_off
     for i in range(num_constants):
         entry = info_base + i * 20
         if entry + 20 > end:
@@ -134,7 +115,7 @@ def _decode_ctab_block(data, start, end):
         register_count = struct.unpack_from('<H', data, entry + 8)[0]
 
         # Read name (null-terminated string)
-        name_addr = start + name_off
+        name_addr = table + name_off
         if name_addr < end:
             name_end = data.find(b'\x00', name_addr, min(name_addr + 128, end))
             if name_end == -1:
@@ -146,7 +127,7 @@ def _decode_ctab_block(data, start, end):
         # Type info for rows/columns
         type_off = struct.unpack_from('<I', data, entry + 12)[0]
         rows = cols = 0
-        type_addr = start + type_off
+        type_addr = table + type_off
         if type_addr + 12 <= end:
             # D3DXSHADER_TYPEINFO: class(2) + type(2) + rows(2) + columns(2) + elements(2) + ...
             rows = struct.unpack_from('<H', data, type_addr + 4)[0]
@@ -184,7 +165,7 @@ def find_containing_function(data, sections, image_base, va, search_back=256):
     return best
 
 
-def _phase1_svscf_uploads(data, image_base, sections, text_data, text_va):
+def _phase1_svscf_uploads(data, image_base, sections, text_data, text_va, show_all):
     """Phase 1: Find SetVertexShaderConstantF sites with count=4 (matrix uploads)."""
     print("\n=== Phase 1: SetVertexShaderConstantF matrix uploads ===")
 
@@ -194,14 +175,15 @@ def _phase1_svscf_uploads(data, image_base, sections, text_data, text_va):
     print(f"  Total SVSCF call sites: {len(all_svscf)}")
 
     reg_uploads = defaultdict(list)  # (start, count) -> [call_va, ...]
-    unknown_sites = 0
+    undecoded = []
 
     for va, reg in all_svscf:
-        pushed = method_immediates(text_data, text_va, va, "SetVertexShaderConstantF")
+        call_args = method_args(text_data, text_va, va, "SetVertexShaderConstantF")
+        pushed = immediates(call_args)
         start_reg, count = pushed["StartRegister"], pushed["Vector4fCount"]
-        if start_reg is None or count is None or start_reg > 255 or count > 256:
-            unknown_sites += 1
-        else:
+        if start_reg is None or count is None:
+            undecoded.append((va, call_args))
+        elif start_reg <= 255 and count <= 256:
             reg_uploads[(start_reg, count)].append(va)
 
     # Focus on count=4 (matrix) uploads
@@ -251,8 +233,7 @@ def _phase1_svscf_uploads(data, image_base, sections, text_data, text_va):
         for start, count, sites in sorted(bone_candidates):
             print(f"    c{start}-c{start+count-1} (count={count}): {len(sites)} sites")
 
-    if unknown_sites > 0:
-        print(f"\n  ({unknown_sites} sites with register-loaded arguments -- not decoded)")
+    print_undecoded_calls("SetVertexShaderConstantF", undecoded, show_all)
 
     return matrix_regs
 
@@ -309,7 +290,7 @@ def _phase2_function_grouping(data, sections, image_base, matrix_regs):
         print(f"  or matrices are uploaded via D3DX constant tables.")
 
 
-def _phase3_ctab_extraction(data, sections, image_base, text_data, text_va):
+def _phase3_ctab_extraction(data, sections, image_base, text_data, text_va, show_all):
     """Phase 3: Extract matrix constants from embedded shader CTABs."""
     print(f"\n\n=== Phase 3: Shader CTAB constant names ===")
 
@@ -320,10 +301,15 @@ def _phase3_ctab_extraction(data, sections, image_base, text_data, text_va):
 
     ctab_matrices = []  # (name, register, count, rows, cols, shader_va)
     seen_shaders = set()
+    undecoded = []
 
     for va, reg in all_vs:
-        target_va = method_immediates(text_data, text_va, va, "CreateVertexShader")["pFunction"]
-        if target_va is None or target_va in seen_shaders:
+        call_args = method_args(text_data, text_va, va, "CreateVertexShader")
+        target_va = immediates(call_args)["pFunction"]
+        if target_va is None:
+            undecoded.append((va, call_args))
+            continue
+        if target_va in seen_shaders:
             continue
         file_off = va_to_offset(sections, image_base, target_va)
         if file_off is None:
@@ -341,6 +327,8 @@ def _phase3_ctab_extraction(data, sections, image_base, text_data, text_va):
             if rows >= 3 and cols >= 3:  # matrix (3x3 or 4x4)
                 role = classify_matrix_name(name)
                 ctab_matrices.append((name, reg_idx, reg_count, rows, cols, target_va, role))
+
+    print_undecoded_calls("CreateVertexShader", undecoded, show_all)
 
     if ctab_matrices:
         print(f"\n  Found {len(ctab_matrices)} matrix constants in shader CTABs:\n")
@@ -486,15 +474,17 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("binary", help="Path to PE binary (.exe / .dll)")
+    p.add_argument("--all", action="store_true",
+                   help="List every call site that is not decoded, not just the first 10")
     args = p.parse_args()
 
     data, image_base, sections = load_binary(args.binary)
     text_data, text_va = load_text_section(data, image_base, sections)
     print_header(data, image_base, sections)
 
-    matrix_regs = _phase1_svscf_uploads(data, image_base, sections, text_data, text_va)
+    matrix_regs = _phase1_svscf_uploads(data, image_base, sections, text_data, text_va, args.all)
     _phase2_function_grouping(data, sections, image_base, matrix_regs)
-    ctab_matrices = _phase3_ctab_extraction(data, sections, image_base, text_data, text_va)
+    ctab_matrices = _phase3_ctab_extraction(data, sections, image_base, text_data, text_va, args.all)
     _phase4_set_transform(text_data, text_va)
     _phase5_suggested_layout(matrix_regs, ctab_matrices)
 

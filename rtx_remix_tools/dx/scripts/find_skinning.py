@@ -23,8 +23,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section, print_header, va_to_offset
-from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_immediates
-from dx9_enums import D3DRS, decode_transform_type
+from dx9_calls import (
+    scan_vtable_calls, scan_vtable_mov, method_args, immediates, print_undecoded_calls,
+)
+from dx9_enums import is_vertex_element
 
 
 # ── Vertex declaration types ────────────────────────────────────────
@@ -144,7 +146,7 @@ def analyze_decl(elements):
     return info
 
 
-def scan_for_skinned_decls(data, sections, image_base, text_data, text_va):
+def scan_for_skinned_decls(data, sections, image_base, text_data, text_va, undecoded):
     """Find all CreateVertexDeclaration call sites, return skinned ones."""
     call_vas = [va for va, _ in scan_vtable_calls(text_data, text_va, 0x158)]
     call_vas += [va for va, _ in scan_vtable_mov(text_data, text_va, 0x158)]
@@ -153,21 +155,17 @@ def scan_for_skinned_decls(data, sections, image_base, text_data, text_va):
     all_addrs = set()
 
     for call_va in sorted(call_vas):
-        pushed = method_immediates(text_data, text_va, call_va, "CreateVertexDeclaration")
-        addr = pushed["pVertexElements"]
-        if addr is None or addr in all_addrs:
+        call_args = method_args(text_data, text_va, call_va, "CreateVertexDeclaration")
+        addr = immediates(call_args)["pVertexElements"]
+        if addr is None:
+            undecoded["CreateVertexDeclaration"].append((call_va, call_args))
+            continue
+        if addr in all_addrs:
             continue
         all_addrs.add(addr)
 
         off_check = va_to_offset(sections, image_base, addr)
-        if off_check is None:
-            continue
-        elem = data[off_check:off_check + 8]
-        if len(elem) < 8:
-            continue
-        stream, offset, typ, method, usage, usage_idx = \
-            struct.unpack_from("<HHBBBB", elem)
-        if not (stream <= 4 and typ <= 17 and usage <= 13):
+        if off_check is None or not is_vertex_element(data[off_check:off_check + 8]):
             continue
 
         elements = parse_decl(data, sections, image_base, addr)
@@ -179,16 +177,20 @@ def scan_for_skinned_decls(data, sections, image_base, text_data, text_va):
 
 # ── FVF scanning ────────────────────────────────────────────────────
 
-def scan_fvf_skinning(text_data, text_va):
+def scan_fvf_skinning(text_data, text_va, undecoded):
     """Find SetFVF calls with skinning bits set."""
     sites = scan_vtable_calls(text_data, text_va, 0x164)  # SetFVF
     sites += scan_vtable_mov(text_data, text_va, 0x164)
 
     skinned_fvfs = []
     for va, _ in sites:
-        val = method_immediates(text_data, text_va, va, "SetFVF")["FVF"]
+        call_args = method_args(text_data, text_va, va, "SetFVF")
+        val = immediates(call_args)["FVF"]
+        if val is None:
+            undecoded["SetFVF"].append((va, call_args))
+            continue
         # FVF codes are bitfields; anything > 0xFFFFF is likely an address
-        if val is None or val > 0xFFFFF:
+        if val > 0xFFFFF:
             continue
         pos_type = val & 0x00E
         if pos_type in (0x006, 0x008, 0x00A, 0x00C, 0x00E):
@@ -201,7 +203,7 @@ def scan_fvf_skinning(text_data, text_va):
 
 # ── Bone palette detection ──────────────────────────────────────────
 
-def find_bone_palettes(text_data, text_va):
+def find_bone_palettes(text_data, text_va, undecoded):
     """Detect bone palette uploads from SetVertexShaderConstantF patterns.
 
     Heuristic: start_reg >= 20, count >= 9, count divisible by 3 or 4.
@@ -212,9 +214,11 @@ def find_bone_palettes(text_data, text_va):
 
     candidates = []
     for va, _ in sites:
-        pushed = method_immediates(text_data, text_va, va, "SetVertexShaderConstantF")
+        call_args = method_args(text_data, text_va, va, "SetVertexShaderConstantF")
+        pushed = immediates(call_args)
         start_reg, count = pushed["StartRegister"], pushed["Vector4fCount"]
         if start_reg is None or count is None:
+            undecoded["SetVertexShaderConstantF"].append((va, call_args))
             continue
         if start_reg < 20 or count < 9 or start_reg > 255 or count > 768:
             continue
@@ -245,7 +249,7 @@ def find_bone_palettes(text_data, text_va):
 
 # ── FFP blend state detection ───────────────────────────────────────
 
-def find_vertex_blend_states(text_data, text_va):
+def find_vertex_blend_states(text_data, text_va, undecoded):
     """Find SetRenderState calls for D3DRS_VERTEXBLEND (151) and
     D3DRS_INDEXEDVERTEXBLENDENABLE (167)."""
     sites = scan_vtable_calls(text_data, text_va, 0xE4)  # SetRenderState
@@ -253,9 +257,12 @@ def find_vertex_blend_states(text_data, text_va):
 
     vb_states = defaultdict(list)
     for va, _ in sites:
-        pushed = method_immediates(text_data, text_va, va, "SetRenderState")
+        call_args = method_args(text_data, text_va, va, "SetRenderState")
+        pushed = immediates(call_args)
         state_id, value = pushed["State"], pushed["Value"]
-        if state_id in (151, 167) and value is not None:
+        if state_id is None or (state_id in (151, 167) and value is None):
+            undecoded["SetRenderState"].append((va, call_args))
+        elif state_id in (151, 167):
             vb_states[state_id].append((va, value))
 
     return vb_states
@@ -263,7 +270,7 @@ def find_vertex_blend_states(text_data, text_va):
 
 # ── SetTransform(WORLDMATRIX(n)) detection ──────────────────────────
 
-def find_worldmatrix_transforms(text_data, text_va):
+def find_worldmatrix_transforms(text_data, text_va, undecoded):
     """Find SetTransform calls with WORLDMATRIX(n) arguments (>= 256).
 
     WORLDMATRIX(n) = 256 + n. Realistic bone indices are 0..255, so
@@ -274,8 +281,11 @@ def find_worldmatrix_transforms(text_data, text_va):
 
     wm_calls = []
     for va, _ in sites:
-        state = method_immediates(text_data, text_va, va, "SetTransform")["State"]
-        if state is not None and 256 <= state <= 511:
+        call_args = method_args(text_data, text_va, va, "SetTransform")
+        state = immediates(call_args)["State"]
+        if state is None:
+            undecoded["SetTransform"].append((va, call_args))
+        elif 256 <= state <= 511:
             wm_calls.append((va, state))
     return wm_calls
 
@@ -302,66 +312,58 @@ def compute_min_expanded_stride(decl_info):
     return PROXY_SKIN_VTX_SIZE, extra
 
 
-# ── Main ────────────────────────────────────────────────────────────
+# ── Report ──────────────────────────────────────────────────────────
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("binary", help="Path to PE binary (.exe / .dll)")
-    p.add_argument("--all", action="store_true",
-                   help="Show full element lists for each declaration")
-    args = p.parse_args()
+D3DVERTEXBLENDFLAGS = {0: "DISABLE", 1: "1WEIGHTS", 2: "2WEIGHTS", 3: "3WEIGHTS", 255: "TWEENING"}
 
-    data, image_base, sections = load_binary(args.binary)
-    text_data, text_va = load_text_section(data, image_base, sections)
-    print_header(data, image_base, sections)
+_RULE = "=" * 60
 
-    # ── 1. Skinned vertex declarations ──────────────────────────────
 
-    print(f"\n{'='*60}")
-    print("  Skinned Vertex Declarations")
-    print(f"{'='*60}")
+def _print_title(title):
+    print(_RULE)
+    print(f"  {title}")
+    print(_RULE)
 
-    skinned_decls = scan_for_skinned_decls(data, sections, image_base, text_data, text_va)
-    fvf_skinned = scan_fvf_skinning(text_data, text_va)
+
+def _print_declaration(addr, info, show_elements):
+    print(f"  0x{addr:08X}: stride={info['stride']}")
+    print(f"    BLENDWEIGHT:  {info['bw_type_name']} @{info['bw_offset']} "
+          f"({info['num_weights']} weights)")
+    print(f"    BLENDINDICES: {info['bi_type_name']} @{info['bi_offset']}")
+    if info['pos_offset'] is not None:
+        print(f"    POSITION:     @{info['pos_offset']}")
+    if info['normal_offset'] is not None:
+        print(f"    NORMAL:       {info['normal_type']} @{info['normal_offset']}")
+    if info['texcoord_offset'] is not None:
+        print(f"    TEXCOORD:     {info['texcoord_type']} @{info['texcoord_offset']}")
+    if info['has_tangent']:
+        print(f"    TANGENT:      present")
+    if info['has_color']:
+        print(f"    COLOR:        present")
+
+    _, extra = compute_min_expanded_stride(info)
+    if extra:
+        lost = ", ".join(f"{n}[{i}]({s}B)" for n, i, s in extra)
+        print(f"    WARNING: elements lost in proxy expansion: {lost}")
+
+    if show_elements:
+        print(f"    Full elements:")
+        for e in info['elements']:
+            tn = D3DDECLTYPE.get(e['type'], f"TYPE_{e['type']}")
+            un = D3DDECLUSAGE.get(e['usage'], f"USAGE_{e['usage']}")
+            print(f"      Stream={e['stream']} Off={e['offset']:3d} "
+                  f"{tn:12s} {un}[{e['usage_idx']}]")
+    print()
+
+
+def _print_skinned_vertex_formats(skinned_decls, fvf_skinned, show_elements):
+    print()
+    _print_title("Skinned Vertex Declarations")
 
     if skinned_decls:
         print(f"\n  {len(skinned_decls)} skinned declaration(s) found:\n")
-        bw_types_seen = set()
-        max_weights = 0
         for addr, info in skinned_decls:
-            print(f"  0x{addr:08X}: stride={info['stride']}")
-            print(f"    BLENDWEIGHT:  {info['bw_type_name']} @{info['bw_offset']} "
-                  f"({info['num_weights']} weights)")
-            print(f"    BLENDINDICES: {info['bi_type_name']} @{info['bi_offset']}")
-            if info['pos_offset'] is not None:
-                print(f"    POSITION:     @{info['pos_offset']}")
-            if info['normal_offset'] is not None:
-                print(f"    NORMAL:       {info['normal_type']} @{info['normal_offset']}")
-            if info['texcoord_offset'] is not None:
-                print(f"    TEXCOORD:     {info['texcoord_type']} @{info['texcoord_offset']}")
-            if info['has_tangent']:
-                print(f"    TANGENT:      present")
-            if info['has_color']:
-                print(f"    COLOR:        present")
-
-            _, extra = compute_min_expanded_stride(info)
-            if extra:
-                lost = ", ".join(f"{n}[{i}]({s}B)" for n, i, s in extra)
-                print(f"    WARNING: elements lost in proxy expansion: {lost}")
-
-            if args.all:
-                print(f"    Full elements:")
-                for e in info['elements']:
-                    tn = D3DDECLTYPE.get(e['type'], f"TYPE_{e['type']}")
-                    un = D3DDECLUSAGE.get(e['usage'], f"USAGE_{e['usage']}")
-                    print(f"      Stream={e['stream']} Off={e['offset']:3d} "
-                          f"{tn:12s} {un}[{e['usage_idx']}]")
-
-            bw_types_seen.add(info['bw_type_name'])
-            if info['num_weights'] > max_weights:
-                max_weights = info['num_weights']
-            print()
+            _print_declaration(addr, info, show_elements)
     else:
         print("\n  No skinned vertex declarations found.")
 
@@ -374,140 +376,145 @@ def main():
     elif not skinned_decls:
         print("  No FVF skinning patterns found.\n")
 
-    # ── 2. Bone palette candidates ──────────────────────────────────
 
-    print(f"{'='*60}")
-    print("  Bone Palette Candidates (SetVertexShaderConstantF)")
-    print(f"{'='*60}")
+def _print_bone_palettes(palettes):
+    """Print the palette candidates by layout.
 
-    palettes = find_bone_palettes(text_data, text_va)
+    Returns:
+        (start register, registers per bone) of the layout most sites
+        upload, (None, None) without candidates.
+    """
+    _print_title("Bone Palette Candidates (SetVertexShaderConstantF)")
 
-    if palettes:
-        print(f"\n  {len(palettes)} candidate(s) found:\n")
-
-        # Group by (start_reg, regs_per_bone) for cleaner output
-        by_config = defaultdict(list)
-        for c in palettes:
-            by_config[(c['start_reg'], c['regs_per_bone'])].append(c)
-
-        best_start = None
-        best_rpb = None
-        best_count = 0
-
-        for (sreg, rpb), group in sorted(by_config.items()):
-            bone_counts = sorted(set(c['num_bones'] for c in group))
-            sites = [c['va'] for c in group]
-            print(f"  start_reg={sreg}, regs_per_bone={rpb}: "
-                  f"{len(sites)} site(s), bone counts: {bone_counts}")
-            for c in group:
-                print(f"    0x{c['va']:08X}: count={c['count']} -> "
-                      f"{c['num_bones']} bones x {rpb} regs")
-
-            total = len(sites)
-            if total > best_count:
-                best_count = total
-                best_start = sreg
-                best_rpb = rpb
-            print()
-    else:
+    if not palettes:
         print("\n  No bone palette patterns detected.\n")
-        best_start = None
-        best_rpb = None
+        return None, None
 
-    # ── 3. FFP vertex blending ──────────────────────────────────────
+    print(f"\n  {len(palettes)} candidate(s) found:\n")
+    by_config = defaultdict(list)
+    for c in palettes:
+        by_config[(c['start_reg'], c['regs_per_bone'])].append(c)
 
-    print(f"{'='*60}")
-    print("  FFP Vertex Blending (Render States)")
-    print(f"{'='*60}")
+    most_used = (None, None)
+    most_sites = 0
+    for (sreg, rpb), group in sorted(by_config.items()):
+        bone_counts = sorted(set(c['num_bones'] for c in group))
+        print(f"  start_reg={sreg}, regs_per_bone={rpb}: "
+              f"{len(group)} site(s), bone counts: {bone_counts}")
+        for c in group:
+            print(f"    0x{c['va']:08X}: count={c['count']} -> "
+                  f"{c['num_bones']} bones x {rpb} regs")
+        if len(group) > most_sites:
+            most_sites = len(group)
+            most_used = (sreg, rpb)
+        print()
+    return most_used
 
-    vb_states = find_vertex_blend_states(text_data, text_va)
 
-    D3DVERTEXBLENDFLAGS = {0: "DISABLE", 1: "1WEIGHTS", 2: "2WEIGHTS", 3: "3WEIGHTS", 255: "TWEENING"}
+def _blend_state_line(state_name, entries, value_name):
+    if not entries:
+        return f"{state_name}: not found"
+    counts = defaultdict(int)
+    for _, value in entries:
+        counts[value] += 1
+    values = [f"{value_name(value)} x{count}" if count > 1 else value_name(value)
+              for value, count in sorted(counts.items())]
+    return f"{state_name}: {len(entries)} site(s), values: {', '.join(values)}"
 
-    if 151 in vb_states:
-        entries = vb_states[151]
-        vals = defaultdict(int)
-        for _, v in entries:
-            vals[v] += 1
-        val_strs = []
-        for v, cnt in sorted(vals.items()):
-            name = D3DVERTEXBLENDFLAGS.get(v, f"0x{v:X}")
-            suffix = f" x{cnt}" if cnt > 1 else ""
-            val_strs.append(f"{name}{suffix}")
-        print(f"\n  D3DRS_VERTEXBLEND: {len(entries)} site(s), values: {', '.join(val_strs)}")
-    else:
-        print(f"\n  D3DRS_VERTEXBLEND: not found")
 
-    if 167 in vb_states:
-        entries = vb_states[167]
-        vals = defaultdict(int)
-        for _, v in entries:
-            vals[v] += 1
-        val_strs = []
-        for v, cnt in sorted(vals.items()):
-            name = "TRUE" if v else "FALSE"
-            suffix = f" x{cnt}" if cnt > 1 else ""
-            val_strs.append(f"{name}{suffix}")
-        print(f"  D3DRS_INDEXEDVERTEXBLENDENABLE: {len(entries)} site(s), values: {', '.join(val_strs)}")
-    else:
-        print(f"  D3DRS_INDEXEDVERTEXBLENDENABLE: not found")
+def _print_ffp_blending(vb_states, wm_calls):
+    _print_title("FFP Vertex Blending (Render States)")
 
-    # WORLDMATRIX transforms
-    wm_calls = find_worldmatrix_transforms(text_data, text_va)
+    print("\n  " + _blend_state_line("D3DRS_VERTEXBLEND", vb_states.get(151),
+                                     lambda v: D3DVERTEXBLENDFLAGS.get(v, f"0x{v:X}")))
+    print("  " + _blend_state_line("D3DRS_INDEXEDVERTEXBLENDENABLE", vb_states.get(167),
+                                   lambda v: "TRUE" if v else "FALSE"))
+
     if wm_calls:
-        indices = sorted(set(v - 256 for _, v in wm_calls))
-        max_idx = max(indices)
+        max_idx = max(v - 256 for _, v in wm_calls)
         print(f"  SetTransform(WORLDMATRIX(n)): {len(wm_calls)} call(s), "
               f"indices 0..{max_idx} ({max_idx + 1} bones)")
     else:
         print(f"  SetTransform(WORLDMATRIX(n)): not found")
 
-    has_ffp_blend = bool(vb_states) or bool(wm_calls)
-    has_fvf_blend = bool(fvf_skinned)
-    if not has_ffp_blend and not skinned_decls and not has_fvf_blend and not palettes:
-        blend_method = "none detected"
-    elif palettes and not has_ffp_blend and not has_fvf_blend:
-        blend_method = "VS-based skinning (bone palette via VS constants)"
-    elif has_ffp_blend and not palettes:
-        blend_method = "FFP indexed vertex blending (SetTransform WORLDMATRIX)"
-    elif has_ffp_blend and palettes:
-        blend_method = "hybrid (both VS constants and FFP WORLDMATRIX)"
-    elif has_fvf_blend:
-        blend_method = "FFP vertex blending via FVF (blend states may be set dynamically)"
-    elif skinned_decls and palettes:
-        blend_method = "VS-based skinning (bone palette via VS constants)"
-    else:
-        blend_method = "skinned declarations found, method unclear"
 
-    print(f"\n  -> Skinning method: {blend_method}")
+def _skinning_method(skinned_decls, fvf_skinned, palettes, has_ffp_blend):
+    if not has_ffp_blend and not skinned_decls and not fvf_skinned and not palettes:
+        return "none detected"
+    if palettes and not has_ffp_blend and not fvf_skinned:
+        return "VS-based skinning (bone palette via VS constants)"
+    if has_ffp_blend and not palettes:
+        return "FFP indexed vertex blending (SetTransform WORLDMATRIX)"
+    if has_ffp_blend and palettes:
+        return "hybrid (both VS constants and FFP WORLDMATRIX)"
+    if fvf_skinned:
+        return "FFP vertex blending via FVF (blend states may be set dynamically)"
+    return "skinned declarations found, method unclear"
 
-    # ── 4. Suggested proxy INI ──────────────────────────────────────
 
-    has_skinning = bool(skinned_decls) or bool(fvf_skinned)
-    print(f"\n{'='*60}")
-    print("  Suggested Proxy Configuration")
-    print(f"{'='*60}\n")
+def _print_undecoded(undecoded, show_all):
+    if not undecoded:
+        return
+    print()
+    _print_title("Calls Not Decoded")
+    for method in sorted(undecoded):
+        print_undecoded_calls(method, undecoded[method], show_all)
 
-    if has_skinning:
-        print("  [Skinning]")
-        print("  Enabled=1")
-        if best_start is not None:
-            print(f"  BoneThreshold={best_start}")
-        if best_rpb is not None:
-            print(f"  RegsPerBone={best_rpb}")
-        print(f"  ; SKIN_VTX_SIZE={PROXY_SKIN_VTX_SIZE} (fixed proxy layout)")
-        if skinned_decls:
-            bw_summary = ", ".join(sorted(
-                {info['bw_type_name'] for _, info in skinned_decls}))
-            print(f"  ; blend weight formats: {bw_summary}")
-            strides = sorted(set(info['stride'] for _, info in skinned_decls))
-            print(f"  ; source vertex strides: {strides}")
-    else:
-        print("  [Skinning]")
+
+def _print_suggested_configuration(skinned_decls, fvf_skinned, bone_threshold, regs_per_bone):
+    print()
+    _print_title("Suggested Proxy Configuration")
+    print()
+
+    print("  [Skinning]")
+    if not skinned_decls and not fvf_skinned:
         print("  Enabled=0")
         print("  ; No skinned meshes detected in this binary.")
+        return
+    print("  Enabled=1")
+    if bone_threshold is not None:
+        print(f"  BoneThreshold={bone_threshold}")
+    if regs_per_bone is not None:
+        print(f"  RegsPerBone={regs_per_bone}")
+    print(f"  ; SKIN_VTX_SIZE={PROXY_SKIN_VTX_SIZE} (fixed proxy layout)")
+    if skinned_decls:
+        bw_summary = ", ".join(sorted(
+            {info['bw_type_name'] for _, info in skinned_decls}))
+        print(f"  ; blend weight formats: {bw_summary}")
+        strides = sorted(set(info['stride'] for _, info in skinned_decls))
+        print(f"  ; source vertex strides: {strides}")
 
-    print(f"\n{'='*60}")
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("binary", help="Path to PE binary (.exe / .dll)")
+    p.add_argument("--all", action="store_true",
+                   help="Show full element lists for each declaration and every call site that is not decoded")
+    args = p.parse_args()
+
+    data, image_base, sections = load_binary(args.binary)
+    text_data, text_va = load_text_section(data, image_base, sections)
+    print_header(data, image_base, sections)
+
+    undecoded = defaultdict(list)   # method -> [(call_va, arguments), ...]
+    skinned_decls = scan_for_skinned_decls(data, sections, image_base, text_data, text_va, undecoded)
+    fvf_skinned = scan_fvf_skinning(text_data, text_va, undecoded)
+    _print_skinned_vertex_formats(skinned_decls, fvf_skinned, args.all)
+
+    palettes = find_bone_palettes(text_data, text_va, undecoded)
+    bone_threshold, regs_per_bone = _print_bone_palettes(palettes)
+
+    vb_states = find_vertex_blend_states(text_data, text_va, undecoded)
+    wm_calls = find_worldmatrix_transforms(text_data, text_va, undecoded)
+    _print_ffp_blending(vb_states, wm_calls)
+    method = _skinning_method(skinned_decls, fvf_skinned, palettes, bool(vb_states) or bool(wm_calls))
+    print(f"\n  -> Skinning method: {method}")
+
+    _print_undecoded(undecoded, args.all)
+    _print_suggested_configuration(skinned_decls, fvf_skinned, bone_threshold, regs_per_bone)
+
+    print(f"\n{_RULE}")
     print("--- DONE ---")
 
 
