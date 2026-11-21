@@ -23,11 +23,13 @@ import bisect
 import itertools
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
 
 _MAX_FUNCTION_INSNS = 5000
+_MAX_JUMP_TABLE_ENTRIES = 1024
 
 def find_start(b: Binary, va: int, **_kw) -> int | None:
     """Find the function entry point containing *va*.
@@ -67,6 +69,63 @@ def _follows_a_function_end(b: Binary, va: int) -> bool:
             or before[-5] == 0xE9 or before[-6:-4] == b"\xFF\x25")
 
 
+def _is_known_start(b: Binary, va: int) -> bool:
+    table = b.func_table
+    index = bisect.bisect_left(table, va)
+    return index < len(table) and table[index] == va
+
+
+class _JumpTable(NamedTuple):
+    """The pointers ``jmp [va + index * pointer size]`` chooses from, in [va, end)."""
+    va: int
+    end: int
+    cases: list[int]
+
+
+def _jump_table(b: Binary, insn, low: int, high: int) -> _JumpTable | None:
+    """The jump table *insn* reads, with its cases in [*low*, *high*); None when it reads none.
+
+    The table has no stored length: it is read up to the first entry that
+    points outside that range.
+    """
+    operands = b.mem_operands(insn)
+    if (insn.mnemonic != "jmp" or not operands or not operands[0].index
+            or operands[0].scale != b.ptr_size or not operands[0].disp):
+        return None
+    va = operands[0].disp
+    cases = []
+    for index in range(_MAX_JUMP_TABLE_ENTRIES):
+        entry = b.read_va(va + index * b.ptr_size, b.ptr_size)
+        case = int.from_bytes(entry, "little")
+        if len(entry) < b.ptr_size or not low <= case < high:
+            break
+        cases.append(case)
+    return _JumpTable(va, va + len(cases) * b.ptr_size, cases) if cases else None
+
+
+def _is_tail_call(b: Binary, insn, target: int, next_function: int | None) -> bool:
+    """Whether the direct jump *insn* leaves for the entry of another function."""
+    return (insn.mnemonic == "jmp" and next_function is not None and target >= next_function
+            and (_is_known_start(b, target) or _follows_a_function_end(b, target)))
+
+
+def _instructions_around(b: Binary, start: int, max_size: int, tables: list[_JumpTable]):
+    """The instructions from *start*, decoding resumed behind each of *tables* that is run into.
+
+    *tables* may grow while the instructions are consumed.
+    """
+    va, window_end = start, start + max_size
+    while va < window_end:
+        for insn in b.iter_disasm(va, max_bytes=window_end - va):
+            table = next((t for t in tables if insn.address < t.end and t.va < insn.address + insn.size), None)
+            if table is not None:
+                va = table.end
+                break
+            yield insn
+        else:
+            return
+
+
 def analyze(b: Binary, start: int, max_size: int):
     """Return (rets, callees, end_va) for the function at *start*.
 
@@ -76,10 +135,17 @@ def analyze(b: Binary, start: int, max_size: int):
     jumps past, lies inside the function (a call target in its body, or bytes
     that only look like one) and does not end the scan. Compilers also put an
     int3 after a call that does not return; such an int3 ends the scan only
-    when no branch seen so far jumps past it to a label of this function. A
-    ``jmp`` to the next function or beyond is a tail call and does not carry
-    the scan over an int3; the next function is the nearest known start that
-    follows a function end (padding, a return or a jump).
+    when no branch seen so far jumps past it to a label of this function. The
+    cases of a jump table are branches of the ``jmp`` that reads it. The
+    table's own bytes are stepped over, and the scan ends behind a table that
+    no branch jumps past: what follows it is another function.
+
+    A ``jmp`` to a function entry at or beyond the next function is a tail
+    call and does not carry the scan there. The next function is the nearest
+    known start that follows a function end (padding, a return or a jump),
+    and a function entry is a known start or an address that follows a
+    function end. A ``jmp`` into straight-line code beyond the next function
+    is a branch: that known start lies inside this function.
 
     *end_va* is the end of the last return scanned, or of a later instruction
     that is live and not padding (nop or int3), so a function without a return
@@ -87,7 +153,8 @@ def analyze(b: Binary, start: int, max_size: int):
     alignment or a jump table unless a branch reaches them: instructions are
     live from the function's start, stop being live behind a return or jump,
     and are live again from the first address at or below the furthest branch
-    target seen before it. Only a live instruction's branch target counts.
+    target seen before it. Only a live instruction's branch target counts, and
+    nothing runs on through a jump table.
     """
     rets: list[tuple[int, int]] = []
     calls: list[tuple[int, int | str]] = []
@@ -98,10 +165,16 @@ def analyze(b: Binary, start: int, max_size: int):
     next_function = next((va for va in later_starts if _follows_a_function_end(b, va)), None)
     previous = None
     live = True
+    scan_end = start + max_size
+    tables: list[_JumpTable] = []
+    decoded_to = start
 
-    window = b.iter_disasm(start, max_bytes=max_size)
-    for insn in itertools.islice(window, _MAX_FUNCTION_INSNS):
-        live = live or insn.address <= furthest_branch
+    for insn in itertools.islice(_instructions_around(b, start, max_size, tables), _MAX_FUNCTION_INSNS):
+        behind_a_table = insn.address != decoded_to
+        if behind_a_table and insn.address > furthest_branch:
+            break
+        live = (live and not behind_a_table) or insn.address <= furthest_branch
+        decoded_to = insn.address + insn.size
         ahead = bisect.bisect_left(later_starts, insn.address)
         if not live and ahead < len(later_starts) and later_starts[ahead] < insn.address + insn.size:
             break
@@ -115,12 +188,14 @@ def analyze(b: Binary, start: int, max_size: int):
             except ValueError:
                 target = insn.op_str
             calls.append((insn.address, target))
-        else:
-            branch = _branch_target(insn) if live else None
-            is_tail_call = insn.mnemonic == "jmp" and next_function is not None and branch is not None \
-                and branch >= next_function
-            if branch is not None and not is_tail_call and branch < start + max_size:
-                furthest_branch = max(furthest_branch, branch)
+        elif live:
+            target = _branch_target(insn)
+            table = _jump_table(b, insn, start, scan_end)
+            if table is not None:
+                tables.append(table)
+                furthest_branch = max(furthest_branch, *table.cases)
+            elif target is not None and target < scan_end and not _is_tail_call(b, insn, target, next_function):
+                furthest_branch = max(furthest_branch, target)
 
         if is_ret or (live and insn.mnemonic not in ("nop", "int3")):
             end_va = insn.address + insn.size

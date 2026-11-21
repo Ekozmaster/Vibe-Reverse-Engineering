@@ -224,6 +224,69 @@ class TestScanStops:
         rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
         assert rets == [(TEXT + 6, 0), (TEXT + 11, 0), (TEXT + 16, 4)] and end == TEXT + 19
 
+    def test_a_known_start_a_jump_passes_into_straight_line_code_lies_inside_the_function(self, tmp_path):
+        # je +4 / jmp exit / mov / jmp label / label called from +0x30: mov / mov / exit: ret
+        code = bytearray(b"\xCC" * 0x40)
+        code[0:2] = b"\x74\x02"
+        code[2:4] = b"\xEB\x0E"
+        code[4:8] = MOV
+        code[8:10] = b"\xEB\x00"
+        code[10:18] = MOV + MOV
+        code[18] = 0xC3
+        code[0x30:0x36] = _call(0x30, 10) + b"\xC3"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
+        assert rets == [(TEXT + 18, 0)] and end == TEXT + 19
+
+    def test_a_jump_to_code_that_follows_a_function_end_is_a_tail_call(self, tmp_path):
+        # je +4 / jmp other / mov / ret / next function, called from +0x30: mov / ret / other, not a known start: ret
+        code = bytearray(b"\xCC" * 0x40)
+        code[0:2] = b"\x74\x02"
+        code[2:4] = b"\xEB\x0C"
+        code[4:9] = MOV + b"\xC3"
+        code[9:14] = MOV + b"\xC3"
+        code[16] = 0xC3
+        code[0x30:0x36] = _call(0x30, 9) + b"\xC3"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
+        assert rets == [(TEXT + 8, 0)] and end == TEXT + 9
+
+    def test_a_case_reached_only_through_the_jump_table_behind_the_last_ret_is_counted(self, tmp_path):
+        # jmp [eax*4 + table] / case 0: mov / ret / case 1: mov / jmp eax / mov edi, edi / table / int3
+        table = struct.pack("<II", TEXT + 7, TEXT + 12)
+        code = (b"\xFF\x24\x85" + struct.pack("<I", TEXT + 20) + MOV + b"\xC3" + MOV + b"\xFF\xE0"
+                + b"\x8B\xFF" + table + b"\xCC" * 8)
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, code), TEXT, 0x100)
+        assert rets == [(TEXT + 11, 0)] and end == TEXT + 18
+
+    def test_a_jump_table_entry_outside_the_scan_window_ends_the_table(self, tmp_path):
+        # jmp [eax*4 + table] / case 0: mov / jmp eax / mov edi, edi / nop / table of one case / a pointer elsewhere
+        table = struct.pack("<II", TEXT + 7, TEXT + 0x1000)
+        code = (b"\xFF\x24\x85" + struct.pack("<I", TEXT + 16) + MOV + b"\xFF\xE0" + b"\x8B\xFF\x90"
+                + table + b"\xCC" * 8)
+        _, _, end = funcinfo.analyze(_binary(tmp_path, code), TEXT, 0x100)
+        assert end == TEXT + 13
+
+    def test_a_function_right_behind_a_jump_table_that_no_branch_jumps_past_is_not_scanned(self, tmp_path):
+        # jmp [eax*4 + table] / case 0: mov / ret / case 1: mov / jmp eax / table / another function: mov / ret
+        table = struct.pack("<II", TEXT + 7, TEXT + 12)
+        code = (b"\xFF\x24\x85" + struct.pack("<I", TEXT + 18) + MOV + b"\xC3" + MOV + b"\xFF\xE0"
+                + table + MOV + b"\xC3" + b"\xCC" * 8)
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, code), TEXT, 0x100)
+        assert rets == [(TEXT + 11, 0)] and end == TEXT + 18
+
+    def test_jump_table_bytes_that_decode_as_a_jump_carry_the_scan_nowhere(self, tmp_path):
+        # jmp [eax*4 + table] / movs / case at +0xEB: call noreturn / movs / table (EB 10 ..., 07 10 ...) /
+        # int3 padding / the next function, called from +0x300: mov / mov / ret
+        code = bytearray(b"\xCC" * 0x310)
+        code[0:7] = b"\xFF\x24\x85" + struct.pack("<I", TEXT + 0x100)
+        code[7:0xEB] = MOV * 57
+        code[0xEB:0xF0] = _call(0xEB, 0x1F0)
+        code[0xF0:0x100] = MOV * 4
+        code[0x100:0x108] = struct.pack("<II", TEXT + 0xEB, TEXT + 7)
+        code[0x110:0x119] = MOV + MOV + b"\xC3"
+        code[0x300:0x306] = _call(0x300, 0x110) + b"\xC3"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x200)
+        assert rets == [] and end == TEXT + 0x100
+
     def test_live_code_that_runs_into_a_known_start_goes_on_through_it(self, tmp_path):
         # mov / mov eax, imm32 / ret: the imm32's last two bytes are called from +0x20
         code = bytearray(b"\xCC" * 0x30)
