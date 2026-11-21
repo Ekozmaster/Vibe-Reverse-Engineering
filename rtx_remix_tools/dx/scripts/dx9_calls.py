@@ -322,11 +322,16 @@ def _instructions_before_call(text_data, text_va, site_va):
     path = _path_to_call(text_data, text_va, site_va)
     if path is None:
         return None
-    start = _trusted_start(text_data, text_va, site_va)
+    before = _certain_instructions_before(text_data, text_va, site_va)
+    return None if before is None else before + path
+
+
+def _certain_instructions_before(text_data, text_va, va):
+    """The instructions in front of the one at *va* that are certain, oldest first; None when *va* is no instruction."""
+    start = _trusted_start(text_data, text_va, va)
     if start is None:
         return None
-    site_off = site_va - text_va
-    return list(_decoder.disasm(text_data[start - text_va:site_off], start)) + path
+    return list(_decoder.disasm(text_data[start - text_va:va - text_va], start))
 
 
 def _path_to_call(text_data, text_va, site_va):
@@ -463,17 +468,22 @@ def _call_targets(text_data, text_va):
     return _branch_targets(text_data, text_va)[1]
 
 
+_JUMP_TABLE_OPERAND = re.compile(r"dword ptr \[\w+\*4 \+ (0x[0-9a-f]+)\]")
+_MAX_JUMP_TABLE_ENTRIES = 1024
+
+
 @lru_cache(maxsize=2)
 def _branch_targets(text_data, text_va):
-    """(direct jump targets, direct call targets) of the code section.
+    """(direct jump targets, direct call targets, jump-table dispatches) of the code section.
 
-    One linear sweep of the whole section, so a branch is found however far
-    it is from its target and whichever side of it.
+    A dispatch is a ``jmp [table + reg*4]``, held as its address -> the
+    table's. One linear sweep of the whole section, so a branch is found
+    however far it is from its target and whichever side of it.
     """
     sweep = Cs(CS_ARCH_X86, CS_MODE_32)
     sweep.skipdata = True
-    jumps, calls = set(), set()
-    for _address, _size, mnemonic, operands in disasm_batches(sweep, text_data, text_va, _SWEEP_BATCH_INSNS, lite=True):
+    jumps, calls, dispatches = set(), set(), {}
+    for address, _size, mnemonic, operands in disasm_batches(sweep, text_data, text_va, _SWEEP_BATCH_INSNS, lite=True):
         if mnemonic[0] == 'j' or mnemonic.startswith('loop'):
             targets = jumps
         elif mnemonic == 'call':
@@ -483,8 +493,33 @@ def _branch_targets(text_data, text_va):
         try:
             targets.add(int(operands, 16))
         except ValueError:
-            pass  # through a register or memory: no target to read
-    return frozenset(jumps), frozenset(calls)
+            table = _JUMP_TABLE_OPERAND.fullmatch(operands) if mnemonic == 'jmp' else None
+            if table:
+                dispatches[address] = int(table.group(1), 16)
+    return frozenset(jumps), frozenset(calls), dispatches
+
+
+@lru_cache(maxsize=2)
+def _dispatches_by_case(text_data, text_va):
+    """Address of a jump-table case -> the addresses of the dispatches whose table holds it.
+
+    Only a table in the code section is read. It has no stored length: it
+    ends at the first dword that is no address in the section, or where the
+    next table starts.
+    """
+    table_of = _branch_targets(text_data, text_va)[2]
+    table_starts = frozenset(table_of.values())
+    text_end = text_va + len(text_data)
+    by_case = {}
+    for dispatch, table in table_of.items():
+        for entry in range(table, table + 4 * _MAX_JUMP_TABLE_ENTRIES, 4):
+            if not text_va <= entry <= text_end - 4 or (entry != table and entry in table_starts):
+                break
+            case, = struct.unpack_from("<I", text_data, entry - text_va)
+            if not text_va <= case < text_end:
+                break
+            by_case.setdefault(case, set()).add(dispatch)
+    return by_case
 
 
 class _WalkEnd(enum.Enum):
@@ -640,7 +675,13 @@ def _settle_store(slots, pushed, insn, store):
 # stack, so the code must have put that many dwords there. When the walk back
 # reaches a point nothing older can come from (the entry of the code, or a
 # reservation of stack space the code then leaves partly unwritten) with
-# fewer slots written, the call takes fewer arguments than the method. An
+# fewer slots written, the call takes fewer arguments than the method. A
+# block reached only through a jump table starts behind a jmp, like an entry,
+# but with the stack its dispatch left: such a call is kept when the block
+# pushes `this`, which a COM call pushes last, and the code in front of every
+# dispatch that leads to the block writes the missing slots. Code there that
+# shows less decides nothing for the block, which is then held to what it
+# pushes itself. An
 # earlier call is no such point: what was pushed before it is still there
 # unless the callee took it off (dev->SetRenderState(State(), value) is
 # push value / call State / push eax). More slots never drop a call: an
@@ -683,7 +724,8 @@ def _is_com_method_call(text_data, text_va, site_va, param_count):
     walk = _walk_stack(insns, (param_count or 0) + 1, jump_targets)
     if _pushes_no_this(walk):
         return False
-    if param_count is not None and _passes_too_few_arguments(walk, param_count):
+    if (param_count is not None and _passes_too_few_arguments(walk, param_count)
+            and not (0 in walk.slots and _dispatch_passes_the_arguments(text_data, text_va, insns, param_count))):
         return False
     call = _site_instruction(text_data, text_va, insns[-1].address + insns[-1].size if insns else site_va)
     if _loads_ecx_for_the_callee(insns, call, jump_targets):
@@ -700,6 +742,26 @@ def _passes_too_few_arguments(walk, param_count):
     """Whether the stack is shown to hold fewer than *param_count* + 1 dwords at the call."""
     return (walk.end in (_WalkEnd.ENTRY, _WalkEnd.RESERVED)
             and not all(slot in walk.slots for slot in range(param_count + 1)))
+
+
+def _dispatch_passes_the_arguments(text_data, text_va, insns, param_count):
+    """Whether the call's block is a jump-table case and the code before each dispatch to it settles every slot.
+
+    The block is what follows the last jmp, ret or int3 of *insns*. It is
+    walked with the instructions in front of the dispatch put in front of it.
+    """
+    block = next((index + 1 for index in range(len(insns) - 1, -1, -1) if _flow(insns[index]) is _Flow.END), None)
+    if block is None or block == len(insns):
+        return False
+    dispatches = _dispatches_by_case(text_data, text_va).get(insns[block].address, ())
+    jump_targets = _jump_targets(text_data, text_va)
+    walks = []
+    for dispatch in dispatches:
+        before = _certain_instructions_before(text_data, text_va, dispatch)
+        if before is None:
+            return False
+        walks.append(_walk_stack(before + insns[block:], param_count + 1, jump_targets))
+    return bool(walks) and all(walk.end is _WalkEnd.SETTLED for walk in walks)
 
 
 def _loads_ecx_for_the_callee(insns, call, jump_targets):

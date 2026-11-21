@@ -821,6 +821,49 @@ class TestArgumentCount:
 
         assert _found_calls(code, PRESENT) == [code.calls["aligned"]]
 
+    @staticmethod
+    def _add_jump_table_case(code, label, before_dispatch, *case, other_dispatch_after=None):
+        """Add a function that runs *before_dispatch* and reaches *case* only through a one-entry jump table.
+
+        With *other_dispatch_after*, a second function runs those bytes and
+        dispatches through the same table.
+        """
+        dispatch = bytes([0xFF, 0x24, 0x85])                                # jmp [eax*4 + table]
+        frame, epilogue = 3, 2
+        case_va = TEXT_VA + len(code.data) + frame + len(before_dispatch) + len(dispatch) + 4
+        table_va = case_va + sum(len(chunk) for chunk in case) + epilogue + len(_PADDING)
+        code.add(label, before_dispatch, dispatch + struct.pack("<I", table_va), *case)
+        assert code.add_data(f"{label} table", struct.pack("<I", case_va)) == table_va
+        if other_dispatch_after is not None:
+            code.add(f"{label} other dispatch", other_dispatch_after, dispatch + struct.pack("<I", table_va))
+        return code
+
+    def test_an_argument_pushed_before_a_jump_table_dispatch_is_counted(self):
+        # dev->SetRenderState(state chosen by a switch, 1): push 1 / jmp [table] / case: push 22 / push ecx / call
+        code = self._add_jump_table_case(Code(), "case", push(1), push(22), PUSH_ECX, call_method(SET_RENDER_STATE))
+
+        assert _found_calls(code, SET_RENDER_STATE) == [code.calls["case"]]
+
+    def test_a_jump_table_case_is_held_to_its_own_pushes_when_the_dispatch_shows_no_others(self):
+        # what was pushed before the earlier call may be gone, so the dispatch does not show a third dword
+        code = self._add_jump_table_case(Code(), "case", push(1) + _CALL_NEAR, push(22), PUSH_ECX,
+                                         call_method(SET_RENDER_STATE))
+
+        assert _found_calls(code, SET_RENDER_STATE) == []
+
+    def test_a_jump_table_case_that_pushes_no_this_is_dropped(self):
+        # registers a function saves before its switch are not the arguments of a __thiscall in one of its cases
+        code = self._add_jump_table_case(Code(), "case", push(1) + push(22) + PUSH_ESI, load_device(),
+                                         call_method(SET_RENDER_STATE))
+
+        assert _found_calls(code, SET_RENDER_STATE) == []
+
+    def test_a_jump_table_case_needs_the_arguments_before_every_dispatch_to_it(self):
+        code = self._add_jump_table_case(Code(), "case", push(1), push(22), PUSH_ECX, call_method(SET_RENDER_STATE),
+                                         other_dispatch_after=_CALL_NEAR)
+
+        assert _found_calls(code, SET_RENDER_STATE) == []
+
     def test_too_few_pushes_after_a_join_is_kept(self):
         # what the other path put on the stack before the join is not in front of the call
         code = Code().add("joined", _TEST_EAX, _jump_if_equal_over(push(5)), push(0), PUSH_ECX,
