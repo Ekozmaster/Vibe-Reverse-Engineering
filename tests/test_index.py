@@ -9,6 +9,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
 
 
+def _allow_everything(*_action):
+    """An authorizer that refuses nothing, leaving ``mode=ro`` as the connection's only guard."""
+    return sqlite3.SQLITE_OK
+
+
 class TestGameIndex:
     def test_creates_schema_and_version(self, tmp_path):
         from index import GameIndex, SCHEMA_VERSION
@@ -66,7 +71,7 @@ class TestGameIndex:
         db = str(tmp_path / "index.db")
         GameIndex(db).close()
         conn = GameIndex.open_ro(db)
-        conn.set_authorizer(None)
+        conn.set_authorizer(_allow_everything)
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
             conn.execute("INSERT INTO funcs (address, source) VALUES (1, 'x')")
         conn.close()
@@ -81,7 +86,7 @@ class TestGameIndex:
         gi.replace("funcs", [{"address": 0x1000, "name": "a"}], source="bootstrap")
         gi.close()
         conn = GameIndex.open_ro(db)
-        conn.set_authorizer(None)
+        conn.set_authorizer(_allow_everything)
         try:
             assert conn.execute("SELECT name FROM funcs").fetchall() == [("a",)]
             with pytest.raises(sqlite3.OperationalError, match="readonly"):

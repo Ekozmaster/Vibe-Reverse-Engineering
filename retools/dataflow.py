@@ -549,16 +549,15 @@ def main(argv: list[str] | None = None) -> None:
                  "binary. Use the decompiler for x64 constant and value-origin questions.")
     func_va = int(args.va, 16)
     start = b.find_func_start(func_va) or func_va
-    w = 16 if b.is_64 else 8
 
     if args.constants:
         block_states = propagate_cfg(b, start, max_size=args.max_size)
-        print(f"Forward propagation for 0x{start:0{w}X}: {len(block_states)} blocks\n")
+        print(f"Forward propagation for 0x{start:08X}: {len(block_states)} blocks\n")
         for bva in sorted(block_states):
             state = block_states[bva]
             resolved = {r: v for r, v in state.items() if not isinstance(v, Unknown)}
             if resolved:
-                print(f"  Block 0x{bva:0{w}X}:")
+                print(f"  Block 0x{bva:08X}:")
                 for reg, val in sorted(resolved.items()):
                     print(f"    {reg} = {val}")
 
@@ -570,9 +569,9 @@ def main(argv: list[str] | None = None) -> None:
         target_va = int(parts[0], 16)
         target_reg = parts[1]
         result = backward_slice_cfg(b, start, target_va, target_reg, max_size=args.max_size)
-        print(f"Backward slice for {target_reg} at 0x{target_va:0{w}X}:\n")
+        print(f"Backward slice for {target_reg} at 0x{target_va:08X}:\n")
         for va, reg, desc in result:
-            print(f"  0x{va:0{w}X}: {reg} <- {desc}")
+            print(f"  0x{va:08X}: {reg} <- {desc}")
 
     else:
         p.print_help()

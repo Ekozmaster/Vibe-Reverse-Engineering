@@ -184,6 +184,77 @@ class TestScanStops:
         rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT + 0x10, 0x100)
         assert rets == [(TEXT + 0x18, 0)] and end == TEXT + 0x19
 
+    def test_bytes_behind_the_last_ret_that_no_branch_reaches_are_outside_the_function(self, tmp_path):
+        # xor eax, eax / ret / lea ecx, [ecx] (alignment) / two jump-table pointers / int3
+        table = struct.pack("<II", TEXT + 0x20, TEXT + 0x30)
+        code = b"\x33\xC0" + b"\xC3" + b"\x8D\x49\x00" + table + b"\xCC"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, code), TEXT, 0x100)
+        assert rets == [(TEXT + 2, 0)] and end == TEXT + 3
+
+    def test_bytes_behind_a_final_jump_that_no_branch_reaches_are_outside_the_function(self, tmp_path):
+        # jmp eax / lea ecx, [ecx] / two jump-table pointers / int3
+        table = struct.pack("<II", TEXT + 0x20, TEXT + 0x30)
+        code = b"\xFF\xE0" + b"\x8D\x49\x00" + table + b"\xCC"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, code), TEXT, 0x100)
+        assert rets == [] and end == TEXT + 2
+
+    def test_code_behind_a_ret_that_a_branch_reaches_extends_the_function(self, tmp_path):
+        # je over / ret / over: mov / jmp eax / int3
+        code = b"\x74\x01" + b"\xC3" + MOV + b"\xFF\xE0" + b"\xCC"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, code), TEXT, 0x100)
+        assert rets == [(TEXT + 2, 0)] and end == TEXT + 9
+
+    def test_the_next_known_function_bounds_the_scan_without_padding_between(self, tmp_path):
+        # first: mov / ret, second (called from +0x20): mov / ret 4
+        code = bytearray(b"\xCC" * 0x30)
+        code[0:5] = MOV + b"\xC3"
+        code[5:12] = MOV + b"\xC2\x04\x00"
+        code[0x20:0x26] = _call(0x20, 5) + b"\xC3"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
+        assert rets == [(TEXT + 4, 0)] and end == TEXT + 5
+
+    def test_a_known_start_a_conditional_branch_jumps_past_lies_inside_the_function(self, tmp_path):
+        # je +0x0C / mov / ret / label called from +0x20: mov / ret / je target: mov / ret 4
+        code = bytearray(b"\xCC" * 0x30)
+        code[0:2] = b"\x74\x0A"
+        code[2:7] = MOV + b"\xC3"
+        code[7:12] = MOV + b"\xC3"
+        code[12:19] = MOV + b"\xC2\x04\x00"
+        code[0x20:0x26] = _call(0x20, 7) + b"\xC3"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
+        assert rets == [(TEXT + 6, 0), (TEXT + 11, 0), (TEXT + 16, 4)] and end == TEXT + 19
+
+    def test_live_code_that_runs_into_a_known_start_goes_on_through_it(self, tmp_path):
+        # mov / mov eax, imm32 / ret: the imm32's last two bytes are called from +0x20
+        code = bytearray(b"\xCC" * 0x30)
+        code[0:4] = MOV
+        code[4:9] = b"\xB8\x00\x00\x33\xC0"
+        code[9] = 0xC3
+        code[0x20:0x26] = _call(0x20, 7) + b"\xC3"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
+        assert rets == [(TEXT + 9, 0)] and end == TEXT + 10
+
+    def test_a_branch_target_read_from_bytes_behind_the_last_return_carries_the_scan_nowhere(self, tmp_path):
+        # mov / ret / table bytes that decode as "loope +0x10" / the function called from +0x20
+        code = bytearray(b"\xCC" * 0x30)
+        code[0:5] = MOV + b"\xC3"
+        code[5:7] = b"\xE1\x10"
+        code[7:12] = MOV + b"\xC3"
+        code[0x20:0x26] = _call(0x20, 7) + b"\xC3"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
+        assert rets == [(TEXT + 4, 0)] and end == TEXT + 5
+
+    def test_an_instruction_behind_a_return_running_into_the_next_known_function_is_not_decoded(self, tmp_path):
+        # mov / ret / mov eax, imm32 whose last two bytes are the function called from +0x20
+        code = bytearray(b"\xCC" * 0x30)
+        code[0:4] = MOV
+        code[4] = 0xC3
+        code[5:10] = b"\xB8\x00\x00\x33\xC0"
+        code[10] = 0xC3
+        code[0x20:0x26] = _call(0x20, 8) + b"\xC3"
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
+        assert rets == [(TEXT + 4, 0)] and end == TEXT + 5
+
 
 class TestMaxSize:
     def test_scan_window_is_max_size_bytes(self, tmp_path):

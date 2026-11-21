@@ -341,10 +341,14 @@ def _iter_data_labels(program):
     """Named non-function labels: PDB-imported or kb-applied, never Ghidra's own DAT_/switchD_.
 
     Names are namespace-qualified (``Config::Campaign::fTimeMultiplier``): class-scoped
-    PDB labels such as ``vftable`` are ambiguous without their class.
+    PDB labels such as ``vftable`` are ambiguous without their class. Only labels in
+    program memory count: an imported data symbol lives in Ghidra's EXTERNAL space,
+    where its offset is a counter and not a virtual address.
     """
     for sym in program.getSymbolTable().getSymbolIterator(True):
         if str(sym.getSymbolType()) != "Label" or str(sym.getSource()) not in _EXPORTED_LABEL_SOURCES:
+            continue
+        if not sym.getAddress().isMemoryAddress():
             continue
         yield {"address": sym.getAddress().getOffset(), "name": sym.getName(True)}
 

@@ -433,7 +433,7 @@ class TestBootstrapPipeline:
         from bootstrap import bootstrap
         pe_path = _make_minimal_pe(str(tmp_path))
         fetched = []
-        monkeypatch.setattr(sigdb, "_download_file", lambda url, path: fetched.append(path))
+        monkeypatch.setattr(sigdb, "download_signature_db", lambda url, path: fetched.append(path))
         present = tmp_path / "present.db"
         present.write_bytes(b"")
         bootstrap(pe_path, str(tmp_path / "p1"), db_path=str(present))
@@ -486,6 +486,56 @@ class TestDetectCompiler:
 
         assert index.read_bytes() == before
         assert empty.read_bytes() == b""
+
+    def _not_a_signature_database(self, tmp_path):
+        import sqlite3
+        index = tmp_path / "index.db"
+        with sqlite3.connect(index) as other:
+            other.execute("CREATE TABLE names (address INTEGER)")
+        other.close()
+        return index
+
+    def test_a_refused_database_is_reported_and_the_import_heuristic_decides(self, tmp_path, monkeypatch, capsys):
+        import sigdb
+        from bootstrap import _detect_compiler
+        index = self._not_a_signature_database(tmp_path)
+        monkeypatch.setattr(sigdb, "detect_crt_import", lambda b: "msvc_2019")
+
+        assert _detect_compiler(MagicMock(), str(index)) == {"compiler": "msvc_2019", "confidence": 0.3}
+
+        err = capsys.readouterr().err
+        prefix = "[bootstrap] compiler fingerprint skipped: "
+        assert err.startswith(prefix) and err.removeprefix(prefix).strip()
+        assert err.count("\n") == 1
+
+    def test_any_database_error_from_the_open_is_reported_with_its_reason(self, tmp_path, monkeypatch, capsys):
+        import sqlite3
+        import sigdb
+        from bootstrap import _detect_compiler
+
+        class Refused(sqlite3.DatabaseError):
+            pass
+
+        def refuse(path):
+            raise Refused("schema version 99 is newer than this code")
+
+        db = tmp_path / "sigs.db"
+        db.write_bytes(b"")
+        monkeypatch.setattr(sigdb.SignatureDB, "open_existing", refuse)
+        monkeypatch.setattr(sigdb, "detect_crt_import", lambda b: None)
+
+        assert _detect_compiler(MagicMock(), str(db)) == {"compiler": "unknown", "confidence": 0.0}
+        assert capsys.readouterr().err == ("[bootstrap] compiler fingerprint skipped: "
+                                           "schema version 99 is newer than this code\n")
+
+    def test_the_signature_scan_reports_a_refused_database(self, tmp_path, capsys):
+        from bootstrap import _scan_signatures
+        index = self._not_a_signature_database(tmp_path)
+        assert _scan_signatures(MagicMock(), str(index), "msvc") == ({}, [])
+        err = capsys.readouterr().err
+        prefix = "[bootstrap] signature scan skipped: "
+        assert err.startswith(prefix) and err.removeprefix(prefix).strip()
+        assert err.count("\n") == 1
 
 
 class TestMain:

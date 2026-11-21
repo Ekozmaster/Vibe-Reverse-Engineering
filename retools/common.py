@@ -154,22 +154,21 @@ class Binary:
     def read_va(self, va: int, size: int) -> bytes:
         """Read up to *size* bytes starting at virtual address *va*.
 
-        A section's memory can be larger than what the file stores for it;
-        the loader zero-fills the rest, so that part reads as zeros here
-        too. The read ends at the section's last byte.
+        The read ends at the section's last byte, the end of its virtual
+        size. A section's memory can be larger than what the file stores for
+        it; the loader zero-fills the rest, so that part reads as zeros here
+        too. Where the file stores more than the virtual size, the surplus
+        is file alignment and not part of the section.
         """
         rva = va - self.base
         for s in self.pe.sections:
             offset = rva - s.VirtualAddress
             if not 0 <= offset < s.Misc_VirtualSize:
                 continue
-            stored = s.SizeOfRawData - offset
+            length = min(size, s.Misc_VirtualSize - offset)
+            stored = max(min(length, s.SizeOfRawData - offset), 0)
             start = s.PointerToRawData + offset
-            if stored >= size:
-                return self.raw[start : start + size]
-            data = self.raw[start : start + stored] if stored > 0 else b""
-            zero_filled = min(size, s.Misc_VirtualSize - offset) - len(data)
-            return data + bytes(max(zero_filled, 0))
+            return self.raw[start : start + stored] + bytes(length - stored)
         return b""
 
     def read_struct(self, va: int, fmt: str) -> tuple:

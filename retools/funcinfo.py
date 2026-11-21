@@ -48,35 +48,65 @@ def _branch_target(insn) -> int | None:
         return None
 
 
-def _next_function_start(b: Binary, start: int) -> int | None:
-    """The nearest known function entry point after *start*; None when there is none."""
-    idx = bisect.bisect_right(b.func_table, start)
-    return b.func_table[idx] if idx < len(b.func_table) else None
+def _function_starts_after(b: Binary, start: int, end: int) -> list[int]:
+    """The known function entry points in (*start*, *end*), in address order."""
+    table = b.func_table
+    return table[bisect.bisect_right(table, start):bisect.bisect_left(table, end)]
+
+
+def _follows_a_function_end(b: Binary, va: int) -> bool:
+    """Whether the bytes before *va* end a function: padding, a return or an unconditional jump.
+
+    A known entry point reached that way starts a function of its own; one in
+    the middle of straight-line code is a call target inside a function.
+    """
+    before = b.read_va(va - 6, 6)
+    if len(before) < 6:
+        return True
+    return (before[-1] in (0xCC, 0x90, 0xC3) or before[-3] == 0xC2 or before[-2] == 0xEB
+            or before[-5] == 0xE9 or before[-6:-4] == b"\xFF\x25")
 
 
 def analyze(b: Binary, start: int, max_size: int):
     """Return (rets, callees, end_va) for the function at *start*.
 
-    The scan ends at padding: three nops after a return, or an int3. Compilers
-    also put an int3 after a call that does not return; such an int3 ends the
-    scan only when no branch seen so far jumps past it to a label of this
-    function. A branch to the next known function or beyond is a tail call
-    and does not carry the scan over an int3.
+    The scan ends at a known function start that this function's code does not
+    run into, or at padding: three nops after a return, or an int3. A known
+    start that live code falls through to, or that a branch of this function
+    jumps past, lies inside the function (a call target in its body, or bytes
+    that only look like one) and does not end the scan. Compilers also put an
+    int3 after a call that does not return; such an int3 ends the scan only
+    when no branch seen so far jumps past it to a label of this function. A
+    ``jmp`` to the next function or beyond is a tail call and does not carry
+    the scan over an int3; the next function is the nearest known start that
+    follows a function end (padding, a return or a jump).
 
-    *end_va* is the end of the last instruction scanned that is not padding
-    (nop or int3), so a function without a return still has an extent.
+    *end_va* is the end of the last return scanned, or of a later instruction
+    that is live and not padding (nop or int3), so a function without a return
+    still has an extent. The bytes behind a return or an unconditional jump are
+    alignment or a jump table unless a branch reaches them: instructions are
+    live from the function's start, stop being live behind a return or jump,
+    and are live again from the first address at or below the furthest branch
+    target seen before it. Only a live instruction's branch target counts.
     """
     rets: list[tuple[int, int]] = []
     calls: list[tuple[int, int | str]] = []
     end_va = start
     nop_run = 0
     furthest_branch = start
-    next_function = _next_function_start(b, start)
+    later_starts = _function_starts_after(b, start, start + max_size)
+    next_function = next((va for va in later_starts if _follows_a_function_end(b, va)), None)
     previous = None
+    live = True
 
     window = b.iter_disasm(start, max_bytes=max_size)
     for insn in itertools.islice(window, _MAX_FUNCTION_INSNS):
-        if insn.mnemonic in ("ret", "retn"):
+        live = live or insn.address <= furthest_branch
+        ahead = bisect.bisect_left(later_starts, insn.address)
+        if not live and ahead < len(later_starts) and later_starts[ahead] < insn.address + insn.size:
+            break
+        is_ret = insn.mnemonic in ("ret", "retn")
+        if is_ret:
             cleanup = int(insn.op_str, 0) if insn.op_str else 0
             rets.append((insn.address, cleanup))
         elif insn.mnemonic == "call":
@@ -86,12 +116,16 @@ def analyze(b: Binary, start: int, max_size: int):
                 target = insn.op_str
             calls.append((insn.address, target))
         else:
-            branch = _branch_target(insn)
-            if branch is not None and (next_function is None or branch < next_function):
+            branch = _branch_target(insn) if live else None
+            is_tail_call = insn.mnemonic == "jmp" and next_function is not None and branch is not None \
+                and branch >= next_function
+            if branch is not None and not is_tail_call and branch < start + max_size:
                 furthest_branch = max(furthest_branch, branch)
 
-        if insn.mnemonic not in ("nop", "int3"):
+        if is_ret or (live and insn.mnemonic not in ("nop", "int3")):
             end_va = insn.address + insn.size
+        if is_ret or insn.mnemonic == "jmp":
+            live = False
         nop_run = nop_run + 1 if insn.mnemonic == "nop" else 0
         if nop_run >= 3 and rets:
             break

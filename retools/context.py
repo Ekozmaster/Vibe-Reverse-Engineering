@@ -159,6 +159,20 @@ def _dataflow_section(b: Binary, start: int, func_size: int) -> list[str]:
     return ["[dataflow]", *constants] if constants else []
 
 
+def _strings_section(b: Binary, func_insns: list) -> list[str]:
+    """The ``[strings]`` lines: each string of the binary that *func_insns* refer to, once."""
+    str_by_va = {s.va: s.value for s in find_strings(b, min_len=4) if s.va is not None}
+    w = 16 if b.is_64 else 8
+    referenced: dict[int, str] = {}
+    for insn in func_insns:
+        for ref_va in b.abs_imm_refs(insn) + b.abs_mem_refs(insn):
+            if ref_va in str_by_va:
+                referenced.setdefault(ref_va, str_by_va[ref_va])
+    if not referenced:
+        return []
+    return ["[strings]", *(f'  "{value}" at 0x{va:0{w}X}' for va, value in referenced.items())]
+
+
 def _similar_section(b: Binary, start: int, db_path: str) -> list[str]:
     """The best structural match for the function at *start* in the signature DB."""
     db = SignatureDB.open_existing(db_path)
@@ -242,50 +256,22 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
             else:
                 lines.append(f"  {target}: indirect call")
 
-    # -- Struct fields (best-effort) --
-    try:
-        fields = aggregate_struct(b, start, fn_size=end_va - start or 0x2000)
-        if fields:
-            lines.append("[struct]")
-            for fa in fields:
-                lines.append(
-                    f"  +0x{fa.offset:03X}: {fa.type_name} "
-                    f"({fa.access}, {len(fa.refs)} refs)"
-                )
-    except Exception:
-        pass
+    # -- Struct fields --
+    fields = aggregate_struct(b, start, fn_size=end_va - start or 0x2000)
+    if fields:
+        lines.append("[struct]")
+        for fa in fields:
+            lines.append(
+                f"  +0x{fa.offset:03X}: {fa.type_name} "
+                f"({fa.access}, {len(fa.refs)} refs)"
+            )
 
     # Shared disassembly for strings + globals sections
     func_size = end_va - start or 0x2000
-    try:
-        func_insns = b.disasm(start, count=2000, max_bytes=func_size)
-    except Exception:
-        func_insns = []
+    func_insns = b.disasm(start, count=2000, max_bytes=func_size)
 
-    # -- Strings (best-effort, O(1) lookup via VA dict) --
-    try:
-        all_strings = find_strings(b, min_len=4)
-        if all_strings:
-            # Build O(1) lookup by VA
-            str_by_va: dict[int, str] = {
-                s.va: s.value for s in all_strings if s.va is not None
-            }
-            # Collect memory refs from function's instructions
-            found_strings: list[tuple[str, int]] = []
-            for insn in func_insns:
-                for ref_va in b.abs_imm_refs(insn) + b.abs_mem_refs(insn):
-                    if ref_va in str_by_va:
-                        found_strings.append((str_by_va[ref_va], ref_va))
-            if found_strings:
-                lines.append("[strings]")
-                seen_str_vas: set[int] = set()
-                for val, sva in found_strings:
-                    if sva in seen_str_vas:
-                        continue
-                    seen_str_vas.add(sva)
-                    lines.append(f'  "{val}" at 0x{sva:0{w}X}')
-    except Exception:
-        pass
+    # -- Strings --
+    lines.extend(_strings_section(b, func_insns))
 
     # -- Globals (cross-ref KB globals with function memory refs) --
     if kb_globals:

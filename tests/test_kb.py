@@ -207,6 +207,69 @@ class TestOneLineEntries:
         kb = parse_kb("int g\nint h\nvoid (*callback)(int a,\nint b);\n")
         assert kb.typedefs == ["int g", "int h", "void (*callback)(int a,", "int b);"]
 
+    def test_a_typedef_missing_its_semicolon_after_the_brace_does_not_take_another_declaration(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef struct { int x; }\nint g;\ntypedef struct {\n    int y;\n}\nvoid (*callback)(int a);\n")
+        assert kb.typedefs == ["typedef struct { int x; }", "int g;", "typedef struct { int y; }",
+                               "void (*callback)(int a);"]
+
+    def test_a_typedef_takes_its_declarators_from_the_line_after_the_brace(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef struct {\n    int x;\n}\nFoo, *PFoo;\ntypedef struct { int v[4]; }\nVec[2];\nint g;\n")
+        assert kb.typedefs == ["typedef struct { int x; } Foo, *PFoo;", "typedef struct { int v[4]; } Vec[2];",
+                               "int g;"]
+
+
+class TestUnclosedDeclarations:
+    def test_a_struct_never_closed_ends_where_the_next_declaration_starts(self):
+        from kb import parse_kb
+        kb = parse_kb("struct A {\n    int x;\nstruct B { int y; };\nint g;\nenum E {\n    ONE\n};\n")
+        assert kb.typedefs == ["struct A { int x;", "struct B { int y; };", "int g;", "enum E { ONE };"]
+
+    def test_a_typedef_line_ends_a_struct_never_closed(self):
+        from kb import parse_kb
+        kb = parse_kb("struct A {\n    int x;\ntypedef int Handle;\n$ 0x7C5548 int g_x\nunion U {\n    int i;\nclass C { int z; };\n")
+        assert kb.typedefs == ["struct A { int x;", "typedef int Handle;", "union U { int i;", "class C { int z; };"]
+
+    def test_an_unclosed_parameter_list_ends_where_the_next_declaration_starts(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef void (*Fn)(int a,\nstruct Foo { int x; };\n")
+        assert kb.typedefs == ["typedef void (*Fn)(int a,", "struct Foo { int x; };"]
+
+    def test_members_that_start_with_a_keyword_stay_in_their_closed_struct(self):
+        from kb import parse_kb
+        kb = parse_kb("struct List {\n    struct Node *next;\n    enum Kind kind;\n    union {\n        int i;\n    } value;\n};\n"
+                      "struct After { int x; };\n")
+        assert kb.typedefs == ["struct List { struct Node *next; enum Kind kind; union { int i; } value; };",
+                               "struct After { int x; };"]
+
+
+class TestStringLiterals:
+    def test_comment_markers_inside_a_string_literal_are_text(self):
+        from kb import parse_kb
+        kb = parse_kb('#define URL "http://example.com/a"  // home\n#define GLOB "/*.dds" /* textures */\n')
+        assert kb.typedefs == ['#define URL "http://example.com/a"', '#define GLOB "/*.dds"']
+
+    def test_an_escaped_quote_does_not_end_the_string(self):
+        from kb import parse_kb
+        kb = parse_kb('#define QUOTED "say \\"//hi\\"" // greeting\n')
+        assert kb.typedefs == ['#define QUOTED "say \\"//hi\\""']
+
+    def test_a_quote_character_literal_does_not_open_a_string(self):
+        from kb import parse_kb
+        kb = parse_kb("#define QUOTE '\"' // one \"quote\n#define ESCAPED '\\'' // it's \"one\n")
+        assert kb.typedefs == ["#define QUOTE '\"'", "#define ESCAPED '\\''"]
+
+    def test_an_apostrophe_in_a_name_does_not_open_a_literal(self):
+        from kb import parse_kb
+        kb = parse_kb("$ 0x7C5548 void* Foo::`vftable' // it's the first\n$ 0x7C554C int g_y\n")
+        assert [g.name for g in kb.globals] == ["Foo::`vftable'", "g_y"]
+
+    def test_a_quote_inside_a_comment_opens_nothing(self):
+        from kb import parse_kb
+        kb = parse_kb("$ 0x7C5548 int g_x // don't use\n$ 0x7C554C int g_y /* \"draft */\n$ 0x7C5550 int g_z // it's \"old\n")
+        assert [(g.type, g.name) for g in kb.globals] == [("int", "g_x"), ("int", "g_y"), ("int", "g_z")]
+
 
 class TestBlockComments:
     def test_a_brace_in_a_comment_does_not_open_a_declaration(self):

@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
 from capstone import CS_ARCH_X86, CS_MODE_32, CS_MODE_64, Cs  # noqa: E402
 
 from common import Binary  # noqa: E402
-from pe_fakes import DATA_RAW, DATA_RVA, IMAGE_BASE, IMAGE_BASE64, TEXT_RAW, TEXT_RVA, pe_image  # noqa: E402
+from pe_fakes import (DATA_RAW, DATA_RVA, IMAGE_BASE, IMAGE_BASE64, TEXT_RAW, TEXT_RVA,  # noqa: E402
+                      binary_from_sections, fake_section, pe_image)
 
 def _insn(code_hex: str, mode=CS_MODE_32, address=0x1000):
     cs = Cs(CS_ARCH_X86, mode)
@@ -54,6 +55,16 @@ class TestAddressTranslation:
         assert b.read_ptr(IMAGE_BASE + DATA_RVA) == 0x401234
         assert b.read_ptr(IMAGE_BASE + 0x9000) is None
         assert b.read_struct(IMAGE_BASE + DATA_RVA, "<I") == (0x401234,)
+
+    def test_a_read_ends_at_the_sections_virtual_size_when_the_file_stores_more(self):
+        stored = bytes(range(1, 9)) + b"\xEE" * 8                 # 8 bytes of section, 8 of file alignment
+        b = binary_from_sections(stored, [fake_section(DATA_RVA, 8, 0, len(stored))])
+        data = IMAGE_BASE + DATA_RVA
+        assert b.read_va(data, 0x10) == bytes(range(1, 9))
+        assert b.read_va(data + 6, 4) == b"\x07\x08"
+        assert b.read_va(data + 2, 4) == b"\x03\x04\x05\x06"
+        assert b.read_va(data + 8, 4) == b""
+        assert b.va_to_offset(data + 8) is None
 
     def test_pe32_pointer_size(self, tmp_path):
         b = Binary(str(pe_image(tmp_path / "a.exe", b"\x90")))

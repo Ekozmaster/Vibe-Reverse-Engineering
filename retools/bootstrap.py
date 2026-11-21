@@ -174,28 +174,44 @@ def _detect_compiler(b: Binary, db_path: str | None) -> dict:
         b: Loaded Binary instance.
         db_path: Optional path to a SignatureDB database file.
 
+    A database that is refused or cannot be read is reported on stderr and
+    the import heuristic decides instead.
+
     Returns:
         {"compiler": str, "confidence": float}.
     """
     try:
         if db_path and os.path.isfile(db_path):
-            from sigdb import SignatureDB
-            db = SignatureDB.open_existing(db_path)
             try:
-                fp = db.fingerprint(b)
-            finally:
-                db.close()
-            return {
-                "compiler": fp.get("compiler", "unknown"),
-                "confidence": fp.get("confidence", 0.0),
-            }
+                fp = _fingerprint(b, db_path)
+            except sqlite3.Error as refusal:
+                print(f"[bootstrap] compiler fingerprint skipped: {refusal}", file=sys.stderr)
+            else:
+                return {
+                    "compiler": fp.get("compiler", "unknown"),
+                    "confidence": fp.get("confidence", 0.0),
+                }
         from sigdb import detect_crt_import
         crt = detect_crt_import(b)
         if crt:
             return {"compiler": crt, "confidence": 0.3}
-    except (ImportError, FileNotFoundError, ValueError, sqlite3.Error):
+    except (ImportError, FileNotFoundError, ValueError):
         pass
     return {"compiler": "unknown", "confidence": 0.0}
+
+
+def _fingerprint(b: Binary, db_path: str) -> dict:
+    """The signature database's compiler fingerprint of *b*.
+
+    Raises:
+        sqlite3.Error: The file is refused as a signature database or cannot be read.
+    """
+    from sigdb import SignatureDB
+    db = SignatureDB.open_existing(db_path)
+    try:
+        return db.fingerprint(b)
+    finally:
+        db.close()
 
 
 def _scan_signatures(
@@ -220,7 +236,10 @@ def _scan_signatures(
             sig_results = db.scan(b, preferred_compiler=compiler_id)
         finally:
             db.close()
-    except (ImportError, FileNotFoundError, sqlite3.Error):
+    except (ImportError, FileNotFoundError):
+        return {}, []
+    except sqlite3.Error as refusal:
+        print(f"[bootstrap] signature scan skipped: {refusal}", file=sys.stderr)
         return {}, []
 
     kb_entries = []
@@ -458,11 +477,11 @@ def bootstrap(
         db_path = str(DEFAULT_DB_PATH)
     if not os.path.isfile(db_path):
         try:
-            from sigdb import _download_file, _hf_url, _HF_REPO_DEFAULT, _HF_REVISION_DEFAULT
+            from sigdb import download_signature_db, _hf_url, _HF_REPO_DEFAULT, _HF_REVISION_DEFAULT
             url = _hf_url(_HF_REPO_DEFAULT, _HF_REVISION_DEFAULT, "signatures.db")
-            print(f"Signature DB not found. Downloading from HuggingFace...")
-            _download_file(url, db_path)
-        except Exception as e:
+            print("Signature DB not found. Downloading from HuggingFace...")
+            download_signature_db(url, db_path)
+        except (OSError, sqlite3.DatabaseError) as e:
             print(f"Could not download signature DB: {e}", file=sys.stderr)
 
     b = Binary(binary_path)

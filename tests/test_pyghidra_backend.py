@@ -421,6 +421,15 @@ class TestExportProgram:
         _, names, _ = _export(tmp_path, program)
         assert names == []
 
+    def test_export_skips_labels_outside_program_memory(self, tmp_path):
+        program = _fake_program(
+            [],
+            [_FakeSym(0x1, "_acmdln", "Label", "IMPORTED", namespace="MSVCRT.DLL", memory=False),
+             _FakeSym(0x8D27D8, "g_basicGame", "Label", "IMPORTED")],
+        )
+        _, names, _ = _export(tmp_path, program)
+        assert names == [(0x8D27D8, "g_basicGame", "ghidra")]
+
 
 # ---------------------------------------------------------------------------
 # kb-apply / _kb_apply_program
@@ -769,8 +778,10 @@ class TestExportCLIDbPath:
 
 
 class _Addr:
-    def __init__(self, off): self._off = off
+    """An address in program memory unless *memory* is False, as in Ghidra's EXTERNAL space."""
+    def __init__(self, off, memory=True): self._off, self._memory = off, memory
     def getOffset(self): return self._off
+    def isMemoryAddress(self): return self._memory
 
 
 class _FakeBody:
@@ -800,8 +811,8 @@ class _FakeSym:
 
     getName(True) prefixes the parent namespace like Ghidra's Symbol.getName(includeNamespace).
     """
-    def __init__(self, addr, name, sym_type, source, namespace=""):
-        self._addr, self._name, self._type, self._source = _Addr(addr), name, sym_type, source
+    def __init__(self, addr, name, sym_type, source, namespace="", memory=True):
+        self._addr, self._name, self._type, self._source = _Addr(addr, memory), name, sym_type, source
         self._namespace = namespace
     def getAddress(self): return self._addr
     def getName(self, include_namespace=False):
