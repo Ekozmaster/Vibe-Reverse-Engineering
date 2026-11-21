@@ -5,6 +5,7 @@ process's code and stack exactly as the program left them. ``step`` then runs
 the program one instruction at a time from wherever a thread is frozen.
 """
 
+import struct
 import subprocess
 import sys
 import time
@@ -15,6 +16,7 @@ import pytest
 pytest.importorskip("frida")
 
 from live_target import ARGS, REP_COUNT, RESULT, hex_addr
+from livetools import server
 
 _INT3 = 0xCC
 _LOOP_BODY = 0x30  # bytes from the loop label that cover every instruction a test breaks on
@@ -71,6 +73,129 @@ rpc.exports = {
 """
 
 
+# Parks one thread inside a kernel32 call, where the agent has let go of its
+# script lock, so a test can run a command at exactly that point.
+_GATE_JS = r"""
+var kernel32 = Process.getModuleByName('kernel32.dll');
+var createEvent = new NativeFunction(kernel32.getExportByName('CreateEventW'),
+    'pointer', ['pointer', 'int', 'int', 'pointer']);
+var setEvent = new NativeFunction(kernel32.getExportByName('SetEvent'), 'int', ['pointer']);
+var waitForSingleObject = new NativeFunction(kernel32.getExportByName('WaitForSingleObject'),
+    'uint32', ['pointer', 'uint32']);
+var gate = createEvent(NULL, 1, 0, NULL);
+var listener = null;
+var parked = false;
+
+rpc.exports = {
+    park: function (exportName, threadId, when) {
+        var callbacks = {};
+        callbacks[when] = function () {
+            if (parked || this.threadId !== threadId) return;
+            parked = true;
+            waitForSingleObject(gate, 0xFFFFFFFF);
+        };
+        listener = Interceptor.attach(kernel32.getExportByName(exportName), callbacks);
+    },
+    parked: function () {
+        return parked;
+    },
+    open: function () {
+        setEvent(gate);
+        if (listener !== null) listener.detach();
+        listener = null;
+    }
+};
+"""
+
+
+@pytest.fixture
+def gate(target):
+    """``park(export, thread, "onEnter" | "onLeave")`` holds that thread's next call until ``open()``."""
+    script = target.daemon.session.create_script(_GATE_JS)
+    script.load()
+    yield script.exports_sync
+    script.exports_sync.open()
+    script.unload()
+
+
+_THREADS_JS = r"""
+var kernel32 = Process.getModuleByName('kernel32.dll');
+var createThread = new NativeFunction(kernel32.getExportByName('CreateThread'),
+    'pointer', ['pointer', 'size_t', 'pointer', 'pointer', 'uint32', 'pointer']);
+var waitForSingleObject = new NativeFunction(kernel32.getExportByName('WaitForSingleObject'),
+    'uint32', ['pointer', 'uint32']);
+rpc.exports = {
+    start: function (entry) {
+        return createThread(NULL, 0, ptr(entry), NULL, 0, NULL).toString();
+    },
+    hasExited: function (thread, withinMilliseconds) {
+        return waitForSingleObject(ptr(thread), withinMilliseconds) === 0;
+    }
+};
+"""
+
+_SLEEP_SECONDS = 5
+
+
+def _threads(target):
+    """RPC exports that start a thread and wait for one to exit."""
+    script = target.daemon.session.create_script(_THREADS_JS)
+    script.load()
+    return script.exports_sync
+
+
+def _write_x64_sleeper(target) -> tuple[str, str]:
+    """Write a thread routine that sleeps ``_SLEEP_SECONDS`` in one system call of its own.
+
+    Returns:
+        The routine's entry and its ``syscall`` instruction, which no other thread executes.
+    """
+    stub = target.helper.export_address("ntdll.dll", "NtDelayExecution")
+    reply = target.run({"cmd": "mem_read", "addr": stub, "size": 8})
+    service = bytes.fromhex(reply["hex"])[4:8]                          # mov r10, rcx; mov eax, <service>
+    code = bytes.fromhex("31C9")                                        # 00 xor ecx, ecx
+    code += bytes.fromhex("488D150B000000")                             # 02 lea rdx, [interval]
+    code += bytes.fromhex("4C8BD1 B8") + service                       # 09 mov r10, rcx; mov eax, <service>
+    code += bytes.fromhex("0F05 C3")                                    # 11 syscall; ret
+    code += struct.pack("<q", -_SLEEP_SECONDS * 10_000_000)             # 14 interval, in 100 ns units
+    entry = int(target.helper.allocate(len(code)), 16)
+    target.run({"cmd": "mem_write", "addr": hex_addr(entry), "hex": code.hex()})
+    return hex_addr(entry), hex_addr(entry + 0x11)
+
+
+# Wraps the agent so that it sees a process with no Win32: the platform is
+# another one and kernel32.dll is not loaded.
+_OFF_WINDOWS_JS = r"""
+var offWindows = new Proxy(Process, {
+    get: function (process, name) {
+        if (name === 'platform') return 'linux';
+        if (name === 'getModuleByName') {
+            return function (module) {
+                if (module.toLowerCase() === 'kernel32.dll') {
+                    throw new Error("unable to find module 'kernel32.dll'");
+                }
+                return process.getModuleByName(module);
+            };
+        }
+        var value = process[name];
+        return typeof value === 'function' ? value.bind(process) : value;
+    }
+});
+(function (Process) { %s
+})(offWindows);
+"""
+
+
+@pytest.fixture
+def agent_off_windows(target):
+    """RPC exports of a second copy of the agent, loaded as if the process were not a Windows one."""
+    script = target.daemon.session.create_script(
+        _OFF_WINDOWS_JS % server.AGENT_JS.read_text(encoding="utf-8"))
+    script.load()
+    yield script.exports_sync
+    script.unload()
+
+
 def _allocate_alias(target, address: int) -> int:
     """Commit a page whose address differs from *address* by exactly 4 GiB.
 
@@ -125,6 +250,19 @@ class TestBreakpoint:
 
         assert reply["ok"] and reply["state"] == "RUNNING" and reply["bpCount"] == 0
         target.wait_for_iterations(3)
+
+    def test_deleted_while_a_thread_is_about_to_freeze_there_lets_the_thread_run(self, target, gate):
+        thread = _freeze_at(target, "loop")["threadId"]
+        gate.park("CreateEventW", thread, "onEnter")
+        target.run({"cmd": "resume"})
+        _wait_until(gate.parked)
+
+        reply = target.run({"cmd": "bp_del", "addr": target.addr("loop")})
+        gate.open()
+
+        assert reply["ok"] and reply["state"] == "RUNNING"
+        target.wait_for_iterations(3)
+        assert target.run({"cmd": "status"})["state"] == "RUNNING"
 
     def test_removal_restores_the_original_bytes(self, target):
         built = target.loop.built_bytes("loop", 8)
@@ -283,6 +421,36 @@ class TestStep:
         assert f"thread {stepping} is running" in reply["stepInterrupted"]
         target.wait_for_iterations(3)
 
+    def test_ended_by_another_threads_breakpoint_before_it_starts_is_not_taken_later(self, target, gate):
+        other = target.start_loop()
+        stepping = _freeze_at(target, "call_site")["threadId"]
+        gate.park("WaitForSingleObject", stepping, "onLeave")
+        target.run({"cmd": "resume"})
+        assert target.run({"cmd": "watch", "timeout": 5})["ok"]
+        target.run({"cmd": "bp_add", "addr": other.addr("loop")})
+
+        reply = target.run({"cmd": "step", "mode": "over", "timeout": 5})
+        assert reply["ok"] and reply["snapshot"]["threadId"] != stepping, reply
+        _wait_until(gate.parked)
+        target.run({"cmd": "bp_del", "addr": other.addr("loop")})
+        target.run({"cmd": "bp_del", "addr": target.addr("call_site")})
+        gate.open()
+
+        target.wait_for_iterations(3)
+        assert target.run({"cmd": "status"})["state"] == "RUNNING"
+
+    def test_given_up_while_its_thread_is_about_to_freeze_leaves_the_thread_running(self, target, gate):
+        stepping = _freeze_at(target, "loop")["threadId"]
+        gate.park("CreateEventW", stepping, "onEnter")
+
+        reply = target.run({"cmd": "step", "mode": "into", "timeout": 1})
+        target.run({"cmd": "bp_del", "addr": target.addr("loop")})
+        gate.open()
+
+        assert not reply["ok"] and "given up" in reply["error"], reply
+        target.wait_for_iterations(3)
+        assert target.run({"cmd": "status"})["state"] == "RUNNING"
+
     def test_interrupted_single_step_leaves_the_stepped_thread_running(self, target):
         stepped = target.start_loop()
         size = 8 << 20
@@ -398,6 +566,26 @@ class TestHookConflicts:
         assert not reply["ok"]
         assert "hook" in reply["error"]
 
+    def test_probe_overlapping_the_bytes_of_another_hook_is_refused(self, target):
+        target.daemon.api.install_fence(target.addr("dormant"))
+        try:
+            reply = target.run({"cmd": "trace", "addr": _offset(target, "dormant", 2),
+                                "count": 1, "timeout": 1, "probe": True})
+        finally:
+            target.daemon.api.remove_fence()
+
+        assert not reply["ok"]
+        assert "overlap" in reply["error"], reply
+        assert target.loop.live_bytes("dormant", 16) == target.loop.built_bytes("dormant", 16)
+
+    def test_two_hooks_at_one_address_both_run(self, target, tmp_path):
+        with target.stays_correct():
+            reply = target.run({"cmd": "collect", "addrs": [target.addr("callee")],
+                                "duration": 5, "maxRecords": 3, "fence": target.addr("callee"),
+                                "output": str(tmp_path / "shared.jsonl")})
+
+        assert reply["ok"] and reply["totalRecords"] >= 3 and reply["fenceCount"] >= 3, reply
+
     def test_steptrace_is_refused_while_a_breakpoint_is_set(self, target):
         _freeze_at(target, "loop")
 
@@ -466,6 +654,19 @@ class TestHookConflicts:
         insn = target.daemon.api.original_instruction(target.addr("dormant"))
 
         assert insn["str"] == "nop"
+
+class TestOffWindows:
+    def test_memory_is_readable(self, target, agent_off_windows):
+        live = agent_off_windows.read_memory(target.addr("dormant"), 16)
+
+        assert bytes(live) == target.loop.built_bytes("dormant", 16)
+
+    def test_breakpoint_is_refused(self, target, agent_off_windows):
+        reply = agent_off_windows.install_bp(target.addr("dormant"))
+
+        assert not reply["ok"] and "Windows" in reply["error"], reply
+        assert target.loop.live_bytes("dormant", 16) == target.loop.built_bytes("dormant", 16)
+
 
 @pytest.fixture
 def x86_target(target):
@@ -566,6 +767,24 @@ class TestUnload:
 
         _wait_until(lambda: loop.reps > reps + 1)
         assert fresh_target.alive
+
+    def test_detach_while_a_thread_blocks_in_the_instruction_it_was_sent_past_leaves_it_running(
+            self, fresh_target):
+        if fresh_target.arch != "x64":
+            pytest.skip("the sleeping routine is x64 code")
+        loop = fresh_target.loop
+        _freeze_at(fresh_target, "spare")
+        entry, enters_kernel = _write_x64_sleeper(fresh_target)
+        fresh_target.run({"cmd": "bp_add", "addr": enters_kernel})
+        sleeper = _threads(fresh_target).start(entry)
+        _wait_until(lambda: _hit_counts(fresh_target)[int(enters_kernel, 16)] > 0)
+
+        fresh_target.detach_daemon()
+        fresh_target.attach_daemon()
+
+        assert _threads(fresh_target).has_exited(sleeper, 2 * _SLEEP_SECONDS * 1000)
+        assert fresh_target.alive
+        loop.wait_for_iterations(3)
 
     def test_detach_removes_the_vishook(self, fresh_target):
         if fresh_target.arch != "x86":

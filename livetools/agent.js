@@ -108,7 +108,8 @@ function checkPrologue(addrStr) {
 // its trampoline, where no breakpoint is registered; a breakpoint written into
 // a jump would redirect it; and bytes saved for a later restore would hold the
 // other one's change and write it back after it was undone. Interceptor hooks
-// alone may share bytes with each other, because Frida chains them.
+// at one address alone share their bytes, because Frida chains them there; at
+// another address inside those bytes, Frida would relocate the jump's own bytes.
 
 var hooks = [];     // { start, size, what, interceptor, original } for every jump written
 var patches = {};   // address -> the int3 written there (see "breakpoints")
@@ -158,7 +159,8 @@ function rewriteRefusal(start, size, what, interceptor) {
     }
     for (var i = 0; i < hooks.length; i++) {
         var hook = hooks[i];
-        if ((interceptor && hook.interceptor) || !overlaps(hook.start, hook.size, start, size)) continue;
+        if (!overlaps(hook.start, hook.size, start, size)) continue;
+        if (interceptor && hook.interceptor && hook.start.equals(start)) continue;
         return 'the ' + hook.what + ' at 0x' + ptrToHex(hook.start) + ' has replaced ' + hook.size +
             ' bytes there, which overlap the ' + size + ' bytes the ' + what + ' at 0x' +
             ptrToHex(start) + ' would rewrite. ' +
@@ -219,9 +221,14 @@ function recordHook(start, size, what, interceptor, original) {
     };
 }
 
+// Why an Interceptor hook for `what` must not go at `address`, or null if it may.
+function hookRefusal(address, what) {
+    return rewriteRefusal(address, hookedBytes(address), what + ' hook', true);
+}
+
 function attachHook(address, what, callbacks) {
     var size = hookedBytes(address);
-    var refusal = rewriteRefusal(address, size, what + ' hook', true);
+    var refusal = hookRefusal(address, what);
     if (refusal !== null) throw new Error(refusal);
     var original = originalBytes(address, size);
     var listener = Interceptor.attach(address, callbacks);
@@ -455,6 +462,10 @@ function installTrace(addrStr, config) {
     var label = config.label || '';
     var collected = 0;
     var buffer = [];
+
+    // Asked first: inside another hook's jump there is no prologue of the program's to check.
+    var refusal = hookRefusal(ptr(addrStr), 'trace');
+    if (refusal !== null) return { ok: false, error: refusal };
 
     var prologue = checkPrologue(addrStr);
     if (!prologue.ok) {
@@ -803,19 +814,50 @@ function installStepTrace(addrStr, config) {
 // Win32 only: the trap flag is set in the CONTEXT record the handler is given,
 // and a frozen thread waits on an event object. A thread waiting in
 // recv().wait() instead would crash the process when the script is unloaded.
+// The Win32 functions are resolved when the first breakpoint is set, so the
+// rest of the agent loads in a process that has none.
 
 var INT3 = 0xCC;
 var TRAP_FLAG = 0x100;
 var EFLAGS_OFFSET = is64 ? 0x44 : 0xC0;
 var WAIT_FOREVER = 0xFFFFFFFF;
+var THREAD_CONTEXT_ACCESS = 0x1A;    // THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT
+var SUSPEND_FAILED = 0xFFFFFFFF;
+var CONTEXT_FLAGS_OFFSET = is64 ? 0x30 : 0;
+var CONTEXT_CONTROL = is64 ? 0x100001 : 0x10001;
 
-var kernel32 = Process.getModuleByName('kernel32.dll');
-var createEvent = new NativeFunction(kernel32.getExportByName('CreateEventW'),
-    'pointer', ['pointer', 'int', 'int', 'pointer']);
-var setEvent = new NativeFunction(kernel32.getExportByName('SetEvent'), 'int', ['pointer']);
-var closeHandle = new NativeFunction(kernel32.getExportByName('CloseHandle'), 'int', ['pointer']);
-var waitForSingleObject = new NativeFunction(kernel32.getExportByName('WaitForSingleObject'),
-    'uint32', ['pointer', 'uint32']);
+var win32 = null;    // the functions below, once a breakpoint was set
+
+function resolveWin32() {
+    var kernel32 = Process.getModuleByName('kernel32.dll');
+    // A thread suspended while it holds the script lock would never give it back,
+    // so the calls made on a suspended thread keep the lock themselves.
+    function onSuspendedThread(name, returns, args) {
+        return new NativeFunction(kernel32.getExportByName(name), returns, args, { scheduling: 'exclusive' });
+    }
+    return {
+        openThread: new NativeFunction(kernel32.getExportByName('OpenThread'),
+            'pointer', ['uint32', 'int', 'uint32']),
+        suspendThread: onSuspendedThread('SuspendThread', 'uint32', ['pointer']),
+        getThreadContext: onSuspendedThread('GetThreadContext', 'int', ['pointer', 'pointer']),
+        setThreadContext: onSuspendedThread('SetThreadContext', 'int', ['pointer', 'pointer']),
+        resumeThread: onSuspendedThread('ResumeThread', 'uint32', ['pointer']),
+        createEvent: new NativeFunction(kernel32.getExportByName('CreateEventW'),
+            'pointer', ['pointer', 'int', 'int', 'pointer']),
+        setEvent: new NativeFunction(kernel32.getExportByName('SetEvent'), 'int', ['pointer']),
+        closeHandle: new NativeFunction(kernel32.getExportByName('CloseHandle'), 'int', ['pointer']),
+        waitForSingleObject: new NativeFunction(kernel32.getExportByName('WaitForSingleObject'),
+            'uint32', ['pointer', 'uint32'])
+    };
+}
+
+// Why no thread of this process can be frozen, or null if one can.
+function freezeRefusal() {
+    if (Process.platform === 'windows') return null;
+    return 'breakpoints and stepping need a Windows process: they are built on Win32 exception ' +
+        'handling, and this is a ' + Process.platform + ' process. trace, collect, steptrace ' +
+        'and mem work here.';
+}
 
 var nextBpId = 1;
 var retired = {};         // address -> true where this agent has taken an int3 away
@@ -833,6 +875,7 @@ var frozenBpId = null;
 var frozenHitCount = 0;
 var frozenStepCut = false; // a breakpoint stopped the thread before its step ended
 var frozenTicket = null;  // { wake, step }: how the frozen thread is woken and what it does next
+var grantedStep = null;   // the ticket of a thread woken with a step it has not started yet
 
 function writeCodeByte(address, value) {
     patchBytes(address, [value]);
@@ -877,6 +920,8 @@ function lower(patch) {
 }
 
 function breakpointRefusal(address) {
+    var unsupported = freezeRefusal();
+    if (unsupported !== null) return unsupported;
     if (steptrace !== null) {
         return 'a steptrace is running, and the copy of the code it executes cannot carry a ' +
             'breakpoint. Wait for it to finish.';
@@ -899,6 +944,7 @@ function installBp(addrStr) {
     if (!patch) {
         var refusal = breakpointRefusal(address);
         if (refusal !== null) return { ok: false, error: refusal };
+        if (win32 === null) win32 = resolveWin32();
         patch = addPatch(address);
     }
     patch.bp = { id: nextBpId++, addr: addrStr, hitCount: 0 };
@@ -942,8 +988,8 @@ function freeze(details, threadId, patch, wake, stepCut) {
         type: 'bp_hit', addr: frozenAddr, bpId: frozenBpId,
         hitCount: frozenHitCount, regs: frozenCtx
     });
-    waitForSingleObject(ticket.wake, WAIT_FOREVER);
-    closeHandle(ticket.wake);
+    win32.waitForSingleObject(ticket.wake, WAIT_FOREVER);
+    if (grantedStep === ticket) grantedStep = null;
     return ticket.step;
 }
 
@@ -960,7 +1006,8 @@ function unfreeze(step) {
     frozenBpId = null;
     frozenHitCount = 0;
     frozenStepCut = false;
-    setEvent(ticket.wake);
+    if (ticket.step !== null) grantedStep = ticket;
+    win32.setEvent(ticket.wake);
     return true;
 }
 
@@ -1016,15 +1063,19 @@ function endStep() {
     activeStep = null;
 }
 
-// Give up a step that has not ended: its thread runs on and does not freeze.
+// Give up a step that has not ended, or that its thread has not started: the
+// thread runs on and does not freeze.
 function cancelStep() {
     endStep();
     for (var threadId in pendingTraps) pendingTraps[threadId].stop = false;
+    if (grantedStep !== null) grantedStep.step = null;
+    grantedStep = null;
 }
 
 // The thread has stopped at details.context.pc: on `patch` if one is there,
-// after the single-step described by `pending` if it had asked for one.
-function arrive(details, threadId, patch, pending) {
+// after the single-step described by `pending` if it had asked for one. If it
+// is to freeze, it waits on `wake`.
+function arrive(details, threadId, patch, pending, wake) {
     if (patch !== null) {
         lift(patch);
         if (patch.bp !== null) patch.bp.hitCount++;
@@ -1053,17 +1104,12 @@ function arrive(details, threadId, patch, pending) {
 
     if (stop) {
         // Only one thread is frozen at a time; a thread that cannot freeze runs on.
-        // A native call lets other threads into this script, so the event is made
-        // before the check: nothing may run between reading `frozen` and setting it.
-        var wake = createEvent(NULL, 0, 0, NULL);
-        var freezing = !frozen && !shuttingDown;
-        if (freezing) {
+        if (!frozen && !shuttingDown) {
             // The step in progress, on whichever thread, ends here: its thread runs on.
             cancelStep();
             mode = freeze(details, threadId, patch, wake, step !== null && !stepEnds);
         } else {
             if (step !== null) endStep();
-            closeHandle(wake);
             mode = null;
         }
     }
@@ -1112,11 +1158,27 @@ function depart(details, threadId, lifted, mode) {
     }
 }
 
-function handle(details, threadId, patch, pending) {
+// Handles an exception of this agent's: the thread's pending single-step, if
+// `pending` is not null, and its arrival at details.context.pc.
+//
+// A native call lets other threads and the daemon's commands into this script,
+// where they delete breakpoints, give up steps and freeze threads. The event a
+// stop would wait on is therefore made first, and the stop is decided from what
+// is found afterwards: no native call is made between that decision and
+// freeze() taking `frozen`, nor between a thread waking and its departure.
+function handle(details, threadId, pending) {
     handlersRunning++;
     try {
-        if (pending !== null && pending.lower !== null) lower(pending.lower);
-        arrive(details, threadId, patch, pending);
+        var key = patchKey(details.context.pc);
+        var mayStop = patches[key] !== undefined || (pending !== null && pending.stop);
+        var wake = mayStop ? win32.createEvent(NULL, 0, 0, NULL) : null;
+        if (pending !== null) {
+            delete pendingTraps[threadId];
+            if (pending.pushesFlags) clearPushedTrapFlag(details.context.sp);
+            if (pending.lower !== null) lower(pending.lower);
+        }
+        arrive(details, threadId, patches[key] || null, pending, wake);
+        if (wake !== null) win32.closeHandle(wake);
     } catch (e) {
         send({ type: 'agent_error', where: 'breakpoint handler', error: e.message, stack: e.stack || '' });
     }
@@ -1126,8 +1188,7 @@ function handle(details, threadId, patch, pending) {
 
 function onBreakpoint(details, threadId) {
     var pc = details.context.pc;
-    var patch = patches[patchKey(pc)] || null;
-    if (patch !== null) return handle(details, threadId, patch, null);
+    if (patches[patchKey(pc)] !== undefined) return handle(details, threadId, null);
     // An int3 this agent took away while the exception was on its way: the
     // instruction back in its place runs. Every other int3 is the program's.
     return retired[patchKey(pc)] === true && pc.readU8() !== INT3;
@@ -1146,9 +1207,7 @@ function onSingleStep(details, threadId) {
         setTrapFlag(details.nativeContext);
         return true;
     }
-    delete pendingTraps[threadId];
-    if (pending.pushesFlags) clearPushedTrapFlag(details.context.sp);
-    return handle(details, threadId, patches[patchKey(pc)] || null, pending);
+    return handle(details, threadId, pending);
 }
 
 // The instruction a thread was sent past raised an exception of its own, which
@@ -1178,25 +1237,56 @@ Process.setExceptionHandler(function (details) {
     return false;
 });
 
-function hasPendingTraps() {
-    for (var threadId in pendingTraps) return true;
+// Takes back the trap flag a thread was given, and returns whether its
+// single-step exception is coming all the same. The flag stays in the thread's
+// registers for as long as the instruction has not finished, which a system
+// call that blocks may take any time over; a thread that shows no flag has
+// raised the exception, or has not left the handler's return yet. A thread
+// whose registers cannot be reached is given up. `context` is memory for a CONTEXT.
+function withdrawTrap(threadId, context) {
+    var thread = win32.openThread(THREAD_CONTEXT_ACCESS, 0, threadId);
+    if (thread.isNull()) return false;
+    var coming = false;
+    if (win32.suspendThread(thread) !== SUSPEND_FAILED) {
+        context.add(CONTEXT_FLAGS_OFFSET).writeU32(CONTEXT_CONTROL);
+        if (win32.getThreadContext(thread, context) !== 0) {
+            coming = (context.add(EFLAGS_OFFSET).readU32() & TRAP_FLAG) === 0;
+            if (!coming) {
+                clearTrapFlag(context);
+                win32.setThreadContext(thread, context);
+            }
+        }
+        win32.resumeThread(thread);
+    }
+    win32.closeHandle(thread);
+    return coming;
+}
+
+// Returns whether a thread is left whose single-step exception is still to come.
+function withdrawPendingTraps(context) {
+    Object.keys(pendingTraps).forEach(function (threadId) {
+        if (!withdrawTrap(parseInt(threadId, 10), context)) delete pendingTraps[threadId];
+    });
+    for (var left in pendingTraps) return true;
     return false;
 }
 
 // Runs when the script is unloaded, which includes the daemon going away.
-// Afterwards no int3 or jump of this agent's is left in the target and no
-// thread is frozen. Frida removes the Interceptor hooks itself.
+// Afterwards no int3 or jump of this agent's is left in the target, no thread
+// is frozen and none has a trap flag of this agent's. Frida removes the
+// Interceptor hooks itself.
 function shutdown() {
     shuttingDown = true;
     removeVisOverride();
     endStep();
     Object.keys(patches).forEach(function (key) { removePatch(patches[key]); });
     unfreeze(null);
-    // A thread still in the handler, or about to raise its single-step
-    // exception, needs the handler to be there when it does.
-    for (var i = 0; i < 200 && (handlersRunning > 0 || hasPendingTraps()); i++) {
-        Thread.sleep(0.01);
-    }
+    // A thread in the handler, or with its single-step exception on the way to
+    // it, needs the handler to be there, and runs while this thread sleeps. A
+    // thread between the handler and its instruction shows no trap flag yet,
+    // so the flags are looked for again after every wait.
+    var context = Memory.alloc(Process.pageSize);
+    while (withdrawPendingTraps(context) || handlersRunning > 0) Thread.sleep(0.01);
 }
 
 // ── visibility override (code cave) ──────────────────────────────────────
@@ -1489,6 +1579,7 @@ rpc.exports = {
     // frozen state
     unfreeze: function (step) { return unfreeze(step); },
     cancelStep: function () { cancelStep(); },
+    freezeRefusal: function () { return freezeRefusal(); },
     isFrozen: function () { return frozen; },
     getFrozenAddr: function () { return frozenAddr; },
     getFrozenBpId: function () { return frozenBpId; },

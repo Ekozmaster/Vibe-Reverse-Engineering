@@ -339,7 +339,8 @@ class Daemon:
             self._hit_event.clear()
         try:
             if before is None or not self.api.unfreeze(mode):
-                return {**self._base_resp(), "ok": False, "error": "not frozen"}
+                return {**self._base_resp(), "ok": False,
+                        "error": self.api.freeze_refusal() or "not frozen"}
             timeout = cmd.get("timeout", 10)
             if not self._hit_event.wait(timeout=timeout):
                 self.api.cancel_step()
@@ -488,68 +489,70 @@ class Daemon:
         output = cmd.get("output") or default_name
         out_path = Path(output) if os.path.isabs(output) else self._resolve_output_path(output)
 
-        if fence_addr:
-            self.api.install_fence(fence_addr)
-
-        trace_ids = []
-        all_events = {}
-        hook_diags: list[dict] = []
-        for addr in addrs:
-            config = {
-                "readEnter": read_specs.get(addr, cmd.get("read", "")),
-                "readLeave": cmd.get("readLeave", ""),
-                "filter": cmd.get("filter", ""),
-                "count": max_records if max_records > 0 else 0,
-                "label": labels.get(addr, ""),
-                "probe": bool(cmd.get("probe")),
-            }
-            result = self.api.install_trace(addr, config)
-            if result.get("ok"):
-                tid = result["traceId"]
-                trace_ids.append(tid)
-                ev = threading.Event()
-                with self._lock:
-                    self._trace_batches.setdefault(tid, [])
-                    self._trace_done.setdefault(tid, False)
-                    self._trace_events[tid] = ev
-                all_events[tid] = ev
-                hook_diags.append({"addr": addr, "ok": True,
-                                   "hookVerified": result.get("hookVerified", None),
-                                   "prologue": result.get("prologue")})
-            else:
-                hook_diags.append({"addr": addr, "ok": False,
-                                   "error": result.get("error", "unknown")})
-
-        total_collected = 0
-        deadline = time.time() + duration
-
+        # Opened before anything is hooked: a path that cannot be written leaves the target as it was
         with open(out_path, "w", encoding="utf-8") as f:
-            while time.time() < deadline:
-                time.sleep(0.3)
+            if fence_addr:
+                self.api.install_fence(fence_addr)
 
-                for tid in trace_ids:
-                    self.api.flush_traces(tid)
+            trace_ids = []
+            all_events = {}
+            hook_diags: list[dict] = []
+            for addr in addrs:
+                config = {
+                    "readEnter": read_specs.get(addr, cmd.get("read", "")),
+                    "readLeave": cmd.get("readLeave", ""),
+                    "filter": cmd.get("filter", ""),
+                    "count": max_records if max_records > 0 else 0,
+                    "label": labels.get(addr, ""),
+                    "probe": bool(cmd.get("probe")),
+                }
+                result = self.api.install_trace(addr, config)
+                if result.get("ok"):
+                    tid = result["traceId"]
+                    trace_ids.append(tid)
+                    ev = threading.Event()
+                    with self._lock:
+                        self._trace_batches.setdefault(tid, [])
+                        self._trace_done.setdefault(tid, False)
+                        self._trace_events[tid] = ev
+                    all_events[tid] = ev
+                    hook_diags.append({"addr": addr, "ok": True,
+                                       "hookVerified": result.get("hookVerified", None),
+                                       "prologue": result.get("prologue")})
+                else:
+                    hook_diags.append({"addr": addr, "ok": False,
+                                       "error": result.get("error", "unknown")})
 
-                with self._lock:
+            total_collected = 0
+            deadline = time.time() + duration
+            try:
+                while time.time() < deadline:
+                    time.sleep(0.3)
+
                     for tid in trace_ids:
-                        batch = self._trace_batches.get(tid, [])
-                        if batch:
-                            for s in batch:
-                                f.write(json.dumps(s) + "\n")
-                                total_collected += 1
-                            self._trace_batches[tid] = []
-                            f.flush()
+                        self.api.flush_traces(tid)
 
-                all_done = all(self._trace_done.get(t) for t in trace_ids)
-                if all_done:
-                    break
-                if max_records > 0 and total_collected >= max_records:
-                    break
+                    with self._lock:
+                        for tid in trace_ids:
+                            batch = self._trace_batches.get(tid, [])
+                            if batch:
+                                for s in batch:
+                                    f.write(json.dumps(s) + "\n")
+                                    total_collected += 1
+                                self._trace_batches[tid] = []
+                                f.flush()
 
-        for tid in trace_ids:
-            self.api.remove_trace(tid)
-        if fence_addr:
-            self.api.remove_fence()
+                    all_done = all(self._trace_done.get(t) for t in trace_ids)
+                    if all_done:
+                        break
+                    if max_records > 0 and total_collected >= max_records:
+                        break
+            finally:
+                for tid in trace_ids:
+                    self.api.remove_trace(tid)
+                if fence_addr:
+                    self.api.remove_fence()
+
 
         with self._lock:
             for tid in trace_ids:

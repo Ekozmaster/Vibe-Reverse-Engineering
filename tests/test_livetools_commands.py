@@ -36,6 +36,8 @@ class FakeAgent:
     def __init__(self):
         self.traces: list[tuple[str, dict]] = []
         self.fences: list[str] = []
+        self.removed_traces: list[int] = []
+        self.fences_removed = 0
         self.step_traces: list[str] = []
         self.frozen_addr: str | None = None
         self.frozen_thread = 100
@@ -44,6 +46,7 @@ class FakeAgent:
         self.on_unfreeze = lambda step: None
         self.on_cancel_step = lambda: None
         self.bp_refusal: str | None = None
+        self.cannot_freeze: str | None = None
         self.step_trace_result: dict | None = {"addr": ENTRY, "insnCount": 0, "trace": []}
 
     def list_bps(self):
@@ -75,6 +78,9 @@ class FakeAgent:
         self.on_unfreeze(step)
         return True
 
+    def freeze_refusal(self):
+        return self.cannot_freeze
+
     def cancel_step(self):
         self.calls.append("cancel_step")
         self.on_cancel_step()
@@ -96,6 +102,7 @@ class FakeAgent:
         return {"ok": True, "done": True, "collected": 0}
 
     def remove_trace(self, trace_id):
+        self.removed_traces.append(trace_id)
         return {"ok": True}
 
     def install_fence(self, addr):
@@ -103,6 +110,7 @@ class FakeAgent:
         return {"ok": True}
 
     def remove_fence(self):
+        self.fences_removed += 1
         return {"ok": True}
 
     def get_fence_counter(self):
@@ -190,6 +198,22 @@ class TestCollect:
 
         assert reply["ok"]
         assert agent.fences == [CALL_SITE]
+
+    def test_an_output_file_that_cannot_be_opened_hooks_nothing(self, daemon, agent, tmp_path):
+        reply = daemon.handle({"cmd": "collect", "addrs": [ENTRY], "duration": 0, "fence": CALL_SITE,
+                               "output": str(tmp_path / "no_such_folder" / "out.jsonl")})
+
+        assert not reply["ok"]
+        assert agent.traces == [] and agent.fences == []
+
+    def test_hooks_are_removed_when_collecting_fails(self, daemon, agent, tmp_path):
+        agent.flush_traces = lambda trace_id: 1 / 0
+
+        reply = daemon.handle({"cmd": "collect", "addrs": [ENTRY], "duration": 5, "fence": CALL_SITE,
+                               "output": str(tmp_path / "out.jsonl")})
+
+        assert not reply["ok"]
+        assert agent.removed_traces == [1] and agent.fences_removed == 1
 
 
 class TestStepTrace:
@@ -332,6 +356,13 @@ class TestStep:
 
         assert not reply["ok"] and reply["error"] == "not frozen"
 
+    def test_where_no_thread_can_freeze_reports_why(self, daemon, agent):
+        agent.cannot_freeze = "breakpoints and stepping need a Windows process"
+
+        reply = daemon.handle({"cmd": "step", "mode": "over"})
+
+        assert not reply["ok"] and reply["error"] == agent.cannot_freeze
+
 
 class TestCommandLine:
     @pytest.fixture
@@ -363,7 +394,8 @@ class TestCommandLine:
 
 
 class TestDetach:
-    def test_a_daemon_whose_state_file_vanished_counts_as_gone(self, monkeypatch, capsys):
+    def test_a_daemon_whose_state_file_vanished_counts_as_gone(self, monkeypatch, capsys, tmp_path):
+        monkeypatch.setattr(client, "STATE_FILE", tmp_path / "state.json")
         monkeypatch.setattr(client, "is_daemon_alive", lambda: True)
         monkeypatch.setattr(client, "read_state", lambda: None)
 
