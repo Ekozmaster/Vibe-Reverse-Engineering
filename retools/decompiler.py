@@ -20,7 +20,7 @@ Usage:
     python -m retools.decompiler <binary> <va> --project patches/MyGame --backend ghidra
 
 Knowledge base format (``--types`` input):
-    // C type definitions (struct, enum, typedef) -- no prefix
+    // C type definitions (struct, enum, typedef) -- no prefix; may span lines
     struct Foo { int x; float y; };
     enum Mode { MODE_A=0, MODE_B=1 };
 
@@ -38,6 +38,7 @@ Examples:
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -60,6 +61,12 @@ _BACKEND_CMDS = {
     "pdc": "pdc",    # r2 built-in pseudo-C
     "pdd": "pdd",    # r2dec (JS-based)
 }
+
+# What radare2 prints in place of code when a decompiler plugin is absent
+# ("You need to install the plugin with r2pm -ci r2ghidra").
+_MISSING_PLUGIN_HINT = "You need to install the plugin"
+
+_NOT_IN_IDENTIFIER = re.compile(r"\W")
 
 
 def _find_r2_bin() -> str | None:
@@ -99,7 +106,12 @@ def _ensure_r2_in_path(r2_bin: str) -> None:
 
 
 def _load_types(r2, types_arg: str) -> None:
-    """Parse a knowledge base and send type/function/global commands to r2."""
+    """Parse a knowledge base and send type/function/global commands to r2.
+
+    Text from the knowledge base goes into commands that start with a quote,
+    which radare2 takes literally. Unquoted, ``;`` ends a command, so a struct
+    stops at its first member, and ``~``, ``>``, ``|`` and ``#`` are operators.
+    """
     from retools.kb import parse_kb
 
     if types_arg == "-":
@@ -111,15 +123,24 @@ def _load_types(r2, types_arg: str) -> None:
 
     kb = parse_kb(text)
     for td in kb.typedefs:
-        r2.cmd(f"td {td}")
+        r2.cmd(f"'td {td}")
     for fn in kb.functions:
+        at = f"'@{fn.address:#x}'"
         r2.cmd(f"af @ {fn.address:#x}")
-        r2.cmd(f"afn {fn.name} @ {fn.address:#x}")
-        r2.cmd(f"afs {fn.signature} @ {fn.address:#x}")
+        if not fn.name:  # a signature such as "(int a)" names nothing to apply
+            continue
+        parameters = fn.signature.find("(")
+        if parameters != -1:
+            # afs takes a signature only when its function name is a plain identifier.
+            # It also renames the function, so the name from the kb is set after it.
+            before_name = fn.signature[:parameters].rstrip().removesuffix(fn.name)
+            r2.cmd(f"{at}afs {before_name}{_NOT_IN_IDENTIFIER.sub('_', fn.name)}{fn.signature[parameters:]}")
+        r2.cmd(f"{at}afn {fn.name}")
     for g in kb.globals:
-        r2.cmd(f"f {g.name} @ {g.address:#x}")
+        at = f"'@{g.address:#x}'"
+        r2.cmd(f"{at}f {g.name}")
         if g.type:
-            r2.cmd(f"tl {g.type} @ {g.address:#x}")
+            r2.cmd(f"{at}tl {g.type}")
 
 
 def decompile(binary: str, va: int, *, backend: str = "auto",
@@ -146,9 +167,8 @@ def decompile(binary: str, va: int, *, backend: str = "auto",
 
     if backend == "auto" and project_dir:
         from retools.pyghidra_backend import is_analyzed, decompile as ghidra_decompile
-        bin_name = Path(binary).stem
         ghidra_dir = str(Path(project_dir) / "ghidra")
-        if is_analyzed(ghidra_dir, bin_name):
+        if is_analyzed(ghidra_dir, Path(binary).name):
             result = ghidra_decompile(ghidra_dir, binary, va)
             if not result.startswith("[error]"):
                 return result
@@ -182,7 +202,7 @@ def decompile(binary: str, va: int, *, backend: str = "auto",
         if backend == "auto":
             for try_be in ("pdg", "pdc"):
                 out = r2.cmd(f"{_BACKEND_CMDS[try_be]} @ {va:#x}").strip()
-                if out and "install" not in out.lower():
+                if out and _MISSING_PLUGIN_HINT not in out:
                     return out
             return f"[error] No decompiler backend produced output at {va:#x}"
 

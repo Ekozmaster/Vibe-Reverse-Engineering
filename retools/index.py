@@ -81,6 +81,22 @@ _SOURCE_PRIORITY = {"bootstrap": 0, "ghidra": 10}
 _PRIORITY_KEY = {"funcs": "address"}
 
 
+_READ_ACTIONS = frozenset((
+    sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE,
+))
+_SCHEMA_PRAGMAS = frozenset((
+    "table_info", "table_xinfo", "table_list", "index_list", "index_info", "index_xinfo",
+    "foreign_key_list",
+))
+
+
+def _authorize_read(action: int, subject: str | None, *_details: str | None) -> int:
+    """sqlite3 authorizer for read-only connections: queries and the pragmas that describe the schema."""
+    if action in _READ_ACTIONS or (action == sqlite3.SQLITE_PRAGMA and subject in _SCHEMA_PRAGMAS):
+        return sqlite3.SQLITE_OK
+    return sqlite3.SQLITE_DENY
+
+
 def _is_addr_col(col: str) -> bool:
     return col == "address" or col.endswith("_ea") or col == "from_func"
 
@@ -191,9 +207,20 @@ class GameIndex:
 
     @classmethod
     def open_ro(cls, path: str) -> sqlite3.Connection:
-        """Open *path* read-only via a file: URI (never mutates the index)."""
-        uri = f"file:{Path(path).as_posix()}?mode=ro"
-        return sqlite3.connect(uri, uri=True)
+        """Open *path* read-only: the index cannot change and no statement can name a file to create.
+
+        ``mode=ro`` covers only the file it opens, so every statement but a
+        query or a schema pragma is refused as well: ``ATTACH DATABASE`` and
+        ``VACUUM INTO`` would otherwise create the database they name, and a
+        temporary table a database of its own.
+
+        SQLite itself still creates ``<path>-shm`` and ``<path>-wal`` beside
+        an index in WAL mode when it reads it, and a read-only connection
+        cannot remove them: they stay until a writing connection closes the index.
+        """
+        conn = sqlite3.connect(f"{Path(path).absolute().as_uri()}?mode=ro", uri=True)
+        conn.set_authorizer(_authorize_read)
+        return conn
 
     @staticmethod
     def default_db_path(game: str) -> str:

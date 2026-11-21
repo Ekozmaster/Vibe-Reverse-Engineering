@@ -23,9 +23,9 @@ These are fast (<5s) and allowed inline:
 - "Get full context before reasoning about a function" → `python -m retools.context assemble $B $VA --project $P`
 - "Clean up decompiler output with known names" → pipe through `python -m retools.context postprocess`
 - "Read a typed value from the PE file" → `python -m retools.readmem $B $VA $TYPE`
-- "What constant flows into this register?" → `python -m retools.dataflow $B $VA --constants`
-- "Trace where this value comes from" → `python -m retools.dataflow $B $VA --slice TARGET_VA:REG`
-- "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json`
+- "What constant flows into this register?" (x86 binaries only) → `python -m retools.dataflow $B $VA --constants`
+- "Trace where this value comes from" (x86 binaries only) → `python -m retools.dataflow $B $VA --slice TARGET_VA:REG`
+- "Build an ASI patch DLL" → `python -m retools.asi_patcher build spec.json --vcvarsall <path to vcvarsall.bat>`
 - "Does a Ghidra project exist for this binary?" → `python retools/pyghidra_backend.py status $B --project $P`
 - "What's in this game's index?" → `python -m retools.index status <Game> [--db PATH]`
 - "Query facts already indexed (funcs, names, xrefs, strings, imports, callers/callees)" → `python -m retools.query <Game> "SQL" [--db PATH] [--json] [--list-tables] [--schema TABLE]`
@@ -62,7 +62,7 @@ Everything else. Tell the subagent WHAT you need, not HOW to run it — it has t
 - "Is this function reached at runtime?" → `livetools trace` or `collect`
 - "What are the actual register values?" → `livetools trace --read` or `bp` + `regs`
 - "How many draw calls happen?" → `livetools dipcnt`
-- "Who writes to this memory address?" → `livetools memwatch`
+- "Does anything touch this memory page, and from where?" → `livetools memwatch` (first access per page, read or write; not a write watchpoint)
 - "Send keys/clicks to the game window?" → `livetools gamectl`
 
 ### DX analysis scripts (main agent, fast first-pass)
@@ -82,7 +82,7 @@ These are targeted D3D9 scanners under `rtx_remix_tools/dx/scripts/`. They run i
 - "What vertex formats does the game use?" → `decode_vtx_decls.py <game.exe> --scan` (vertex declarations, detects skinning)
 - "Are shaders embedded in the binary?" → `find_shader_bytecode.py <game.exe>` (shader bytecode extraction with version/size)
 - "What's the FFP vs shader draw call mix?" → `classify_draws.py <game.exe>` (draw call classification by state context)
-- "Which registers are View/Proj/World?" → `find_matrix_registers.py <game.exe>` (CTAB names + frequency heuristics + layout suggestion)
+- "Which registers are View/Proj/World?" → `find_matrix_registers.py <game.exe>` (CTAB names + frequency heuristics + a suggested `[FFP.Registers]` section for `remix-comp-proxy.ini`)
 - "D3DX constant table or vtable calls?" → `find_vtable_calls.py <game.exe>` (D3DX CTAB usage + D3D9 vtable calls)
 - "Does the game have skinned meshes? What config does the proxy need?" → `find_skinning.py <game.exe>` (skinned decls, bone palettes, blend states, suggested INI)
 - "Does the game use FFP vertex blending?" → `find_blend_states.py <game.exe>` (D3DRS_VERTEXBLEND + INDEXEDVERTEXBLENDENABLE + WORLDMATRIX)
@@ -99,6 +99,11 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 
 **ALWAYS pass `--types patches/<project>/kb.h`** when using `decompiler.py`. Create the kb.h file on first decompilation if it doesn't exist. Every discovery (function names, struct layouts, globals) should be added to kb.h so subsequent decompilations produce richer output.
 
+What each decompiler takes from kb.h:
+
+- **r2ghidra** reads it on every call (`--types`): structs, unions and enums (also written over several lines), `typedef <type> Name;`, function names with their prototypes, and globals as named addresses. Two things radare2 itself does not take: `typedef struct X Y;` for a struct declared on another line (write `typedef struct X { ... } Y;`), and a pointer as the type of a global (the name still applies).
+- **Ghidra** reads it only when `kb-apply` runs, and keeps the result in the project. Types are stored first, so a prototype can use a struct from the same file. A prototype may carry a calling convention (`__cdecl`, `__stdcall`, `__fastcall`, `__thiscall`). When Ghidra cannot resolve a type in a prototype (one that is missing from kb.h, or a spelling such as `unsigned __int64`), the function still gets its name and the prototype is reported as skipped.
+
 | Tool | Purpose | Example |
 |------|---------|---------|
 | `disasm.py $B $VA` | Disassemble N instructions at VA | `disasm.py binary.exe 0x401000 -n 50` |
@@ -106,17 +111,17 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 | `pyghidra_backend.py analyze $B --project $P` | **Full Ghidra analysis** -- one-time, saves reusable project | `pyghidra_backend.py analyze game.exe --project patches/MyGame` |
 | `pyghidra_backend.py decompile $B $VA --project $P` | Decompile via saved Ghidra project | `pyghidra_backend.py decompile game.exe 0x401000 --project patches/MyGame` |
 | `pyghidra_backend.py status $B --project $P` | Check if Ghidra project exists | `pyghidra_backend.py status game.exe --project patches/MyGame` |
-| `pyghidra_backend.py export $B --project $P [--db]` | Seed funcs/names/xrefs/blocks from an analyzed Ghidra program into index.db (`source='ghidra'`, overwrites provisional bootstrap rows at the same address) | `pyghidra_backend.py export game.exe --project patches/MyGame` |
-| `pyghidra_backend.py kb-apply $B --project $P --kb $KB` | Push kb.h names/prototypes/globals/typedefs into the Ghidra project. Idempotent — safe to re-run | `pyghidra_backend.py kb-apply game.exe --project patches/MyGame --kb patches/MyGame/kb.h` |
+| `pyghidra_backend.py export $B --project $P [--db]` | Seed funcs/names/xrefs/blocks from an analyzed Ghidra program into index.db (names include the data labels `kb-apply` creates, namespace-qualified) (`source='ghidra'`, overwrites provisional bootstrap rows at the same address) | `pyghidra_backend.py export game.exe --project patches/MyGame` |
+| `pyghidra_backend.py kb-apply $B --project $P --kb $KB` | Push kb.h names/prototypes/globals/typedefs into the Ghidra project. Idempotent — safe to re-run. Prints one count per kind (`functions`, `labels`, `globals`, `typedefs`, `prototypes`) and `skipped`, the entries Ghidra refused; each of those is listed on stderr with Ghidra's reason | `pyghidra_backend.py kb-apply game.exe --project patches/MyGame --kb patches/MyGame/kb.h` |
 | `index.py status $GAME [--db]` | Per-table row counts + schema_version for `patches/<game>/index.db` | `python -m retools.index status MyGame` |
-| `query.py $GAME "SQL" [--db] [--json] [--list-tables] [--schema TABLE]` | Read-only SQL over index.db. Views: `callers`, `callees`, `grep`. Addresses render as hex via `printf('0x%x', address)`. Connection is opened read-only — cannot mutate | `python -m retools.query MyGame "SELECT * FROM grep WHERE name LIKE '%Ground%'"` |
+| `query.py $GAME "SQL" [--db] [--json] [--list-tables] [--schema TABLE]` | Read-only SQL over index.db. Views: `callers`, `callees`, `grep`. Addresses are stored and printed as decimal integers; select `printf('0x%x', address)` to get hex. Connection is opened read-only, so it cannot change index.db, and every statement but a query or a schema pragma is refused with an authorization error, so `ATTACH DATABASE`, `VACUUM INTO` and `CREATE TEMP TABLE` cannot create a file. SQLite itself keeps `index.db-shm` and `index.db-wal` beside a WAL-mode index while it is read | `python -m retools.query MyGame "SELECT * FROM grep WHERE name LIKE '%Ground%'"` |
 | `ghidra_server.py $GAME [--idle SECS]` | Run a per-project Ghidra daemon (port 27043; livetools owns 27042) holding one warm program so repeat `decompile`/`export`/`kb-apply` calls are sub-second instead of paying JVM+analysis startup each time. Tracks itself in `patches/<game>/ghidra/.state.json` (pid/port/project/binary), deleted on shutdown once the Ghidra program is closed | `python -m retools.ghidra_server MyGame --idle 600` |
-| `funcinfo.py $B $VA` | Find function start/end, rets, calling convention, callees. Prefer `retools.query` on `funcs`/`blocks` when index.db exists | `funcinfo.py binary.exe 0x401000` |
+| `funcinfo.py $B $VA` | Find function start/end, rets, calling convention, callees. The end is the last `ret`, or a later instruction a branch of the function reaches, so bytes behind a `ret` or `jmp` that nothing jumps to (alignment, a jump table) are not counted and a function that ends in a tail `jmp` has a range too. The scan stops at a known function start that the function's code does not run into; a known start that live code falls through to, or that a branch of the function jumps past, is a call target inside its body and does not end it. A function whose own `jmp` passes such a start that follows a `ret` or `jmp` can still lose its tail. Prefer `retools.query` on `funcs`/`blocks` when index.db exists | `funcinfo.py binary.exe 0x401000` |
 | `cfg.py $B $VA` | Control flow graph (basic blocks + edges, text or mermaid). Resolves MSVC switch/jump tables automatically. `--switch-details` shows table info | `cfg.py binary.exe 0x401000 --format mermaid` |
 | `callgraph.py $B $VA` | Caller/callee tree (multi-level, --up/--down N). `--indirect` adds vtable/fptr calls to --down trees | `callgraph.py binary.exe 0x401000 --down 2 --indirect` |
 | `xrefs.py $B $VA` | Find all calls/jumps TO an address. `--indirect` also scans for `call [reg+offset]`, `call [reg]`, `call [addr]`. Prefer `retools.query "SELECT * FROM callers WHERE callee_addr=..."` when index.db exists | `xrefs.py binary.exe 0x401000 --indirect` |
-| `dataflow.py $B $VA` | Forward constant propagation (`--constants`) or backward register slice (`--slice VA:REG`) within a function | `dataflow.py binary.exe 0x401000 --constants` |
-| `datarefs.py $B $VA` | Find instructions that reference a global address (mem deref + `--imm` for push/mov constants). Prefer `retools.query` against `xrefs`/`names` when index.db exists | `datarefs.py binary.exe 0x7A0000 --imm` |
+| `dataflow.py $B $VA` | Forward constant propagation (`--constants`) or backward register slice (`--slice VA:REG`) within a function. `--constants` models `mov`, `add`, `sub`, `lea`, `xor reg, reg`, `push`/`pop` and calls; a register written by anything else is left out, not reported with its old value. **x86 only**: a 64-bit binary is refused with an error | `dataflow.py binary.exe 0x401000 --constants` |
+| `datarefs.py $B $VA` | Find instructions that reference a global address (mem deref + `--imm` for push/mov constants), each labelled `[r ]`, `[w ]` or `[rw]`. `--access w` keeps every instruction that writes it (`w` and `rw`), `--access r` every one that reads it, `--access rw` only those that do both. Prefer `retools.query` against `xrefs`/`names` when index.db exists | `datarefs.py binary.exe 0x7A0000 --imm` |
 | `structrefs.py $B $OFF` | Find all `[reg+offset]` accesses (struct field usage) | `structrefs.py binary.exe 0x54 --base esi` |
 | `structrefs.py $B --aggregate` | Reconstruct C struct from all field accesses in a function | `structrefs.py binary.exe --aggregate --fn 0x401000 --base esi` |
 | `vtable.py $B dump $VA` | Dump C++ vtable slots with instruction preview | `vtable.py binary.exe dump 0x6A0000` |
@@ -132,16 +137,19 @@ These are fast first-pass scanners — they surface candidate addresses. Follow 
 | `search.py $B insn --near` | Find instructions near another pattern | `search.py binary.dll insn "mov *,0x10000" --near "cmp *,0x10000" --range 0x400` |
 | `readmem.py $B $VA $TYPE` | Read typed data (float, uint32, ptr, bytes...) | `readmem.py binary.exe 0x401000 float` |
 | `asi_patcher.py build` | Generate .asi DLL patch from JSON spec | `asi_patcher.py build spec.json --vcvarsall ...` |
-| `bootstrap.py $B --project $P` | Auto-seed KB: compiler ID, signatures, RTTI, imports, propagation. `--project` is the **output directory** (`$P` = `patches/<project>`), not a bare name | `bootstrap.py game.exe --project patches/Warband` |
+| `bootstrap.py $B --project $P` | Auto-seed KB: compiler ID, signatures, RTTI, imports, propagation. `--project` is the **output directory** (`$P` = `patches/<project>`), not a bare name | `bootstrap.py game.exe --project patches/MyGame` |
 | `sigdb.py scan $B` | Bulk signature scan against DB | `sigdb.py scan game.exe` |
 | `sigdb.py identify $B $VA` | Single function signature lookup (multi-tier) | `sigdb.py identify game.exe 0x401200` |
 | `sigdb.py fingerprint $B` | Identify compiler version (Rich header + markers + imports) | `sigdb.py fingerprint game.exe` |
-| `context.py assemble $B $VA --project $P` | Gather full analysis context for a function. Includes forward constant propagation by default (`--no-dataflow` to skip) | `context.py assemble game.exe 0x401500 --project Warband` |
+| `context.py assemble $B $VA --project $P` | Gather full analysis context for a function. Includes forward constant propagation by default (`--no-dataflow` to skip); on a 64-bit binary that section is a `[dataflow] skipped` line, since dataflow models x86 registers only. `--db` adds the best structural match (`[similar]`) and refuses a path with no database or a file that is not a signature database | `context.py assemble game.exe 0x401500 --project patches/MyGame` |
 | `context.py postprocess $B $VA --project $P` | Mechanically rename/annotate decompiler output (pipe) | `decompiler.py ... \| context.py postprocess ...` |
-| `sigdb.py build $MANIFEST` | Build/extend signature DB from manifest | `sigdb.py build sources.json` |
-| `sigdb.py pull` | Download signature DB from HuggingFace | `sigdb.py pull` or `sigdb.py pull --sources` |
+| `sigdb.py build $MANIFEST` | Build/extend signature DB from manifest (binary + `address,name[,size]` CSV): skips functions under 16 bytes, wildcards prefix bytes past a short function's end and E8/E9 rel32 operands (including one cut off at the end of the prefix), stores a FLIRT CRC16 up to the first call, outside branch or address operand (an immediate or displacement that lies inside the image; on x86 that includes indexed `[reg*s + abs32]` and `[reg + abs32]`). Byte and structural rows are written in one transaction, and building the same manifest again adds nothing. A row is one `(pattern, mask, crc_len, crc16)` key under one name and one compiler label: every distinct row is kept, none is deleted, and a key held under more than one name is left to matching to refuse. A manifest entry whose binary is missing or does not load fails the build, as does a compiler label that starts with `msvc` and names no version | `sigdb.py build sources.json` |
+| `sigdb.py import-pat $PAT -d $DB --compiler $C --source $S` | Add a FLIRT `.pat` file (e.g. rizin `sigdb-source`) to a DB: offset-0 names only, keeps each line's CRC16, wildcards prefix bytes past a short function's end, drops local labels (a name `?` or one marked `@`), functions under 16 bytes (measured to the next public of the module) and lines with a malformed hex byte or a CRC length outside 0..255. A prefix held under another name is kept beside it (counted as `ambiguous_prefix` when their compiler labels share a version) and matching refuses the key; importing the same file again adds nothing. A `--compiler` label that starts with `msvc` and names no version is refused. The `.pat` file is checked before the DB is created | `sigdb.py import-pat VisualStudio2008.pat -d sigs.db --compiler msvc2008 --source rizin_vs2008` |
+| `sigdb.py pull` | Download signature DB from HuggingFace (`--revision` picks an HF branch, tag or commit; default `main`). The download replaces the local DB only once it opens as a signature database this code reads; a refused download leaves the local DB as it was. A `--sources` manifest path that leaves the destination folder is refused | `sigdb.py pull`, `sigdb.py pull --sources` or `sigdb.py pull --revision schema-v2` |
 
-> **Note:** `scan` and `identify` default to `retools/data/signatures.db` when `--db` is omitted. Run `sigdb.py pull` after first clone to download the database.
+> **Note:** `scan` and `identify` default to `retools/data/signatures.db` when `--db` is omitted. Run `sigdb.py pull` after first clone to download the database. `scan`, `identify` and `context assemble` open the DB read-only and refuse a file that is not a signature database, leaving it as it is; they read a schema-1 DB as it stands, and the first `build` or `import-pat` adds the CRC16 columns in place. `build` and `import-pat` create a schema only in a new or empty file.
+>
+> **Matching rules:** a sig with a FLIRT CRC16 matches only when the bytes after its 32-byte prefix pass the CRC. Sigs whose compiler label names MSVC versions (`msvc2008`, `msvc6.0`, `msvc2003_2005`) are skipped on binaries whose Rich header has C or C++ compiler entries, none of them from those versions (linker, import-library, MASM and resource entries are not counted, and a header without a known compiler entry filters nothing); a label for 14.0 or later (`msvc14.0`, `msvc2019`) stands for every VS 2015+ toolset. A byte key or a structural shape the DB holds under more than one name, among the rows whose compiler label allows the binary, matches nothing. `scan` drops a name that is the best match at more than one address.
 
 ## Crash Dump Analysis
 
@@ -178,21 +186,31 @@ Main-agent only (requires a live process; static-analyzer subagents must not use
 
 A proxy DLL that intercepts all 119 `IDirect3DDevice9` methods, capturing every call with arguments, backtraces, pointer-followed data (matrices, constants, shader bytecodes), and in-process shader disassembly (via the game's own d3dx9 DLL). Outputs JSONL for offline analysis.
 
-**Architecture**: Python codegen (`d3d9_methods.py`) → C proxy DLL (`src/`) or C++ remix-comp-proxy dispatch (`tracer_dispatch.inc`) → JSONL → Python analyzer (`analyze.py`). The standalone proxy chains to the real d3d9 (or another wrapper) and adds near-zero overhead when not capturing. The remix-comp-proxy integrated tracer records from within the dinput8.dll hook.
+**Architecture**: Python codegen (`d3d9_methods.py`) → C proxy DLL (`src/`) or C++ remix-comp-proxy dispatch (`tracer_dispatch.inc`) → JSONL → Python analyzer (`analyze.py`). The standalone proxy chains to the real d3d9 (or another wrapper) and adds near-zero overhead when not capturing. The remix-comp-proxy integrated tracer records from the proxy's own `IDirect3DDevice9` wrapper (`src/comp/modules/d3d9ex.cpp`) and writes to `captures/dxtrace_<timestamp>.jsonl` under the game directory.
 
 ### Setup and Capture
 
 ```
 python -m graphics.directx.dx9.tracer codegen -o d3d9_trace_hooks.inc            # C hooks (standalone proxy)
 python -m graphics.directx.dx9.tracer codegen -f cpp -o tracer_dispatch.inc      # C++ dispatch (remix-comp-proxy module)
-cd graphics/directx/dx9/tracer/src && build.bat                                  # build standalone proxy DLL
+cd graphics/directx/dx9/tracer/src && build.bat                                  # build standalone proxy DLL (finds VS 2022+ or Build Tools through vswhere)
 # Deploy d3d9.dll + proxy.ini to game directory
 python -m graphics.directx.dx9.tracer trigger --game-dir <GAME_DIR>              # trigger capture (3s countdown)
 ```
 
-**proxy.ini** settings: `CaptureFrames=N` (frames to record), `CaptureInit=1` (capture boot-time calls like shader creation), `Chain.DLL=<wrapper.dll>` (chain to another d3d9 wrapper, or leave empty for system d3d9).
+**proxy.ini** settings: `CaptureFrames=N` (frames to record when the trigger file names no count; `trigger --frames` overrides it and takes 1 to 100000, the range both tracers keep to), `CaptureInit=1` (capture boot-time calls like shader creation), `Chain.DLL=<wrapper.dll>` (chain to another d3d9 wrapper, or leave empty for system d3d9).
 
-**IMPORTANT**: `--game-dir` must point to the directory containing the deployed proxy DLL (where the game runs).
+**IMPORTANT**: `--game-dir` must point to the directory containing the deployed proxy DLL (where the game runs). It defaults to the current directory.
+
+The trigger file carries `frames=<N>` and `id=<token>`, and the tracer writes one line to `dxtrace_progress.txt`: `<frame> <calls> <id>`, with ` done` or ` failed <reason>` added at the end of a capture (`-` stands for the id of a capture no trigger with an id started, such as one from the proxy's ImGui button). `trigger --wait` counts only lines that carry its own id. It follows the capture and exits 0 only after the tracer reports that capture `done`, which it writes once the captured frames are flushed to the JSONL file (with `CaptureInit=1` the standalone tracer keeps that file open afterwards and goes on appending `Create*` calls as frame `-1` until the game exits, so the file keeps growing and its last line may be half written; `analyze` skips such a line); in every other case it prints an `[error]` line saying what it saw and exits 1:
+
+- No tracer took the trigger within 120 s (game not running, the DLL is in another folder, or the tracer is still writing an earlier capture, during which it leaves a new trigger alone): the trigger file is removed again, so a later game start does not begin a capture.
+- The capture stopped short of `--frames` (reported at once when the tracer says `done`, or after 120 s without new progress; a capture that keeps reporting progress is followed for as long as it takes).
+- The tracer reached the last frame but never reported the file written in full: the `d3d9.dll` in the game folder predates the `done` report. Copy the current `graphics/directx/dx9/tracer/bin/d3d9.dll` there.
+- The tracer could not create the capture file (a read-only game folder, a file another program holds open): the reason is printed, and is also in `dxtrace_proxy.log` or the proxy's log.
+- The trigger was taken but no progress line carries its id (reported at once: the tracer writes its first line before it removes the trigger): the tracer could not write `dxtrace_progress.txt` (its log says so), or it predates progress lines that name their trigger, most likely an older `d3d9.dll` of the standalone tracer or a per-game remix-comp-proxy copy under `patches/` built from an older `tracer.cpp`. Port the template's tracer into that copy (`src/comp/modules/tracer.cpp`, `tracer.hpp`, `tracer_dispatch.inc`, the `TRACE_CREATION_IF_ACTIVE` calls in `d3d9ex.cpp` and `<atomic>` in `src/comp/std_include.hpp`) and rebuild, or look for the capture in its output folder (`[Tracer] OutputDir`).
+
+A progress line left by another capture is ignored: it does not carry this trigger's id. A trigger whose `frames=` is not a number from 1 up is answered with a `failed` line.
 
 ### Analysis Commands
 
@@ -231,26 +249,32 @@ All analysis: `python -m graphics.directx.dx9.tracer analyze <JSONL> [OPTIONS]`
 
 Targeted first-pass scanners for D3D9 games. Run from repo root. Output is candidate addresses and patterns — always follow up with retools/livetools for confirmation.
 
+**32-bit only.** Every script except `find_d3d_calls.py` reads PE32 code and exits with an error on a 64-bit binary, on a file that is not a PE, or on a path that cannot be read. `find_d3d_calls.py` also reads PE32+: there it matches `call [rip+rel32]` against the IAT slot and reports a REX-prefixed call at its `FF 15` opcode.
+
+**How call arguments are reported.** A script reads the pushes and the `mov [esp+disp]` stores in front of each call and assigns them to the method's parameters by stack slot, so a pushed register counts as an argument; the latest write to a slot wins. A constant is decoded. A register or memory operand is shown in angle brackets (`<eax>`): the value is only known at run time. `<unknown>` means the code in front of the call does not settle the argument (an earlier call that is not followed at once by `add esp, N`, a stack adjustment the walk cannot follow, a store that is not a whole dword such as `fstp [esp]`, or a jump target — including the call itself — where two code paths join); nothing is guessed. Sites whose arguments are not constants are left out of summaries such as register ranges, and the first 10 are listed under `<Method>: N call site(s) not decoded` with their arguments, then `... and N more` (`--all` lists every one), so follow them up with `livetools trace --probe` on the call site.
+
+**Which calls are found.** `call [reg+offset]` in both its encodings, which covers every vtable slot. A `mov reg, [reg+offset]` load, in both its encodings, is listed as an indirect call only when a `call reg` through that register follows it, and the arguments are read at that call. Each later `call reg` through a register that calls preserve is a site of its own, listed at its call instruction with the load it calls through. Another call may run in between when the register is `ebx`, `esi`, `edi` or `ebp`, which calls preserve; with `eax`, `ecx` or `edx` the load is dropped there. A hit is then dropped when the code in front of it shows it is a call of another method. *COM `this`*: a site whose pushed `this` is an immediate or a different value than the object its vtable was read from, or that loads that object into `ecx` (the `__thiscall` form), is dropped; a site whose `this` the code does not settle is kept. *Argument count*: a hit is dropped when the walk back from its call reaches the start of the code (after a `ret`, a `jmp` or padding), or a `sub esp` reservation the code leaves partly unwritten, with fewer stack slots written than the method's parameters plus `this`. An earlier call is no such bound, because arguments pushed before an inner call are still on the stack (`push value; push state; call GetDevice; push eax; call [ecx+0xE4]`), so the hit is kept there, as it is at a jump target, a stack-pointer change the walk cannot follow or the start of the window it decodes; extra slots never drop it (an outer call's arguments precede an inner one's). *No `this`*: a call reached with nothing put on top of the stack since the call before it is dropped, since a COM call pushes `this` last. *Whole instruction*: a hit that lies inside another instruction is dropped, which is known when decodings that start more than 48 bytes back step over it and none lands on it, unless a decoding from a function start within those 48 bytes (a direct-call target, or a 16-byte-aligned address right after `CC`/`90` padding) lands on it. *Register argument*: a site that loads all of `ecx` with `mov` or `lea` (not the padding forms `mov ecx, ecx` and `lea ecx, [ecx+0]`) and reads it nowhere before the call is dropped: no call preserves `ecx`, so the load is an argument for a `__thiscall` callee. *Device provenance*: COM calls on other interfaces still pass both checks, and every class shares the slots below `vtable+0x80`. So the scripts learn where the game keeps its device from the hits at `vtable+0x80` and above: each hit's object is followed back from `mov vt, [obj]` through register copies (across calls for `ebx`/`esi`/`edi`/`ebp`) and loads to a global, `[0x009D915C]`, or a field of an object held in one, `[[0x009D915C]+0x1C]`; a location qualifies when hits on it call at least 12 different device methods there, a draw method among them, and at least half as many as the most-called location. A game's device is called through 25 or more of them; an `ID3DXEffect` (`SetFloatArray`/`SetVector`/`SetMatrix` sit at `+0x80`/`+0x88`/`+0x98`) or a large game class through fewer than ten. A hit below `vtable+0x80` is reported as a device call only when its object is read from a learned location; the others are counted as unconfirmed (`--unconfirmed` lists them in `find_device_calls.py` and `find_surface_formats.py`), and the header line names the learned location. A device the code reaches through a field of `this`, an argument or a stack local has no learnable location: the header says so and every low-slot hit stays unconfirmed. Hits at `vtable+0x80` and above are reported whatever their object.
+
 | Script | What it surfaces | Example |
 |--------|-----------------|---------|
 | `find_d3d_calls.py $B` | D3D9/D3DX imports and call sites | `python rtx_remix_tools/dx/scripts/find_d3d_calls.py game.exe` |
 | `find_vs_constants.py $B` | `SetVertexShaderConstantF` call sites with register/count args | `python rtx_remix_tools/dx/scripts/find_vs_constants.py game.exe` |
 | `find_ps_constants.py $B` | `SetPixelShaderConstantF/I/B` call sites with register/count args | `python rtx_remix_tools/dx/scripts/find_ps_constants.py game.exe` |
-| `find_device_calls.py $B` | Device vtable call patterns and device pointer refs | `python rtx_remix_tools/dx/scripts/find_device_calls.py game.exe` |
+| `find_device_calls.py $B` | Device vtable call patterns and device pointer refs; `--unconfirmed` lists low-slot hits not shown to be on the device | `python rtx_remix_tools/dx/scripts/find_device_calls.py game.exe` |
 | `find_render_states.py $B` | SetRenderState arguments decoded by category (culling, blending, depth, fog) | `python rtx_remix_tools/dx/scripts/find_render_states.py game.exe` |
 | `find_texture_ops.py $B` | Texture pipeline: SetTexture stages, TSS color/alpha ops, sampler states | `python rtx_remix_tools/dx/scripts/find_texture_ops.py game.exe` |
 | `find_transforms.py $B` | SetTransform/MultiplyTransform types (World, View, Projection, Texture) | `python rtx_remix_tools/dx/scripts/find_transforms.py game.exe` |
-| `find_surface_formats.py $B` | CreateTexture/RenderTarget/DepthStencil D3DFMT extraction | `python rtx_remix_tools/dx/scripts/find_surface_formats.py game.exe` |
+| `find_surface_formats.py $B` | CreateTexture/RenderTarget/DepthStencil D3DFMT extraction, confirmed device calls only; `--unconfirmed` lists the rest | `python rtx_remix_tools/dx/scripts/find_surface_formats.py game.exe` |
 | `find_stateblocks.py $B` | State block creation, recording, and apply patterns | `python rtx_remix_tools/dx/scripts/find_stateblocks.py game.exe` |
 | `decode_fvf.py $B` | FVF bitfield decode from SetFVF calls (or `--decode 0xNNN` manual) | `python rtx_remix_tools/dx/scripts/decode_fvf.py game.exe` |
 | `find_vtable_calls.py $B` | D3DX constant table usage and D3D9 vtable calls | `python rtx_remix_tools/dx/scripts/find_vtable_calls.py game.exe` |
 | `decode_vtx_decls.py $B --scan` | Vertex declaration formats (BLENDWEIGHT/BLENDINDICES = skinning) | `python rtx_remix_tools/dx/scripts/decode_vtx_decls.py game.exe --scan` |
 | `find_shader_bytecode.py $B` | Embedded shader bytecode extraction (version, size, `--dump-dir`) | `python rtx_remix_tools/dx/scripts/find_shader_bytecode.py game.exe` |
 | `classify_draws.py $B` | Draw call classification by state context (FFP/shader/hybrid %) | `python rtx_remix_tools/dx/scripts/classify_draws.py game.exe` |
-| `find_matrix_registers.py $B` | Identify View/Proj/World registers (CTAB + frequency + layout suggestion) | `python rtx_remix_tools/dx/scripts/find_matrix_registers.py game.exe` |
+| `find_matrix_registers.py $B` | Identify View/Proj/World registers (CTAB + frequency + suggested `[FFP.Registers]` INI section) | `python rtx_remix_tools/dx/scripts/find_matrix_registers.py game.exe` |
 | `find_skinning.py $B` | Consolidated skinning analysis: skinned decls, bone palettes, blend states, suggested INI | `python rtx_remix_tools/dx/scripts/find_skinning.py game.exe` |
 | `find_blend_states.py $B` | D3DRS_VERTEXBLEND + INDEXEDVERTEXBLENDENABLE + WORLDMATRIX transforms | `python rtx_remix_tools/dx/scripts/find_blend_states.py game.exe` |
-| `scan_d3d_region.py $B 0xSTART 0xEND` | Map all D3D9 vtable calls in a code region | `python rtx_remix_tools/dx/scripts/scan_d3d_region.py game.exe 0x401000 0x500000` |
+| `scan_d3d_region.py $B 0xSTART 0xEND` | Map all D3D9 vtable calls in a code region, found with the same call checks as the other scripts. The region must lie in one section; there is no device-provenance split, so low slots over a wide region include other classes | `python rtx_remix_tools/dx/scripts/scan_d3d_region.py game.exe 0x401000 0x500000` |
 
 ## Tool Caveats
 
@@ -290,9 +314,11 @@ Minidumps vary in how much data they capture depending on `MiniDumpWriteDump` fl
 - **Stack truncated**: small dumps may not capture enough stack depth. Use `memmap` to see what's actually available.
 - **`stackscan` shows data AND code pointers**: not every value on the stack is a return address. Use `throwmap match` for definitive call-site identification.
 
-### `funcinfo.py` -- call-target heuristic
+### `funcinfo.py` -- where function starts come from
 
-`find_start()` locates function boundaries by building a table of all `CALL`/`JMP` targets. This misses functions only reachable via indirect calls (vtable dispatch, callbacks, function pointers). If `funcinfo.py` returns a clearly wrong function start, use `disasm.py` and look for padding/prologues manually.
+On x64 the exception table lists every function that has unwind information, with its extent, so an address inside such a function resolves to that function and an address in the gap behind one resolves to none. On x86, and for x64 leaf functions, only starts are known: targets of direct `CALL`s, exports, and `JMP` targets that sit behind padding, a return or another jump (functions reached by tail calls). That misses functions only reachable via indirect calls (vtable dispatch, callbacks, function pointers): 27% of the functions of one x86 C++ DLL, measured against its linker map. For such an address the nearest known start before it is reported. `funcinfo.py` prints a `[warning]` line when the address you asked about is not inside the range it reports; treat that range as a different function. If `funcinfo.py` returns a clearly wrong function start, use `disasm.py` and look for padding/prologues manually.
+
+An `int3` ends `funcinfo`'s scan for the function end only when it follows a `ret` or `jmp` (padding) or when no branch seen so far jumps past it to a label of the same function, so `je over; call noreturn; int3; over: ret` still finds the `ret`. A branch to the next known function or beyond is a tail call and does not carry the scan over an `int3`. In `cfg.py` an `int3` ends its block with no successor, so a `call noreturn; int3` does not run on into the next function. `cfg.py` treats `jecxz`/`jrcxz` and `loop`/`loope`/`loopne` as conditional branches.
 
 ### `datarefs.py` / `search.py strings --xrefs` -- addressing modes
 
@@ -302,7 +328,7 @@ These tools find references via absolute memory operands, immediate values (with
 
 Ghidra (via `pyghidra_backend.py`, indexed into `index.db`, daemon-backed, kb-applied) is the **primary** decompilation backend once a project exists — it gives better type propagation, library call resolution, and lets `retools.query` answer structural questions without re-scanning the binary. r2ghidra (`decompiler.py --backend pdg`) is the **zero-setup fallback and second opinion**: no Ghidra install required, faster on small functions, and useful to cross-check a pyghidra result that looks wrong. `decompiler.py --backend auto` tries pyghidra first and falls back to r2ghidra automatically — this routing is unchanged.
 
-Requires Ghidra 11.x+ installed and `GHIDRA_INSTALL_DIR` environment variable set. **Optional** -- the toolkit works without it (r2ghidra remains the fallback).
+Requires Ghidra 11.x+ and JDK 21+. `python verify_install.py --setup` downloads both into `tools/`, where retools finds them on its own; set `GHIDRA_INSTALL_DIR` only to use a Ghidra installed somewhere else. The JDK is the first of `JAVA_HOME`, `java` on PATH and `tools/jdk-*` (highest version first) that is version 21 or newer, so an older Java on PATH is passed over; a `JAVA_HOME_OVERRIDE` you set yourself is kept. **Optional** -- the toolkit works without it (r2ghidra remains the fallback).
 
 **Disk usage**: Ghidra projects are ~10-20x the binary size. A 30MB game exe produces a ~300-600MB `.rep/` directory under `patches/<project>/ghidra/`. This directory is already covered by `.gitignore` (the `patches/` exclusion).
 
@@ -316,4 +342,4 @@ Requires Ghidra 11.x+ installed and `GHIDRA_INSTALL_DIR` environment variable se
 
 **DLLs and ASLR-enabled executables**: runtime base may differ. Run `python -m livetools modules --filter <name>` and compare against the PE's preferred base. If they differ: `runtime_addr = runtime_base + (static_addr - preferred_base)`.
 
-**Hook the game's CALL, not the DLL entry.** To trace a D3D9/API method, hook the `call [reg+offset]` instruction *in the game's .exe* (found via `xrefs.py` or `vtable.py calls`), NOT the function entry point inside the DLL. The game's call site has arguments on the stack in known positions; the DLL entry point may be wrapped by proxies and is shared across all callers.
+**A function hook goes on a function entry; a call site takes `--probe`.** `livetools trace` and `collect` trap the function's return through the top stack slot, which is a return address only at a function entry, so they refuse a `call [reg+offset]` instruction (there the slot is the first stack argument, the device pointer). To watch one call site, add `--probe`: it records the registers and `--read` data at that instruction and has no caller or return value (`[esp]` is `this` at an x86 call instruction). To watch every caller of a D3D9/API method, hook the entry of the method the game calls (read it from the object's vtable at runtime with `livetools mem read`) and use each record's `caller` (the return address) to tell call sites apart. A breakpoint (`livetools bp`) may sit on any instruction: it is one `int3` byte. A probe or a `collect --fence` hook is a jump of at least 5 bytes, and is refused where a `ret` or `jmp` ends the code before the jump fits, where a later branch targets the replaced bytes, or on a `jmp` that Frida follows to its target; the result names the bytes replaced. Details: pattern 9 in the `/dynamic-analysis` skill.

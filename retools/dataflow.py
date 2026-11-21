@@ -117,97 +117,131 @@ def _get_mem(insn, idx: int) -> tuple[str, int] | None:
     return None
 
 
-def _apply_insn(state: dict, insn, push_stack: list) -> None:
-    """Update register state for a single instruction."""
+# The tracked register each register name is the whole or a part of
+_TRACKED_REGISTER = {
+    part: whole
+    for whole, parts in {
+        "eax": ("eax", "ax", "ah", "al"), "ebx": ("ebx", "bx", "bh", "bl"),
+        "ecx": ("ecx", "cx", "ch", "cl"), "edx": ("edx", "dx", "dh", "dl"),
+        "esi": ("esi", "si"), "edi": ("edi", "di"), "ebp": ("ebp", "bp"), "esp": ("esp", "sp"),
+    }.items()
+    for part in parts
+}
+
+
+def _registers_written(insn) -> set[str]:
+    """Tracked registers *insn* writes, in whole or in part, as operands or implicitly."""
+    _read, written = insn.regs_access()
+    names = (insn.reg_name(reg) for reg in written)
+    return {_TRACKED_REGISTER[name] for name in names if name in _TRACKED_REGISTER}
+
+
+def _apply_modelled(state: dict, insn, push_stack: list) -> set[str]:
+    """Give the registers of an instruction this module models their new values.
+
+    Returns:
+        The registers that were given a value. Empty for an instruction, or a
+        form of one, that is not modelled.
+    """
     mn = insn.mnemonic
-    nops = len(insn.operands) if hasattr(insn, "operands") else 0
+    nops = len(insn.operands)
 
     if mn == "mov" and nops == 2:
-        dst_reg = _get_reg(insn, 0)
-        if dst_reg:
-            # mov reg, imm
-            imm = _get_imm(insn, 1)
-            if imm is not None:
-                state[dst_reg] = Const(imm)
-                return
-            # mov reg, reg
-            src_reg = _get_reg(insn, 1)
-            if src_reg and src_reg in state:
-                state[dst_reg] = state[src_reg]
-                return
-            # mov reg, [base+disp]
-            mem = _get_mem(insn, 1)
-            if mem is not None:
-                base_reg, disp = mem
-                base_val = state.get(base_reg, Unknown()) if base_reg else Const(0)
-                state[dst_reg] = Load(base_val, disp)
-                return
-            state[dst_reg] = Unknown()
-
-    elif mn in ("add", "sub") and nops == 2:
-        dst_reg = _get_reg(insn, 0)
-        if dst_reg and dst_reg in state:
-            imm = _get_imm(insn, 1)
-            src_reg = _get_reg(insn, 1)
-            if imm is not None:
-                left = state[dst_reg]
-                right = Const(imm)
-            elif src_reg and src_reg in state:
-                left = state[dst_reg]
-                right = state[src_reg]
-            else:
-                state[dst_reg] = Unknown()
-                return
-            # Fold constants
-            if isinstance(left, Const) and isinstance(right, Const):
-                if mn == "add":
-                    state[dst_reg] = Const((left.value + right.value) & 0xFFFFFFFF)
-                else:
-                    state[dst_reg] = Const((left.value - right.value) & 0xFFFFFFFF)
-            else:
-                state[dst_reg] = BinOp("+" if mn == "add" else "-", left, right)
-
-    elif mn == "xor" and nops == 2:
-        dst_reg = _get_reg(insn, 0)
-        src_reg = _get_reg(insn, 1)
-        if dst_reg and src_reg and dst_reg == src_reg:
-            state[dst_reg] = Const(0)
-        elif dst_reg:
-            state[dst_reg] = Unknown()
-
-    elif mn == "lea" and nops == 2:
-        dst_reg = _get_reg(insn, 0)
+        dst = _get_reg(insn, 0)
+        if dst not in state:
+            return set()
+        imm = _get_imm(insn, 1)
+        src = _get_reg(insn, 1)
         mem = _get_mem(insn, 1)
-        if dst_reg and mem:
+        if imm is not None:
+            state[dst] = Const(imm)
+        elif src in state:
+            state[dst] = state[src]
+        elif mem is not None:
             base_reg, disp = mem
-            base_val = state.get(base_reg, Unknown()) if base_reg else Const(0)
-            if isinstance(base_val, Const):
-                state[dst_reg] = Const((base_val.value + disp) & 0xFFFFFFFF)
-            else:
-                state[dst_reg] = BinOp("+", base_val, Const(disp)) if disp else base_val
+            state[dst] = Load(state.get(base_reg, Unknown()) if base_reg else Const(0), disp)
+        else:
+            return set()
+        return {dst}
 
-    elif mn == "push" and nops == 1:
+    if mn in ("add", "sub") and nops == 2:
+        dst = _get_reg(insn, 0)
+        if dst not in state:
+            return set()
+        imm = _get_imm(insn, 1)
+        src = _get_reg(insn, 1)
+        if imm is not None:
+            right = Const(imm)
+        elif src in state:
+            right = state[src]
+        else:
+            return set()
+        left = state[dst]
+        if isinstance(left, Const) and isinstance(right, Const):
+            value = left.value + right.value if mn == "add" else left.value - right.value
+            state[dst] = Const(value & 0xFFFFFFFF)
+        else:
+            state[dst] = BinOp("+" if mn == "add" else "-", left, right)
+        return {dst}
+
+    if mn == "xor" and nops == 2:
+        dst = _get_reg(insn, 0)
+        if dst in state and _get_reg(insn, 1) == dst:
+            state[dst] = Const(0)
+            return {dst}
+        return set()
+
+    if mn == "lea" and nops == 2:
+        dst = _get_reg(insn, 0)
+        mem = _get_mem(insn, 1)
+        if dst not in state or mem is None:
+            return set()
+        base_reg, disp = mem
+        base_val = state.get(base_reg, Unknown()) if base_reg else Const(0)
+        if isinstance(base_val, Const):
+            state[dst] = Const((base_val.value + disp) & 0xFFFFFFFF)
+        else:
+            state[dst] = BinOp("+", base_val, Const(disp)) if disp else base_val
+        return {dst}
+
+    if mn == "push" and nops == 1:
         reg = _get_reg(insn, 0)
-        if reg and reg in state:
+        imm = _get_imm(insn, 0)
+        if reg in state:
             push_stack.append(state[reg])
         else:
-            imm = _get_imm(insn, 0)
             push_stack.append(Const(imm) if imm is not None else Unknown())
+        return set()
 
-    elif mn == "pop" and nops == 1:
+    if mn == "pop" and nops == 1:
         reg = _get_reg(insn, 0)
-        if reg and push_stack:
+        if reg in state and push_stack:
             state[reg] = push_stack.pop()
-        elif reg:
+            return {reg}
+        return set()
+
+    if mn == "call":
+        for reg in _CALLER_SAVED:
             state[reg] = Unknown()
+        return set(_CALLER_SAVED)
 
-    elif mn == "call":
-        for r in _CALLER_SAVED:
-            if r in state:
-                state[r] = Unknown()
-
-    elif mn in ("cdq", "cwd"):
+    if mn in ("cdq", "cwd"):
+        # Sign-extends eax into edx; capstone lists eax as written too, but it keeps its value
         state["edx"] = Unknown()
+        return {"eax", "edx"}
+
+    return set()
+
+
+def _apply_insn(state: dict, insn, push_stack: list) -> None:
+    """Update register state for a single instruction.
+
+    A register the instruction writes without a value being modelled for it
+    becomes Unknown: a value from before the instruction no longer holds.
+    """
+    given_a_value = _apply_modelled(state, insn, push_stack)
+    for reg in _registers_written(insn) - given_a_value:
+        state[reg] = Unknown()
 
 
 def propagate_forward(insns: list, init: dict[str, object] | None = None) -> dict[str, object]:
@@ -215,12 +249,13 @@ def propagate_forward(insns: list, init: dict[str, object] | None = None) -> dic
 
     Args:
         insns: List of Capstone instructions (linear block, no branches).
-        init: Optional initial register state. Defaults to all Unknown.
+        init: Initial values of some registers; every register it leaves
+            out starts Unknown. Not modified.
 
     Returns:
         Register state dict mapping register names to Value objects.
     """
-    state = init if init is not None else _init_state()
+    state = {**_init_state(), **(init or {})}
     push_stack: list = []
     for insn in insns:
         _apply_insn(state, insn, push_stack)
@@ -300,7 +335,7 @@ def propagate_cfg(
             else:
                 init = _merge_states(pred_states) if pred_states else _init_state()
 
-            new_exit = propagate_forward(blocks[bva], dict(init))
+            new_exit = propagate_forward(blocks[bva], init)
             if bva not in block_exit or new_exit != block_exit[bva]:
                 block_exit[bva] = new_exit
                 changed = True
@@ -509,18 +544,20 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
 
     b = Binary(args.binary)
+    if b.is_64:
+        sys.exit("[error] dataflow tracks x86 registers only and this is a 64-bit "
+                 "binary. Use the decompiler for x64 constant and value-origin questions.")
     func_va = int(args.va, 16)
     start = b.find_func_start(func_va) or func_va
-    w = 16 if b.is_64 else 8
 
     if args.constants:
         block_states = propagate_cfg(b, start, max_size=args.max_size)
-        print(f"Forward propagation for 0x{start:0{w}X}: {len(block_states)} blocks\n")
+        print(f"Forward propagation for 0x{start:08X}: {len(block_states)} blocks\n")
         for bva in sorted(block_states):
             state = block_states[bva]
             resolved = {r: v for r, v in state.items() if not isinstance(v, Unknown)}
             if resolved:
-                print(f"  Block 0x{bva:0{w}X}:")
+                print(f"  Block 0x{bva:08X}:")
                 for reg, val in sorted(resolved.items()):
                     print(f"    {reg} = {val}")
 
@@ -532,9 +569,9 @@ def main(argv: list[str] | None = None) -> None:
         target_va = int(parts[0], 16)
         target_reg = parts[1]
         result = backward_slice_cfg(b, start, target_va, target_reg, max_size=args.max_size)
-        print(f"Backward slice for {target_reg} at 0x{target_va:0{w}X}:\n")
+        print(f"Backward slice for {target_reg} at 0x{target_va:08X}:\n")
         for va, reg, desc in result:
-            print(f"  0x{va:0{w}X}: {reg} <- {desc}")
+            print(f"  0x{va:08X}: {reg} <- {desc}")
 
     else:
         p.print_help()

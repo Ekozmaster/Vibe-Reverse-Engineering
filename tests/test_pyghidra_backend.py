@@ -10,6 +10,51 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
 
 
 # ---------------------------------------------------------------------------
+# _ensure_java_env
+# ---------------------------------------------------------------------------
+
+class TestJavaForPyghidra:
+    """pyghidra takes JAVA_HOME_OVERRIDE, else runs whatever `java` is on PATH; it does not read JAVA_HOME."""
+
+    @pytest.fixture
+    def no_override(self, monkeypatch):
+        # Set before deleting, so that monkeypatch also takes back a value the code under test writes
+        monkeypatch.setenv("JAVA_HOME_OVERRIDE", "")
+        monkeypatch.delenv("JAVA_HOME_OVERRIDE")
+
+    def test_the_resolved_jdk_is_handed_to_pyghidra(self, no_override, tmp_path, monkeypatch):
+        import os
+        import jdk
+        import pyghidra_backend
+        monkeypatch.setattr(jdk, "find_jdk", lambda: jdk.Jdk(tmp_path / "jdk", 21))
+
+        pyghidra_backend._ensure_java_env()
+
+        assert os.environ["JAVA_HOME_OVERRIDE"] == str(tmp_path / "jdk")
+
+    def test_nothing_is_handed_over_without_a_jdk(self, no_override, monkeypatch):
+        import os
+        import jdk
+        import pyghidra_backend
+        monkeypatch.setattr(jdk, "find_jdk", lambda: None)
+
+        pyghidra_backend._ensure_java_env()
+
+        assert "JAVA_HOME_OVERRIDE" not in os.environ
+
+    def test_an_override_the_user_set_is_kept(self, monkeypatch):
+        import os
+        import jdk
+        import pyghidra_backend
+        monkeypatch.setenv("JAVA_HOME_OVERRIDE", "C:/my/jdk")
+        monkeypatch.setattr(jdk, "find_jdk", lambda: pytest.fail("resolved a JDK over the user's override"))
+
+        pyghidra_backend._ensure_java_env()
+
+        assert os.environ["JAVA_HOME_OVERRIDE"] == "C:/my/jdk"
+
+
+# ---------------------------------------------------------------------------
 # is_analyzed
 # ---------------------------------------------------------------------------
 
@@ -330,53 +375,60 @@ class TestCLI:
 
 class TestExportProgram:
     def test_export_program_writes_ghidra_rows(self, tmp_path):
-        import sys
-        from pathlib import Path
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
-        from pyghidra_backend import _export_program
-        from index import GameIndex
-
-        # --- minimal fakes mimicking the Ghidra API surface used by _export_program ---
-        class FakeAddr:
-            def __init__(self, off): self._off = off
-            def getOffset(self): return self._off
-
-        class FakeBody:
-            def __init__(self, start, end, n):
-                self._max = FakeAddr(end)
-                self._n = n
-            def getMaxAddress(self): return self._max
-            def getNumAddresses(self): return self._n
-
-        class FakeSig:
-            def getPrototypeString(self): return "void Foo(void)"
-
-        class FakeFunc:
-            def __init__(self, ep, name):
-                self._ep = FakeAddr(ep)
-                self._name = name
-            def getEntryPoint(self): return self._ep
-            def getName(self): return self._name
-            def getBody(self): return FakeBody(self._ep.getOffset(), self._ep.getOffset() + 0x40, 0x40)
-            def getSignature(self): return FakeSig()
-
-        class FakeFuncMgr:
-            def getFunctions(self, forward): return [FakeFunc(0x148001000, "Foo")]
-
-        class FakeProgram:
-            def getFunctionManager(self): return FakeFuncMgr()
-
-        gi = GameIndex(str(tmp_path / "index.db"))
-        # _export_program must accept an optional iterables override so xrefs/blocks
-        # (which need Ghidra-only classes) can be supplied empty in the fake path.
-        counts = _export_program(FakeProgram(), gi, xrefs=[], blocks=[])
+        counts, _, funcs = _export(tmp_path, _fake_program([_FakeFunc(0x148001000, "Foo")]))
         assert counts["funcs"] == 1
-        assert gi.counts()["funcs"] == 1
-        row = gi._conn.execute("SELECT name, prototype, source FROM funcs").fetchone()
-        gi.close()
-        assert row[0] == "Foo"
-        assert row[1] == "void Foo(void)"
-        assert row[2] == "ghidra"
+        assert funcs == [("Foo", "void Foo(void)", "ghidra")]
+
+    def test_export_writes_imported_and_user_defined_labels(self, tmp_path):
+        program = _fake_program(
+            [_FakeFunc(0x401000, "Foo")],
+            [_FakeSym(0x8D27D8, "g_basicGame", "Label", "IMPORTED"),
+             _FakeSym(0x8CC4AC, "g_game", "Label", "USER_DEFINED")],
+        )
+        _, names, _ = _export(tmp_path, program)
+        assert names == [
+            (0x401000, "Foo", "ghidra"),
+            (0x8CC4AC, "g_game", "ghidra"),
+            (0x8D27D8, "g_basicGame", "ghidra"),
+        ]
+
+    def test_export_writes_both_names_for_one_address(self, tmp_path):
+        program = _fake_program(
+            [],
+            [_FakeSym(0x8D27D8, "g_basicGame", "Label", "IMPORTED"),
+             _FakeSym(0x8D27D8, "g_basicGame_kb", "Label", "USER_DEFINED")],
+        )
+        _, names, _ = _export(tmp_path, program)
+        assert [n[1] for n in names] == ["g_basicGame", "g_basicGame_kb"]
+
+    def test_export_qualifies_class_scoped_labels(self, tmp_path):
+        program = _fake_program(
+            [],
+            [_FakeSym(0x8C1AE8, "fTimeMultiplier", "Label", "IMPORTED", namespace="rglConfig::Campaign"),
+             _FakeSym(0x8D27D8, "g_basicGame", "Label", "IMPORTED")],
+        )
+        _, names, _ = _export(tmp_path, program)
+        assert [n[1] for n in names] == ["rglConfig::Campaign::fTimeMultiplier", "g_basicGame"]
+
+    def test_export_skips_default_analysis_and_non_label_symbols(self, tmp_path):
+        program = _fake_program(
+            [],
+            [_FakeSym(0x900000, "DAT_00900000", "Label", "DEFAULT"),
+             _FakeSym(0x900010, "switchD_00401234", "Label", "ANALYSIS"),
+             _FakeSym(0x401000, "Foo", "Function", "IMPORTED"),
+             _FakeSym(0x401004, "param_1", "Parameter", "USER_DEFINED")],
+        )
+        _, names, _ = _export(tmp_path, program)
+        assert names == []
+
+    def test_export_skips_labels_outside_program_memory(self, tmp_path):
+        program = _fake_program(
+            [],
+            [_FakeSym(0x1, "_acmdln", "Label", "IMPORTED", namespace="MSVCRT.DLL", memory=False),
+             _FakeSym(0x8D27D8, "g_basicGame", "Label", "IMPORTED")],
+        )
+        _, names, _ = _export(tmp_path, program)
+        assert names == [(0x8D27D8, "g_basicGame", "ghidra")]
 
 
 # ---------------------------------------------------------------------------
@@ -723,3 +775,271 @@ class TestExportCLIDbPath:
         with pytest.raises(SystemExit):
             pyghidra_backend.main()
         assert captured["db"] == str(proj / "index.db")
+
+
+class _Addr:
+    """An address in program memory unless *memory* is False, as in Ghidra's EXTERNAL space."""
+    def __init__(self, off, memory=True): self._off, self._memory = off, memory
+    def getOffset(self): return self._off
+    def isMemoryAddress(self): return self._memory
+
+
+class _FakeBody:
+    def __init__(self, start, end, n):
+        self._max = _Addr(end)
+        self._n = n
+    def getMaxAddress(self): return self._max
+    def getNumAddresses(self): return self._n
+
+
+class _FakeSig:
+    def getPrototypeString(self): return "void Foo(void)"
+
+
+class _FakeFunc:
+    def __init__(self, ep, name):
+        self._ep = _Addr(ep)
+        self._name = name
+    def getEntryPoint(self): return self._ep
+    def getName(self): return self._name
+    def getBody(self): return _FakeBody(self._ep.getOffset(), self._ep.getOffset() + 0x40, 0x40)
+    def getSignature(self): return _FakeSig()
+
+
+class _FakeSym:
+    """str(getSymbolType()) / str(getSource()) mirror Ghidra's toString: 'Label', 'IMPORTED'.
+
+    getName(True) prefixes the parent namespace like Ghidra's Symbol.getName(includeNamespace).
+    """
+    def __init__(self, addr, name, sym_type, source, namespace="", memory=True):
+        self._addr, self._name, self._type, self._source = _Addr(addr, memory), name, sym_type, source
+        self._namespace = namespace
+    def getAddress(self): return self._addr
+    def getName(self, include_namespace=False):
+        return f"{self._namespace}::{self._name}" if include_namespace and self._namespace else self._name
+    def getSymbolType(self): return self._type
+    def getSource(self): return self._source
+
+
+class _Iter:
+    def __init__(self, items): self._items = list(items)
+    def hasNext(self): return bool(self._items)
+    def next(self): return self._items.pop(0)
+
+
+class _RefType:
+    def __init__(self, kind): self._kind = kind
+    def isCall(self): return self._kind == "call"
+    def isJump(self): return self._kind == "jump"
+    def isData(self): return self._kind == "data"
+
+
+class _Ref:
+    def __init__(self, frm, to, kind):
+        self._f, self._t, self._k = _Addr(frm), _Addr(to), _RefType(kind)
+    def getFromAddress(self): return self._f
+    def getToAddress(self): return self._t
+    def getReferenceType(self): return self._k
+
+
+def _export(tmp_path, program):
+    from index import GameIndex
+    from pyghidra_backend import _export_program
+
+    gi = GameIndex(str(tmp_path / "index.db"))
+    counts = _export_program(program, gi, xrefs=[], blocks=[])
+    names = sorted(gi._conn.execute("SELECT address, name, source FROM names").fetchall())
+    funcs = gi._conn.execute("SELECT name, prototype, source FROM funcs").fetchall()
+    gi.close()
+    return counts, names, funcs
+
+
+def _fake_program(funcs, symbols=()):
+    class FuncMgr:
+        def getFunctions(self, forward): return list(funcs)
+
+    class SymTab:
+        def getSymbolIterator(self, forward): return list(symbols)
+
+    class Program:
+        def getFunctionManager(self): return FuncMgr()
+        def getSymbolTable(self): return SymTab()
+
+    return Program()
+
+
+def _ref_program(refs, funcs):
+    """funcs: (entry, end) ranges; a ref outside every range has no containing function."""
+    class Body:
+        def __init__(self, lo, hi): self.lo, self.hi = lo, hi
+        def contains(self, addr): return self.lo <= addr.getOffset() < self.hi
+
+    class Func:
+        def __init__(self, lo, hi): self.lo, self.hi = lo, hi
+        def getBody(self): return Body(self.lo, self.hi)
+        def getEntryPoint(self): return _Addr(self.lo)
+
+    class FuncMgr:
+        def getFunctionContaining(self, addr):
+            return next((Func(lo, hi) for lo, hi in funcs if lo <= addr.getOffset() < hi), None)
+
+    class RefMgr:
+        def getReferenceIterator(self, addr): return _Iter(refs)
+
+    class Program:
+        def getReferenceManager(self): return RefMgr()
+        def getFunctionManager(self): return FuncMgr()
+        def getMinAddress(self): return _Addr(0)
+
+    return Program()
+
+
+class TestExport:
+    def _setup(self, tmp_path, monkeypatch, analyzed=True, routed=None):
+        import pyghidra_backend as pb
+        monkeypatch.setattr(pb, "is_analyzed", lambda proj, name: analyzed)
+        sent = []
+        monkeypatch.setattr(pb, "_route_daemon", lambda proj, cmd, timeout=None: sent.append(cmd) or routed)
+        return pb, sent
+
+    def test_unanalyzed_binary_is_an_error(self, tmp_path, monkeypatch):
+        pb, sent = self._setup(tmp_path, monkeypatch, analyzed=False)
+        assert pb.export("proj", "C:/g/game.exe", "x.db") == "[error] no analyzed project for game.exe in proj"
+        assert sent == []
+
+    def test_daemon_result_is_reported(self, tmp_path, monkeypatch):
+        pb, sent = self._setup(tmp_path, monkeypatch, routed={"ok": True, "counts": {"funcs": 2, "names": 3}})
+        assert pb.export("proj", "game.exe", "x.db") == "Export complete: funcs=2, names=3 -> x.db"
+        assert sent == [{"cmd": "export", "binary": "game.exe", "db": "x.db"}]
+
+    def test_daemon_error_is_reported(self, tmp_path, monkeypatch):
+        pb, _ = self._setup(tmp_path, monkeypatch, routed={"ok": False, "error": "boom"})
+        assert pb.export("proj", "game.exe", "x.db") == "[error] boom"
+
+    def test_cold_path_needs_pyghidra_and_ghidra_dir(self, tmp_path, monkeypatch):
+        pb, _ = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(pb, "_import_pyghidra", lambda: None)
+        assert pb.export("proj", "game.exe", "x.db") == "[error] pyghidra is not installed"
+        monkeypatch.setattr(pb, "_import_pyghidra", lambda: object())
+        monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
+        assert pb.export("proj", "game.exe", "x.db") == "[error] GHIDRA_INSTALL_DIR environment variable not set"
+
+    def test_cold_path_exports_the_opened_program(self, tmp_path, monkeypatch):
+        pb, _ = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setenv("GHIDRA_INSTALL_DIR", str(tmp_path))
+        opened = []
+        program = _fake_program([_FakeFunc(0x401000, "Foo")])
+
+        class Ctx:
+            def __enter__(self):
+                return type("Flat", (), {"getCurrentProgram": lambda self: program})()
+            def __exit__(self, *a): pass
+
+        class Pg:
+            def start(self): pass
+            def open_program(self, binary, **kw):
+                opened.append((binary, kw))
+                return Ctx()
+
+        monkeypatch.setattr(pb, "_import_pyghidra", lambda: Pg())
+        monkeypatch.setattr(pb, "_iter_xrefs", lambda p: iter(()))
+        monkeypatch.setattr(pb, "_iter_blocks", lambda p: iter(()))
+        db = str(tmp_path / "index.db")
+        out = pb.export(str(tmp_path / "proj"), "C:/g/game.exe", db)
+        assert out == f"Export complete: funcs=1, names=1, xrefs=0, blocks=0 -> {db}"
+        assert opened == [("C:/g/game.exe", {"project_location": str(tmp_path / "proj"),
+                                              "project_name": "game", "analyze": False})]
+
+
+class TestExportFuncRows:
+    def test_function_end_is_one_past_its_last_address(self, tmp_path):
+        from index import GameIndex
+        from pyghidra_backend import _export_program
+        gi = GameIndex(str(tmp_path / "index.db"))
+        _export_program(_fake_program([_FakeFunc(0x401000, "Foo")]), gi, xrefs=[], blocks=[])
+        row = gi._conn.execute("SELECT address, end_ea, size FROM funcs").fetchone()
+        gi.close()
+        assert row == (0x401000, 0x401041, 0x40)   # _FakeBody's last address is entry + 0x40
+
+
+class TestIterBlockRows:
+    def test_block_end_is_exclusive_and_size_is_the_span(self, monkeypatch):
+        import types
+        for name in ("ghidra", "ghidra.program", "ghidra.program.model",
+                     "ghidra.program.model.block", "ghidra.util", "ghidra.util.task"):
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+
+        class Block:
+            def __init__(self, start, last): self._s, self._m = _Addr(start), _Addr(last)
+            def getFirstStartAddress(self): return self._s
+            def getMaxAddress(self): return self._m
+
+        class Model:
+            def __init__(self, program): pass
+            def getCodeBlocks(self, monitor): return _Iter([Block(0x401000, 0x40101F)])
+
+        class FuncMgr:
+            def getFunctionContaining(self, addr): return None
+
+        class Program:
+            def getFunctionManager(self): return FuncMgr()
+
+        monkeypatch.setattr(sys.modules["ghidra.program.model.block"], "BasicBlockModel", Model, raising=False)
+        monkeypatch.setattr(sys.modules["ghidra.util.task"], "ConsoleTaskMonitor", lambda: None, raising=False)
+        from pyghidra_backend import _iter_blocks
+        assert list(_iter_blocks(Program())) == [
+            {"func_ea": 0x401000, "start_ea": 0x401000, "end_ea": 0x401020, "size": 0x20}]
+
+
+class TestIterXrefRows:
+    def test_rows_carry_kind_code_flag_and_containing_function(self):
+        from pyghidra_backend import _iter_xrefs
+        refs = [_Ref(0x401010, 0x402000, "call"), _Ref(0x401020, 0x401080, "jump"),
+                _Ref(0x401030, 0x500000, "data"), _Ref(0x300000, 0x402000, "call"),
+                _Ref(0x402010, 0x401000, "call")]
+        rows = list(_iter_xrefs(_ref_program(refs, [(0x401000, 0x401100), (0x402000, 0x402100)])))
+        assert rows == [
+            {"from_ea": 0x401010, "to_ea": 0x402000, "type": "call", "is_code": 1, "from_func": 0x401000},
+            {"from_ea": 0x401020, "to_ea": 0x401080, "type": "jump", "is_code": 1, "from_func": 0x401000},
+            {"from_ea": 0x401030, "to_ea": 0x500000, "type": "data", "is_code": 0, "from_func": 0x401000},
+            {"from_ea": 0x402010, "to_ea": 0x401000, "type": "call", "is_code": 1, "from_func": 0x402000},
+        ]
+
+
+class TestKbApplyUnparsedPrototype:
+    def test_a_prototype_the_parser_returns_nothing_for_is_skipped(self, monkeypatch):
+        import sys
+        import types
+        from pyghidra_backend import _kb_apply_program
+        from kb import parse_kb
+
+        for name in ("ghidra", "ghidra.program", "ghidra.program.model", "ghidra.program.model.symbol",
+                     "ghidra.app", "ghidra.app.util", "ghidra.app.util.parser", "ghidra.util",
+                     "ghidra.util.task", "ghidra.app.cmd", "ghidra.app.cmd.function"):
+            monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+        commands = []
+
+        class Parser:
+            def __init__(self, dtm, service): pass
+            def parse(self, original, text): return None
+
+        class Program:
+            def getAddressFactory(self):
+                space = types.SimpleNamespace(getAddress=lambda off: off)
+                return types.SimpleNamespace(getDefaultAddressSpace=lambda: space)
+            def getListing(self):
+                func = types.SimpleNamespace(setName=lambda name, src: None, getSignature=lambda: None)
+                return types.SimpleNamespace(getFunctionContaining=lambda addr: func)
+            def getSymbolTable(self): return None
+            def getDataTypeManager(self): return None
+
+        monkeypatch.setattr(sys.modules["ghidra.program.model.symbol"], "SourceType",
+                            types.SimpleNamespace(USER_DEFINED=object()), raising=False)
+        monkeypatch.setattr(sys.modules["ghidra.app.util.parser"], "FunctionSignatureParser", Parser, raising=False)
+        monkeypatch.setattr(sys.modules["ghidra.util.task"], "ConsoleTaskMonitor", lambda: None, raising=False)
+        monkeypatch.setattr(sys.modules["ghidra.app.cmd.function"], "ApplyFunctionSignatureCmd",
+                            lambda *args: commands.append(args), raising=False)
+
+        counts = _kb_apply_program(Program(), parse_kb("@ 0x401000 void Foo(int a);\n"), apply_types=False)
+        assert commands == []
+        assert (counts["functions"], counts["prototypes"], counts["skipped"]) == (1, 0, 1)

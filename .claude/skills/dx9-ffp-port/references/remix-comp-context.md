@@ -24,7 +24,7 @@ These are infrastructure files. Use the summaries below instead of opening them.
 - `src/shared/common/console.hpp` — Debug console allocation/output.
 - `src/shared/common/imgui_helper.cpp/hpp` — ImGui setup/teardown utilities.
 - `src/shared/utils/memory.cpp/hpp` — Pattern scanning and memory allocation.
-- `src/shared/utils/utils.cpp/hpp` — String/path/module utilities.
+- `src/shared/utils/utils.cpp/hpp` — String/path/module utilities, matrix conversion helpers, image file to texture loader.
 - `src/shared/common/dinput_hook_v1.cpp/hpp` — DirectInput8 hook (input capture).
 - `src/shared/common/dinput_hook_v2.cpp/hpp` — Alternate DirectInput hook.
 - `src/shared/common/loader.cpp/hpp` — Module loader/registry.

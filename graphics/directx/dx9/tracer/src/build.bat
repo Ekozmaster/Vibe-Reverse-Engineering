@@ -10,17 +10,22 @@ REM
 REM Output: d3d9.dll copied to ../bin/
 REM ================================================================
 
-REM Auto-find Visual Studio via vswhere
-for /f "tokens=*" %%i in ('"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath 2^>nul') do set VSDIR=%%i
+REM Newest Visual Studio with the C++ tools, Build Tools included: without
+REM -products * vswhere skips a Build Tools-only install
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VSDIR="
+if exist "%VSWHERE%" (
+    for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+)
 
 if not defined VSDIR (
-    echo ERROR: Visual Studio not found. Install VS Build Tools.
+    echo ERROR: Visual Studio with the C++ tools not found. Install VS Build Tools.
     exit /b 1
 )
 
-set VCVARSALL=%VSDIR%\VC\Auxiliary\Build\vcvarsall.bat
+set "VCVARSALL=%VSDIR%\VC\Auxiliary\Build\vcvarsall.bat"
 if not exist "%VCVARSALL%" (
-    echo ERROR: vcvarsall.bat not found at %VCVARSALL%
+    echo ERROR: vcvarsall.bat not found at "%VCVARSALL%"
     exit /b 1
 )
 

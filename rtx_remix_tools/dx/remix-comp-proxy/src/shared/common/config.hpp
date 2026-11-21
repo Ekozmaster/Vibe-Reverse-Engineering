@@ -19,11 +19,28 @@ namespace shared::common
 		{
 			bool enabled = true;
 			int albedo_stage = 0;
+
+			// Vertex shader constant registers the game uploads each matrix to.
+			// A matrix is four registers, so an end is always its start + 4.
+			struct register_layout
+			{
+				int view_start = 0;
+				int view_end = 4;
+				int proj_start = 4;
+				int proj_end = 8;
+				int world_start = 16;
+				int world_end = 20;
+			} registers;
 		} ffp;
 
 		struct skinning_settings
 		{
 			bool enabled = false;
+
+			// Which SetVertexShaderConstantF uploads are taken as a bone palette
+			int bone_threshold = 20;	// lowest register an upload may start at
+			int regs_per_bone = 3;		// 3 for packed 4x3 matrices, 4 for 4x4
+			int bone_min_regs = 3;		// smallest upload, in registers
 		} skinning;
 
 		struct diagnostics_settings
@@ -65,5 +82,10 @@ namespace shared::common
 		bool loaded_ = false;
 
 		void parse_all();
+
+		// An inline ";" comment is ignored. An absent or empty value gives default_val; any other
+		// value that is not a decimal number is logged and gives default_val too.
+		template <typename T>
+		T get_number(const char* section, const char* key, T default_val) const;
 	};
 }

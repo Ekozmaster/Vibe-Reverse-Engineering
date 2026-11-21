@@ -11,7 +11,10 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ---- Configuration (set from proxy.ini by d3d9_trace_main.c) ---- */
@@ -45,16 +48,34 @@ typedef struct TracedDevice {
 #define MAX_BT_FRAMES       32
 #define FLUSH_INTERVAL_MASK  0xFF
 #define FLOATS_PER_VEC4      4
+/* "trigger --frames" refuses a count outside 1..MAX_CAPTURE_FRAMES */
+#define MAX_CAPTURE_FRAMES   100000
+#define CAPTURE_ID_LENGTH    16
 
+/* Guards the capture state below, the JSONL file and the progress file. A
+ * record is opened by trace_pre and ended by trace_post, either side of the
+ * real call; the thread holds the lock from the one to the other, so records
+ * of two threads never interleave and a capture neither starts nor ends
+ * inside a record. */
+static CRITICAL_SECTION g_traceLock;
+
+/* Written under the lock; read without it only to skip calls that are not recorded */
 static volatile int  g_capturing    = 0;
 static int           g_captureInit  = 0;
 static int           g_frameTarget  = 2;
 static int           g_currentFrame = 0;
 static int           g_seq          = 0;
 static FILE         *g_jsonlFile    = NULL;
+/* Id of the trigger file that started the capture; "-" when it carried none */
+static char          g_captureId[CAPTURE_ID_LENGTH + 1] = "-";
 static char          g_jsonlPath[MAX_PATH];
 static char          g_progressPath[MAX_PATH];
 static char          g_triggerPath[MAX_PATH];
+
+/* Called once, before a device exists to be called through */
+void TraceLock_Init(void) {
+    InitializeCriticalSection(&g_traceLock);
+}
 
 /* ---- JSONL writing helpers ---- */
 
@@ -405,25 +426,56 @@ static void trace_on_present(void);
 
 /* ---- Core trace functions ---- */
 
-static void write_progress(void) {
+/* The progress file holds one line: "<frame> <calls> <id>" while capturing,
+ * with " done" added by the last write, once every captured call is in the
+ * JSONL file; or "0 0 <id> failed <reason>" for a capture that cannot start.
+ * <id> is g_captureId, by which "trigger --wait" tells the capture it asked
+ * for from any other. The file is rewritten in place, not replaced by a
+ * rename: a reader holding it open blocks a rename but not a rewrite, and the
+ * reader reads again when it finds a line without its newline.
+ * Callers hold g_traceLock. */
+static void write_progress(int done) {
     FILE *pf = fopen(g_progressPath, "w");
     if (pf) {
-        fprintf(pf, "%d %d\n", g_currentFrame, g_seq);
+        fprintf(pf, done ? "%d %d %s done\n" : "%d %d %s\n",
+                g_currentFrame, g_seq, g_captureId);
         fclose(pf);
     }
 }
 
-static void trace_pre(int slot, void *pThis, int argc, DWORD *args) {
-    int is_init_slot;
+/* reason: one line of text, which "trigger --wait" prints as it stands */
+static void write_capture_failure(const char *reason) {
+    FILE *pf = fopen(g_progressPath, "w");
+    if (pf) {
+        fprintf(pf, "0 0 %s failed %s\n", g_captureId, reason);
+        fclose(pf);
+    }
+}
+
+static int records_slot(int slot) {
+    return g_capturing || (g_captureInit && g_initCapture[slot]);
+}
+
+/* Set while a record is open. The thread that opened it holds g_traceLock, so
+ * only a call that thread makes from inside the recorded one finds it set; such
+ * a call is not recorded, and a Present among them ends no frame. */
+static int g_recordOpen;
+
+/* Opens the record of a call. Returns nonzero when it did: the thread then
+ * holds g_traceLock, which trace_post releases as it ends the record. */
+static int trace_pre(int slot, void *pThis, int argc, DWORD *args) {
     void *bt_frames[MAX_BT_FRAMES];
     int bt_count, i;
 
-    is_init_slot = g_initCapture[slot];
+    if (!records_slot(slot))
+        return 0;
 
-    if (!g_capturing && !(g_captureInit && is_init_slot))
-        return;
-
-    if (!g_jsonlFile) return;
+    EnterCriticalSection(&g_traceLock);
+    if (!g_jsonlFile || g_recordOpen || !records_slot(slot)) {
+        LeaveCriticalSection(&g_traceLock);
+        return 0;
+    }
+    g_recordOpen = 1;
 
     bt_count = capture_backtrace(bt_frames, MAX_BT_FRAMES);
 
@@ -459,6 +511,7 @@ static void trace_pre(int slot, void *pThis, int argc, DWORD *args) {
     json_key_int(g_jsonlFile, "ts", (int)GetTickCount(), 1);
 
     g_seq++;
+    return 1;
 }
 
 static void write_post_data(FILE *f, int slot, DWORD *args) {
@@ -477,64 +530,160 @@ static void write_post_data(FILE *f, int slot, DWORD *args) {
     }
 }
 
-static void trace_post(int slot, DWORD retval, DWORD *args) {
-    if (g_jsonlFile && (g_capturing || (g_captureInit && g_initCapture[slot]))) {
+/* recording: what trace_pre returned for this call */
+static void trace_post(int slot, int recording, DWORD retval, DWORD *args) {
+    if (recording) {
         json_key_hex(g_jsonlFile, "ret", retval, 1);
         write_post_data(g_jsonlFile, slot, args);
         json_end(g_jsonlFile);
+        g_recordOpen = 0;
 
         if ((g_seq & FLUSH_INTERVAL_MASK) == 0) {
             fflush(g_jsonlFile);
-            write_progress();
+            if (g_capturing)
+                write_progress(0);
         }
     }
 
     if (slot == SLOT_Present)
         trace_on_present();
+
+    if (recording)
+        LeaveCriticalSection(&g_traceLock);
 }
 
 /* ---- Frame boundary: called from Present wrapper ---- */
 
-static void trace_on_present(void) {
-    if (!g_capturing) {
-        DWORD attr = GetFileAttributesA(g_triggerPath);
-        if (attr != INVALID_FILE_ATTRIBUTES) {
-            DeleteFileA(g_triggerPath);
+/* What follows key on the line of the trigger file that starts with it
+ * ("frames=N" and "id=TOKEN", as "trigger" writes them); NULL without one. */
+static const char *trigger_value(const char *trigger, const char *key) {
+    size_t key_length = strlen(key);
+    const char *line = trigger;
+    while (line) {
+        if (strncmp(line, key, key_length) == 0)
+            return line + key_length;
+        line = strchr(line, '\n');
+        if (line) line++;
+    }
+    return NULL;
+}
 
-            if (!g_jsonlFile) {
-                g_jsonlFile = fopen(g_jsonlPath, "w");
-            }
-            if (g_jsonlFile) {
-                g_capturing = 1;
-                g_currentFrame = 0;
-                g_seq = 0;
-                g_frameTarget = g_cfgCaptureFrames;
-                init_code_ranges(); /* refresh: DLLs may have loaded since init */
-                log_str("=== CAPTURE STARTED ===\r\n");
-                write_progress();
-            }
-        }
+/* Frames the trigger file asks for, or [Trace] CaptureFrames when it names no
+ * count: within 1..MAX_CAPTURE_FRAMES. 0 when the count it names is not a
+ * number of at least 1. */
+static int trigger_frames(const char *trigger) {
+    const char *value = trigger_value(trigger, "frames=");
+    long frames = g_cfgCaptureFrames;
+    if (value) {
+        char *end;
+        frames = strtol(value, &end, 10);
+        if (end == value || (*end != '\0' && !isspace((unsigned char)*end)) || frames < 1)
+            return 0;
+    }
+    if (frames < 1) return 1;
+    if (frames > MAX_CAPTURE_FRAMES) return MAX_CAPTURE_FRAMES;
+    return (int)frames;
+}
+
+/* id: receives the trigger file's id, CAPTURE_ID_LENGTH lowercase hex digits;
+ * "-" for a trigger file that carries none. */
+static void trigger_id(const char *trigger, char *id) {
+    const char *value = trigger_value(trigger, "id=");
+    if (value && strspn(value, "0123456789abcdef") == CAPTURE_ID_LENGTH
+            && (value[CAPTURE_ID_LENGTH] == '\0' || isspace((unsigned char)value[CAPTURE_ID_LENGTH]))) {
+        memcpy(id, value, CAPTURE_ID_LENGTH);
+        id[CAPTURE_ID_LENGTH] = '\0';
+    } else {
+        strcpy(id, "-");
+    }
+}
+
+static void report_capture_file_error(int open_errno) {
+    char reason[MAX_PATH + 128];
+    _snprintf(reason, sizeof(reason), "cannot open %s: %s",
+              g_jsonlPath, strerror(open_errno));
+    reason[sizeof(reason) - 1] = 0;
+    log_str("ERROR: capture not started, ");
+    log_str(reason);
+    log_str("\r\n");
+    write_capture_failure(reason);
+}
+
+/* Takes the trigger file whether or not the capture can start: left in place,
+ * it would be retried on every Present. The trigger goes only after the
+ * capture file exists and the progress file names the trigger's id:
+ * "trigger --wait" takes a missing trigger for a capture whose progress it
+ * can read. */
+static void start_capture_on_trigger(void) {
+    char trigger[256] = {0};
+    int open_errno = 0;
+    int frames;
+    FILE *tf = fopen(g_triggerPath, "r");
+
+    if (!tf) return;
+    fread(trigger, 1, sizeof(trigger) - 1, tf);
+    fclose(tf);
+    trigger_id(trigger, g_captureId);
+    frames = trigger_frames(trigger);
+
+    if (frames && !g_jsonlFile) {
+        g_jsonlFile = fopen(g_jsonlPath, "w");
+        open_errno = errno;
+    }
+    if (!frames) {
+        log_str("ERROR: capture not started, the trigger's frames= is not a number of frames from 1 up\r\n");
+        write_capture_failure("the trigger's frames= is not a number of frames from 1 up");
+    } else if (g_jsonlFile) {
+        g_capturing = 1;
+        g_currentFrame = 0;
+        g_seq = 0;
+        g_frameTarget = frames;
+        init_code_ranges(); /* refresh: DLLs may have loaded since init */
+        log_str("=== CAPTURE STARTED ===\r\n");
+        write_progress(0);
+    } else {
+        report_capture_file_error(open_errno);
+    }
+    if (!DeleteFileA(g_triggerPath))
+        log_hex("ERROR: trigger file not deleted, GetLastError ", GetLastError());
+}
+
+static void end_captured_frame(void);
+
+/* A trigger file found while a capture runs stays where it is, and starts
+ * the next capture at the first Present after this one has ended. */
+static void trace_on_present(void) {
+    EnterCriticalSection(&g_traceLock);
+    if (g_recordOpen)
+        ; /* a Present made from inside a recorded call: that call's record is still open */
+    else if (g_capturing)
+        end_captured_frame();
+    else if (GetFileAttributesA(g_triggerPath) != INVALID_FILE_ATTRIBUTES)
+        start_capture_on_trigger();
+    LeaveCriticalSection(&g_traceLock);
+}
+
+static void end_captured_frame(void) {
+    g_currentFrame++;
+    if (g_currentFrame < g_frameTarget) {
+        write_progress(0);
         return;
     }
 
-    g_currentFrame++;
-    write_progress();
+    g_capturing = 0;
+    fflush(g_jsonlFile);
+    /* With init capture on, the file stays open for later Create* calls */
+    if (!g_captureInit) {
+        fclose(g_jsonlFile);
+        g_jsonlFile = NULL;
+    }
+    write_progress(1);
 
-    if (g_currentFrame >= g_frameTarget) {
-        g_capturing = 0;
-        fflush(g_jsonlFile);
-
-        if (!g_captureInit) {
-            fclose(g_jsonlFile);
-            g_jsonlFile = NULL;
-        }
-
-        log_str("=== CAPTURE DONE ===\r\n");
-        {
-            char buf[64];
-            sprintf(buf, "  Frames: %d  Calls: %d\r\n", g_frameTarget, g_seq);
-            log_str(buf);
-        }
+    log_str("=== CAPTURE DONE ===\r\n");
+    {
+        char buf[64];
+        sprintf(buf, "  Frames: %d  Calls: %d\r\n", g_frameTarget, g_seq);
+        log_str(buf);
     }
 }
 
@@ -553,91 +702,91 @@ typedef DWORD (__stdcall *FN9)(void*, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, 
 
 #define TRACE_WRAP_0(SLOT) \
     static DWORD __stdcall TH_##SLOT(void *pThis) { \
-        DWORD hr; \
-        trace_pre(SLOT, pThis, 0, NULL); \
+        DWORD hr; int recording; \
+        recording = trace_pre(SLOT, pThis, 0, NULL); \
         hr = ((FN0)REAL_VT(pThis)[SLOT])(REAL(pThis)); \
-        trace_post(SLOT, hr, NULL); \
+        trace_post(SLOT, recording, hr, NULL); \
         return hr; \
     }
 
 #define TRACE_WRAP_1(SLOT) \
     static DWORD __stdcall TH_##SLOT(void *pThis, DWORD a1) { \
-        DWORD args[] = {a1}; DWORD hr; \
-        trace_pre(SLOT, pThis, 1, args); \
+        DWORD args[] = {a1}; DWORD hr; int recording; \
+        recording = trace_pre(SLOT, pThis, 1, args); \
         hr = ((FN1)REAL_VT(pThis)[SLOT])(REAL(pThis), a1); \
-        trace_post(SLOT, hr, args); \
+        trace_post(SLOT, recording, hr, args); \
         return hr; \
     }
 
 #define TRACE_WRAP_2(SLOT) \
     static DWORD __stdcall TH_##SLOT(void *pThis, DWORD a1, DWORD a2) { \
-        DWORD args[] = {a1, a2}; DWORD hr; \
-        trace_pre(SLOT, pThis, 2, args); \
+        DWORD args[] = {a1, a2}; DWORD hr; int recording; \
+        recording = trace_pre(SLOT, pThis, 2, args); \
         hr = ((FN2)REAL_VT(pThis)[SLOT])(REAL(pThis), a1, a2); \
-        trace_post(SLOT, hr, args); \
+        trace_post(SLOT, recording, hr, args); \
         return hr; \
     }
 
 #define TRACE_WRAP_3(SLOT) \
     static DWORD __stdcall TH_##SLOT(void *pThis, DWORD a1, DWORD a2, DWORD a3) { \
-        DWORD args[] = {a1, a2, a3}; DWORD hr; \
-        trace_pre(SLOT, pThis, 3, args); \
+        DWORD args[] = {a1, a2, a3}; DWORD hr; int recording; \
+        recording = trace_pre(SLOT, pThis, 3, args); \
         hr = ((FN3)REAL_VT(pThis)[SLOT])(REAL(pThis), a1, a2, a3); \
-        trace_post(SLOT, hr, args); \
+        trace_post(SLOT, recording, hr, args); \
         return hr; \
     }
 
 #define TRACE_WRAP_4(SLOT) \
     static DWORD __stdcall TH_##SLOT(void *pThis, DWORD a1, DWORD a2, DWORD a3, DWORD a4) { \
-        DWORD args[] = {a1, a2, a3, a4}; DWORD hr; \
-        trace_pre(SLOT, pThis, 4, args); \
+        DWORD args[] = {a1, a2, a3, a4}; DWORD hr; int recording; \
+        recording = trace_pre(SLOT, pThis, 4, args); \
         hr = ((FN4)REAL_VT(pThis)[SLOT])(REAL(pThis), a1, a2, a3, a4); \
-        trace_post(SLOT, hr, args); \
+        trace_post(SLOT, recording, hr, args); \
         return hr; \
     }
 
 #define TRACE_WRAP_5(SLOT) \
     static DWORD __stdcall TH_##SLOT(void *pThis, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5) { \
-        DWORD args[] = {a1, a2, a3, a4, a5}; DWORD hr; \
-        trace_pre(SLOT, pThis, 5, args); \
+        DWORD args[] = {a1, a2, a3, a4, a5}; DWORD hr; int recording; \
+        recording = trace_pre(SLOT, pThis, 5, args); \
         hr = ((FN5)REAL_VT(pThis)[SLOT])(REAL(pThis), a1, a2, a3, a4, a5); \
-        trace_post(SLOT, hr, args); \
+        trace_post(SLOT, recording, hr, args); \
         return hr; \
     }
 
 #define TRACE_WRAP_6(SLOT) \
     static DWORD __stdcall TH_##SLOT(void *pThis, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5, DWORD a6) { \
-        DWORD args[] = {a1, a2, a3, a4, a5, a6}; DWORD hr; \
-        trace_pre(SLOT, pThis, 6, args); \
+        DWORD args[] = {a1, a2, a3, a4, a5, a6}; DWORD hr; int recording; \
+        recording = trace_pre(SLOT, pThis, 6, args); \
         hr = ((FN6)REAL_VT(pThis)[SLOT])(REAL(pThis), a1, a2, a3, a4, a5, a6); \
-        trace_post(SLOT, hr, args); \
+        trace_post(SLOT, recording, hr, args); \
         return hr; \
     }
 
 #define TRACE_WRAP_7(SLOT) \
     static DWORD __stdcall TH_##SLOT(void *pThis, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5, DWORD a6, DWORD a7) { \
-        DWORD args[] = {a1, a2, a3, a4, a5, a6, a7}; DWORD hr; \
-        trace_pre(SLOT, pThis, 7, args); \
+        DWORD args[] = {a1, a2, a3, a4, a5, a6, a7}; DWORD hr; int recording; \
+        recording = trace_pre(SLOT, pThis, 7, args); \
         hr = ((FN7)REAL_VT(pThis)[SLOT])(REAL(pThis), a1, a2, a3, a4, a5, a6, a7); \
-        trace_post(SLOT, hr, args); \
+        trace_post(SLOT, recording, hr, args); \
         return hr; \
     }
 
 #define TRACE_WRAP_8(SLOT) \
     static DWORD __stdcall TH_##SLOT(void *pThis, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5, DWORD a6, DWORD a7, DWORD a8) { \
-        DWORD args[] = {a1, a2, a3, a4, a5, a6, a7, a8}; DWORD hr; \
-        trace_pre(SLOT, pThis, 8, args); \
+        DWORD args[] = {a1, a2, a3, a4, a5, a6, a7, a8}; DWORD hr; int recording; \
+        recording = trace_pre(SLOT, pThis, 8, args); \
         hr = ((FN8)REAL_VT(pThis)[SLOT])(REAL(pThis), a1, a2, a3, a4, a5, a6, a7, a8); \
-        trace_post(SLOT, hr, args); \
+        trace_post(SLOT, recording, hr, args); \
         return hr; \
     }
 
 #define TRACE_WRAP_9(SLOT) \
     static DWORD __stdcall TH_##SLOT(void *pThis, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5, DWORD a6, DWORD a7, DWORD a8, DWORD a9) { \
-        DWORD args[] = {a1, a2, a3, a4, a5, a6, a7, a8, a9}; DWORD hr; \
-        trace_pre(SLOT, pThis, 9, args); \
+        DWORD args[] = {a1, a2, a3, a4, a5, a6, a7, a8, a9}; DWORD hr; int recording; \
+        recording = trace_pre(SLOT, pThis, 9, args); \
         hr = ((FN9)REAL_VT(pThis)[SLOT])(REAL(pThis), a1, a2, a3, a4, a5, a6, a7, a8, a9); \
-        trace_post(SLOT, hr, args); \
+        trace_post(SLOT, recording, hr, args); \
         return hr; \
     }
 
@@ -667,6 +816,8 @@ TracedDevice* TracedDevice_Create(void *pRealDevice) {
     if (lastSlash >= 0) dllDir[lastSlash + 1] = '\0';
     else dllDir[0] = '\0';
 
+    EnterCriticalSection(&g_traceLock);
+
     sprintf(g_triggerPath,  "%sdxtrace_capture.trigger", dllDir);
     sprintf(g_jsonlPath,    "%sdxtrace_frame.jsonl",     dllDir);
     sprintf(g_progressPath, "%sdxtrace_progress.txt",    dllDir);
@@ -680,6 +831,8 @@ TracedDevice* TracedDevice_Create(void *pRealDevice) {
             log_str("Init capture enabled -- logging Create* calls\r\n");
         }
     }
+
+    LeaveCriticalSection(&g_traceLock);
 
     log_hex("TracedDevice created at ", (unsigned int)(size_t)td);
     log_hex("  Real device: ", (unsigned int)(size_t)pRealDevice);

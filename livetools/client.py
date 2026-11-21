@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
+import os
+import signal
 import socket
 import struct
+import sys
+import time
 from pathlib import Path
 
 HOST = "127.0.0.1"
@@ -12,6 +17,12 @@ PORT = 27042
 STATE_FILE = Path(__file__).parent / ".state.json"
 DAEMON_LOG = Path(__file__).parent / ".daemon.log"
 RECV_BUF = 1 << 20
+
+_PROC_ROOT = Path("/proc")
+_EXITED_STATES = frozenset("ZXx")
+
+_SYNCHRONIZE = 0x00100000
+_WAIT_TIMEOUT = 0x102
 
 
 # ── state file helpers ─────────────────────────────────────────────────────
@@ -25,26 +36,62 @@ def read_state() -> dict | None:
         return None
 
 
-def is_target_running(pid: int) -> bool:
-    """Check if a process with the given PID is still alive."""
-    if pid is None:
-        return False
-    try:
-        import ctypes
+def is_target_running(pid: int | None) -> bool:
+    """Whether a process with the given PID is still running."""
+    return pid is not None and not wait_for_exit(pid, 0)
+
+
+def wait_for_exit(pid: int, timeout: float) -> bool:
+    """Wait up to *timeout* seconds for process *pid* to exit.
+
+    On Windows a process that has exited stays openable for as long as anyone
+    holds a handle to it, so its exit is read from the handle's signalled
+    state, not from whether it can be opened.
+
+    Returns:
+        True if the process has exited (or never existed), False if it is
+        still running when the timeout ends.
+    """
+    if sys.platform == "win32":
         kernel32 = ctypes.windll.kernel32
-        SYNCHRONIZE = 0x00100000
-        h = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-        if h:
-            kernel32.CloseHandle(h)
+        handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
+        if not handle:
             return True
-        return False
-    except Exception:
-        import os
         try:
-            os.kill(pid, 0)
+            return kernel32.WaitForSingleObject(handle, int(timeout * 1000)) != _WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    deadline = time.monotonic() + timeout
+    while True:
+        if _has_exited_posix(pid):
             return True
-        except (OSError, ProcessLookupError):
+        if time.monotonic() >= deadline:
             return False
+        time.sleep(0.05)
+
+
+def _has_exited_posix(pid: int) -> bool:
+    """Whether *pid* has exited, counting a zombie nobody has reaped yet as exited.
+
+    Signal 0 still reaches a zombie, so where /proc exists the process state is
+    read from it instead. The process is not reaped here: that would take the
+    exit status from the parent's ``subprocess.Popen``.
+    """
+    if _PROC_ROOT.is_dir():
+        try:
+            stat = (_PROC_ROOT / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+        except (FileNotFoundError, ProcessLookupError):  # ProcessLookupError: reaped mid-read (ESRCH)
+            return True
+        # The command name in parentheses may itself contain ") ".
+        state = stat[stat.rfind(")") + 1:].split()[0]
+        return state in _EXITED_STATES
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        pass  # it exists, owned by another user
+    return False
 
 
 def is_daemon_alive() -> bool:
@@ -69,7 +116,6 @@ def _kill_stale_daemon(state: dict) -> None:
     daemon_pid = state.get("pid")
     if daemon_pid:
         try:
-            import os, signal
             os.kill(daemon_pid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
             pass
@@ -134,9 +180,10 @@ def format_snapshot(snap: dict, header: str = "BREAKPOINT HIT") -> str:
     addr = snap.get("addr", "????????")
     if not addr.startswith("0x"):
         addr = "0x" + addr
-    bp_id = snap.get("bpId", "?")
-    hit = snap.get("hitCount", "?")
-    lines.append(f"=== {header} === {addr} (bp#{bp_id}, hit #{hit})")
+    title = f"=== {header} === {addr}"
+    if snap.get("bpId"):
+        title += f" (bp#{snap['bpId']}, hit #{snap.get('hitCount', '?')})"
+    lines.append(title)
     lines.append("")
 
     regs = snap.get("regs", {})
@@ -194,7 +241,17 @@ def format_snapshot(snap: dict, header: str = "BREAKPOINT HIT") -> str:
     return "\n".join(lines)
 
 
-# ── NEW: trace formatter ──────────────────────────────────────────────────
+# ── trace formatter ──────────────────────────────────────────────────
+
+def _format_hook(diag: dict) -> str:
+    """One line on the bytes the hook reported in *diag* replaced in the target."""
+    taken = diag.get("bytesTaken")
+    followed_to = diag.get("followedTo")
+    if followed_to:
+        return (f"Hook at {diag['addr']} sits at {followed_to}, where the jump at "
+                f"{diag['addr']} leads, and replaced {taken} bytes there")
+    return f"Hook at {diag['addr']} replaced {taken} bytes"
+
 
 def format_trace(resp: dict) -> str:
     lines: list[str] = []
@@ -208,10 +265,11 @@ def format_trace(resp: dict) -> str:
     lines.append("")
 
     for i, s in enumerate(samples):
-        caller = s.get("caller", "?")
         interval = s.get("interval", 0)
         label = s.get("label", "")
-        hdr = f"#{i+1}  caller={caller}"
+        hdr = f"#{i+1}"
+        if "caller" in s:
+            hdr += f"  caller={s['caller']}"
         if interval:
             hdr += f"  interval={interval}"
         if label:
@@ -233,7 +291,8 @@ def format_trace(resp: dict) -> str:
                     parts.append(f"{r['spec']}=<err>")
                 else:
                     parts.append(f"{r['spec']}={_fmt_val(val)}")
-            lines.append(f"  ENTER  {' '.join(parts)}")
+            # A record without a leave part comes from a probe, not a function hook.
+            lines.append(f"  {'ENTER' if 'leave' in s else 'PROBE'}  {' '.join(parts)}")
 
         leave = s.get("leave", {})
         if leave:
@@ -253,8 +312,12 @@ def format_trace(resp: dict) -> str:
         lines.append("")
         lines.append(f"Output written to: {output}")
 
+    diag = resp.get("hookDiag", {})
+    if diag.get("bytesTaken") is not None:
+        lines.append("")
+        lines.append(_format_hook(diag))
+
     if count == 0:
-        diag = resp.get("hookDiag", {})
         if diag:
             p = diag.get("prologue", {})
             insns = p.get("insns", [])
@@ -277,7 +340,7 @@ def _fmt_val(val) -> str:
     return str(val)
 
 
-# ── NEW: steptrace formatter ──────────────────────────────────────────────
+# ── steptrace formatter ──────────────────────────────────────────────
 
 def format_steptrace(resp: dict) -> str:
     lines: list[str] = []
@@ -343,7 +406,7 @@ def format_steptrace(resp: dict) -> str:
     return "\n".join(lines)
 
 
-# ── NEW: collect formatter ─────────────────────────────────────────────────
+# ── collect formatter ─────────────────────────────────────────────────
 
 def format_collect(resp: dict) -> str:
     lines: list[str] = []
@@ -356,6 +419,9 @@ def format_collect(resp: dict) -> str:
     lines.append(f"  Output: {output}")
 
     diags = resp.get("hookDiags", [])
+    for d in diags:
+        if d.get("ok") and d.get("bytesTaken") is not None:
+            lines.append(f"  {_format_hook(d)}")
     failed = [d for d in diags if not d.get("ok")]
     if failed:
         lines.append("")
@@ -377,7 +443,7 @@ def format_collect(resp: dict) -> str:
     return "\n".join(lines)
 
 
-# ── NEW: modules formatter ─────────────────────────────────────────────────
+# ── modules formatter ─────────────────────────────────────────────────
 
 def format_modules(resp: dict) -> str:
     lines: list[str] = []

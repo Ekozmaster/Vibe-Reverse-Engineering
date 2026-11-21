@@ -12,11 +12,30 @@
 
 using comp::tracer;
 #include "tracer_dispatch.inc"
+
+// Records a call that creates an object, once the driver has returned it. The tracer keeps one
+// record open at a time, so the record is begun and ended with no driver call in between.
+#define TRACE_CREATION_IF_ACTIVE(fn, created, ...) \
+	do { if (auto trace_lock = comp::tracer::lock_if_active()) { fn(comp::tracer::ref(), __VA_ARGS__); trace_created(comp::tracer::ref(), created); } } while(0)
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/config.hpp"
 
 namespace comp
 {
+	namespace
+	{
+		// Everything the modules created on the device or keep a reference to, apart from the
+		// overlay's own objects. Each is made again when it is next needed.
+		void release_device_objects()
+		{
+			if (auto* t = tracer::get()) t->on_reset();
+			shared::common::ffp_state::get().on_reset();
+			if (auto* s = skinning::get()) s->release_device_objects();
+			shared::common::g_shader_cache.clear_cache();
+			tex_addons::release_texture_addons();
+		}
+	}
+
 #pragma region D3D9Device
 
 	HRESULT d3d9ex::D3D9Device::QueryInterface(REFIID riid, void** ppvObj)
@@ -27,6 +46,7 @@ namespace comp
 
 		if (hRes == NOERROR) {
 			*ppvObj = this;
+			m_references++;
 		}
 
 		return hRes;
@@ -35,14 +55,41 @@ namespace comp
 	ULONG d3d9ex::D3D9Device::AddRef()
 	{
 		TRACE_IF_ACTIVE_NOARGS(trace_AddRef);
+		m_references++;
 		return m_pIDirect3DDevice9->AddRef();
 	}
 
 	ULONG d3d9ex::D3D9Device::Release()
 	{
 		TRACE_IF_ACTIVE_NOARGS(trace_Release);
-		ULONG count = m_pIDirect3DDevice9->Release();
-		if (!count) delete this;
+
+		// With the game's last reference to the wrapper the proxy lets go of what it has on the
+		// device, while the device is still there. An object left behind would keep the device
+		// alive, and would be handed to the device the game creates next. The modules hold the
+		// objects of the current device only, so an older device going leaves them alone. The
+		// overlay takes and gives back a reference of its own while it shuts down, which is
+		// why the last reference is counted off only afterwards, under a lock a thread may
+		// take twice. A reference the game took on the device itself and gives back here is
+		// not counted.
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_release_mutex);
+			if (m_references == 1)
+			{
+				if (shared::globals::d3d_device == this)
+					release_device_objects();
+				if (auto* im = imgui::get()) im->release_device(this);
+			}
+			if (m_references > 0)
+				m_references--;
+		}
+
+		const ULONG count = m_pIDirect3DDevice9->Release();
+		if (!count)
+		{
+			if (shared::globals::d3d_device == this)
+				shared::globals::d3d_device = nullptr;
+			delete this;
+		}
 		return count;
 	}
 
@@ -127,14 +174,9 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters)
 	{
 		TRACE_IF_ACTIVE(trace_Reset, pPresentationParameters);
-		if (auto* t = tracer::get()) t->on_reset();
-		shared::common::ffp_state::get().on_reset();
-		if (auto* s = skinning::get()) s->on_reset();
-		shared::common::g_shader_cache.clear_cache();
-		tex_addons::init_texture_addons(true);
+		release_device_objects();
 		ImGui_ImplDX9_InvalidateDeviceObjects();
 		const auto hr = m_pIDirect3DDevice9->Reset(pPresentationParameters);
-		tex_addons::init_texture_addons();
 		ImGui_ImplDX9_CreateDeviceObjects();
 		return hr;
 	}
@@ -560,9 +602,9 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::DrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride)
 	{
 		TRACE_IF_ACTIVE(trace_DrawPrimitiveUP, PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
-		// You might want to wrap this if your game uses this
-		const auto hr = m_pIDirect3DDevice9->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
-		return hr;
+		// Passed through with the game's shaders. GAME-SPECIFIC: route it like DrawPrimitive if the game draws world geometry this way
+		shared::common::ffp_state::get().disengage(m_pIDirect3DDevice9);
+		return m_pIDirect3DDevice9->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
 	}
 
 	HRESULT d3d9ex::D3D9Device::DrawIndexedPrimitiveUP(
@@ -576,7 +618,8 @@ namespace comp
 		[[maybe_unused]] UINT VertexStreamZeroStride)
 	{
 		TRACE_IF_ACTIVE(trace_DrawIndexedPrimitiveUP, PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
-		// You might want to wrap this if your game uses this
+		// Passed through with the game's shaders. GAME-SPECIFIC: route it like DrawIndexedPrimitive if the game draws world geometry this way
+		shared::common::ffp_state::get().disengage(m_pIDirect3DDevice9);
 		return m_pIDirect3DDevice9->DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
 	}
 
@@ -588,10 +631,8 @@ namespace comp
 
 	HRESULT d3d9ex::D3D9Device::CreateVertexDeclaration(CONST D3DVERTEXELEMENT9* pVertexElements, IDirect3DVertexDeclaration9** ppDecl)
 	{
-		TRACE_IF_ACTIVE(trace_CreateVertexDeclaration, pVertexElements, ppDecl);
-		auto hr = m_pIDirect3DDevice9->CreateVertexDeclaration(pVertexElements, ppDecl);
-		if (SUCCEEDED(hr) && ppDecl && *ppDecl)
-			if (auto* t = tracer::get(); t && t->is_capturing()) t->record_created_handle(*ppDecl);
+		const auto hr = m_pIDirect3DDevice9->CreateVertexDeclaration(pVertexElements, ppDecl);
+		TRACE_CREATION_IF_ACTIVE(trace_CreateVertexDeclaration, SUCCEEDED(hr) && ppDecl ? *ppDecl : nullptr, pVertexElements, ppDecl);
 		return hr;
 	}
 
@@ -611,6 +652,7 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetFVF(DWORD FVF)
 	{
 		TRACE_IF_ACTIVE(trace_SetFVF, FVF);
+		shared::common::ffp_state::get().on_set_fvf(FVF);
 		return m_pIDirect3DDevice9->SetFVF(FVF);
 	}
 
@@ -622,10 +664,8 @@ namespace comp
 
 	HRESULT d3d9ex::D3D9Device::CreateVertexShader(CONST DWORD* pFunction, IDirect3DVertexShader9** ppShader)
 	{
-		TRACE_IF_ACTIVE(trace_CreateVertexShader, pFunction, ppShader);
-		auto hr = m_pIDirect3DDevice9->CreateVertexShader(pFunction, ppShader);
-		if (SUCCEEDED(hr) && ppShader && *ppShader)
-			if (auto* t = tracer::get(); t && t->is_capturing()) t->record_created_handle(*ppShader);
+		const auto hr = m_pIDirect3DDevice9->CreateVertexShader(pFunction, ppShader);
+		TRACE_CREATION_IF_ACTIVE(trace_CreateVertexShader, SUCCEEDED(hr) && ppShader ? *ppShader : nullptr, pFunction, ppShader);
 		return hr;
 	}
 
@@ -684,7 +724,6 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9* pStreamData, UINT OffsetInBytes, UINT Stride)
 	{
 		TRACE_IF_ACTIVE(trace_SetStreamSource, StreamNumber, pStreamData, OffsetInBytes, Stride);
-		shared::common::ffp_state::get().on_set_stream_source(StreamNumber, pStreamData, OffsetInBytes, Stride);
 		return m_pIDirect3DDevice9->SetStreamSource(StreamNumber, pStreamData, OffsetInBytes, Stride);
 	}
 
@@ -720,10 +759,8 @@ namespace comp
 
 	HRESULT d3d9ex::D3D9Device::CreatePixelShader(CONST DWORD* pFunction, IDirect3DPixelShader9** ppShader)
 	{
-		TRACE_IF_ACTIVE(trace_CreatePixelShader, pFunction, ppShader);
-		auto hr = m_pIDirect3DDevice9->CreatePixelShader(pFunction, ppShader);
-		if (SUCCEEDED(hr) && ppShader && *ppShader)
-			if (auto* t = tracer::get(); t && t->is_capturing()) t->record_created_handle(*ppShader);
+		const auto hr = m_pIDirect3DDevice9->CreatePixelShader(pFunction, ppShader);
+		TRACE_CREATION_IF_ACTIVE(trace_CreatePixelShader, SUCCEEDED(hr) && ppShader ? *ppShader : nullptr, pFunction, ppShader);
 		return hr;
 	}
 

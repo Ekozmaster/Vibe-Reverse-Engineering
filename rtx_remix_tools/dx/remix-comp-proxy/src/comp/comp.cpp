@@ -8,10 +8,6 @@
 #include "shared/common/remix_api.hpp"
 #include "shared/common/config.hpp"
 
-// see comment in main()
-//#include "shared/common/dinput_hook_v1.hpp"
-//#include "shared/common/dinput_hook_v2.hpp"
-
 namespace comp
 {
 	void on_begin_scene_cb()
@@ -25,60 +21,32 @@ namespace comp
 		const auto& im = imgui::get();
 		if (im->m_dbg_use_fake_camera)
 		{
-			D3DXMATRIX view_matrix
-			(
-				1.0f, 0.0f, 0.0f, 0.0f,
-				0.0f, 0.447f, 0.894f, 0.0f,
-				0.0f, -0.894f, 0.447f, 0.0f,
-				0.0f, 100.0f, -50.0f, 1.0f
-			);
+			// No roll, for simplicity
+			const auto rotation = DirectX::XMMatrixRotationRollPitchYaw(
+				DEG2RAD(im->m_dbg_camera_pitch), DEG2RAD(im->m_dbg_camera_yaw), 0.0f);
 
-			D3DXMATRIX proj_matrix
-			(
-				1.359f, 0.0f, 0.0f, 0.0f,
-				0.0f, 2.414f, 0.0f, 0.0f,
-				0.0f, 0.0f, 1.001f, 1.0f,
-				0.0f, 0.0f, -1.0f, 0.0f
-			);
+			// Negated: a camera moves the world the opposite way
+			const auto translation = DirectX::XMMatrixTranslation(
+				-im->m_dbg_camera_pos[0], -im->m_dbg_camera_pos[1], -im->m_dbg_camera_pos[2]);
 
-			// Construct view matrix
-			D3DXMATRIX rotation, translation;
-			D3DXMatrixRotationYawPitchRoll(&rotation,
-				D3DXToRadian(im->m_dbg_camera_yaw),		// Yaw in radians
-				D3DXToRadian(im->m_dbg_camera_pitch),	// Pitch in radians
-				0.0f);									// No roll for simplicity
+			const auto view_matrix = shared::utils::to_d3dmatrix(DirectX::XMMatrixMultiply(rotation, translation));
 
-			D3DXMatrixTranslation(&translation,
-				-im->m_dbg_camera_pos[0], // Negate for camera (moves world opposite)
-				-im->m_dbg_camera_pos[1],
-				-im->m_dbg_camera_pos[2]);
+			// Values typed into the sliders can leave their range; XMMatrixPerspectiveFovLH asserts on
+			// a zero field of view or aspect, a near plane at or behind the camera and near == far
+			const float fov = std::clamp(im->m_dbg_camera_fov, 1.0f, 179.0f);
+			const float aspect = (std::max)(im->m_dbg_camera_aspect, 0.01f);
+			const float near_plane = (std::max)(im->m_dbg_camera_near_plane, 0.001f);
+			const float far_plane = (std::max)(im->m_dbg_camera_far_plane, near_plane * 1.01f + 0.01f);
+			const auto proj_matrix = shared::utils::to_d3dmatrix(DirectX::XMMatrixPerspectiveFovLH(
+				DEG2RAD(fov), aspect, near_plane, far_plane));
 
-			D3DXMatrixMultiply(&view_matrix, &rotation, &translation);
-
-			// Construct projection matrix
-			D3DXMatrixPerspectiveFovLH(&proj_matrix,
-				D3DXToRadian(im->m_dbg_camera_fov), // FOV in radians
-				im->m_dbg_camera_aspect,
-				im->m_dbg_camera_near_plane,
-				im->m_dbg_camera_far_plane);
-
-			shared::globals::d3d_device->SetTransform(D3DTS_WORLD, &shared::globals::IDENTITY);
+			// D3DTS_WORLD belongs to ffp_state, which keeps each object's world matrix in place
 			shared::globals::d3d_device->SetTransform(D3DTS_VIEW, &view_matrix);
 			shared::globals::d3d_device->SetTransform(D3DTS_PROJECTION, &proj_matrix);
 		}
 
-
-		// Safe because ffp_state::apply_transforms overwrites WORLD per-draw when world_dirty_.
-		// Games that write world constants every frame (the common case) will never see this identity.
-		// Remove if your game sets world constants once and reuses across frames.
-		shared::globals::d3d_device->SetTransform(D3DTS_WORLD, &shared::globals::IDENTITY);
-
-		// Example: if you found a game struct with view/proj matrices, apply them here
-		//if (const auto viewport = game::vp; viewport)
-		//{
-		//	shared::globals::d3d_device->SetTransform(D3DTS_VIEW, &viewport->view);
-		//	shared::globals::d3d_device->SetTransform(D3DTS_PROJECTION, &viewport->proj);
-		//}
+		// GAME-SPECIFIC: a game that keeps its view and projection matrices in a struct of its
+		// own can have them applied here with SetTransform
 	}
 
 
@@ -103,9 +71,10 @@ namespace comp
 		if (cfg.skinning.enabled)
 			shared::common::loader::module_loader::register_module(std::make_unique<skinning>());
 
-		// #Step 3: hook dinput if your game uses direct input (for ImGui) - ONLY USE ONE
-		//shared::common::loader::module_loader::register_module(std::make_unique<shared::common::dinput_v1>()); // v1: might cause issues with the Alt+X menu
-		//shared::common::loader::module_loader::register_module(std::make_unique<shared::common::dinput_v2>()); // v2: better but might need further tweaks
+		// #Step 3: a game that reads its input through DirectInput needs one of the two hooks in
+		// shared/common/dinput_hook_v1.hpp and dinput_hook_v2.hpp registered here for the ImGui
+		// overlay to get input: shared::common::dinput_v1 can interfere with Remix's Alt+X menu,
+		// shared::common::dinput_v2 avoids that and may need tuning for the game
 
 		MH_EnableHook(MH_ALL_HOOKS);
 	}

@@ -6,7 +6,7 @@ using Ghidra's DecompInterface via the pyghidra bridge.
 
 import argparse
 import os
-import shutil
+import re
 import socket
 import sys
 import time
@@ -52,17 +52,18 @@ sys.path.insert(0, str(_HERE))  # so `from index import GameIndex` resolves as a
 
 
 def _ensure_java_env():
-    """Set JAVA_HOME and PATH from portable JDK in tools/ if needed."""
-    if os.environ.get("JAVA_HOME") or shutil.which("java"):
+    """Hand pyghidra the JDK ``jdk.find_jdk`` picks, unless JAVA_HOME_OVERRIDE already names one.
+
+    pyghidra takes its JDK from JAVA_HOME_OVERRIDE, else from whatever ``java``
+    on PATH resolves to, whatever its version; it does not read JAVA_HOME.
+    """
+    from jdk import find_jdk
+
+    if os.environ.get("JAVA_HOME_OVERRIDE"):
         return
-    for d in sorted(_TOOLS.glob("jdk-*"), reverse=True):
-        java_bin = d / "bin" / "java.exe"
-        if not java_bin.exists():
-            java_bin = d / "bin" / "java"
-        if java_bin.exists():
-            os.environ["JAVA_HOME"] = str(d)
-            os.environ["PATH"] = str(d / "bin") + os.pathsep + os.environ.get("PATH", "")
-            return
+    found = find_jdk()
+    if found is not None:
+        os.environ["JAVA_HOME_OVERRIDE"] = str(found.home)
 
 
 def _ensure_ghidra_env():
@@ -333,8 +334,27 @@ def _iter_blocks(program):
         yield {"func_ea": func_ea, "start_ea": start, "end_ea": end, "size": end - start}
 
 
+_EXPORTED_LABEL_SOURCES = ("IMPORTED", "USER_DEFINED")
+
+
+def _iter_data_labels(program):
+    """Named non-function labels: PDB-imported or kb-applied, never Ghidra's own DAT_/switchD_.
+
+    Names are namespace-qualified (``Config::Campaign::fTimeMultiplier``): class-scoped
+    PDB labels such as ``vftable`` are ambiguous without their class. Only labels in
+    program memory count: an imported data symbol lives in Ghidra's EXTERNAL space,
+    where its offset is a counter and not a virtual address.
+    """
+    for sym in program.getSymbolTable().getSymbolIterator(True):
+        if str(sym.getSymbolType()) != "Label" or str(sym.getSource()) not in _EXPORTED_LABEL_SOURCES:
+            continue
+        if not sym.getAddress().isMemoryAddress():
+            continue
+        yield {"address": sym.getAddress().getOffset(), "name": sym.getName(True)}
+
+
 def _export_program(program, gi, xrefs=None, blocks=None) -> dict:
-    """Extract funcs/names/xrefs/blocks from an open program into *gi*.
+    """Extract funcs/names (functions + named data labels)/xrefs/blocks from an open program into *gi*.
 
     *xrefs*/*blocks* default to streaming iterators over the program; tests
     pass explicit lists to avoid Ghidra-only classes.
@@ -355,6 +375,7 @@ def _export_program(program, gi, xrefs=None, blocks=None) -> dict:
             "comment": None,
         })
         name_rows.append({"address": ep, "name": name})
+    name_rows.extend(_iter_data_labels(program))
 
     xref_rows = list(_iter_xrefs(program)) if xrefs is None else xrefs
     block_rows = list(_iter_blocks(program)) if blocks is None else blocks
@@ -410,18 +431,27 @@ def export(project_dir: str, binary: str, db_path: str) -> str:
 # kb-apply
 # ---------------------------------------------------------------------------
 
+_CALLING_CONVENTION = re.compile(r"\b__(?:cdecl|stdcall|fastcall|thiscall|vectorcall)\b")
+
+
 def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -> dict:
     """Apply a parsed Kb to an open program. Idempotent (USER_DEFINED upserts).
 
-    An ``@`` entry renames the function that contains its address; when no
-    function is there (bootstrap emits ``@`` lines for RTTI vtables and string
-    refs, which are data) it becomes a label instead of a bogus function. All
-    mutation goes through Program-level APIs so it stays inside the caller's
-    single transaction -- FlatProgramAPI.createFunction would open its own
-    nested transaction and leave it dangling, which then fails program.save().
+    Types are stored first, so that prototypes can name them. An ``@`` entry
+    renames the function that contains its address and, when it has a parameter
+    list, gives it that prototype; when no function is there (bootstrap emits
+    ``@`` lines for RTTI vtables and string refs, which are data) it becomes a
+    label instead of a bogus function. All mutation goes through Program-level
+    APIs so it stays inside the caller's single transaction --
+    FlatProgramAPI.createFunction would open its own nested transaction and
+    leave it dangling, which then fails program.save().
 
     apply_prototypes/apply_types gate the Ghidra-only signature/DTM code so a
     fake program (tests) can exercise the name/label path without those classes.
+
+    Returns:
+        How many entries of each kind were applied, and under ``skipped`` how
+        many Ghidra refused. Each refusal is reported on stderr.
     """
     from ghidra.program.model.symbol import SourceType
 
@@ -429,11 +459,22 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
     listing = program.getListing()
     symtab = program.getSymbolTable()
 
-    counts = {"functions": 0, "labels": 0, "globals": 0, "typedefs": 0, "skipped": 0}
+    counts = {"functions": 0, "labels": 0, "globals": 0, "typedefs": 0, "prototypes": 0, "skipped": 0}
 
-    def _skip(kind: str, entry: str, exc: Exception) -> None:
+    def _skip(kind: str, entry: str, reason: object) -> None:
         counts["skipped"] += 1
-        print(f"[kb-apply] skipped {kind} {entry!r}: {exc}", file=sys.stderr)
+        print(f"[kb-apply] skipped {kind} {entry!r}: {reason}", file=sys.stderr)
+
+    if apply_types:
+        from ghidra.app.util.cparser.C import CParser
+        # The second argument makes the parser store what it parses in the program
+        parser = CParser(program.getDataTypeManager(), True, None)
+        for td in kb.typedefs:
+            try:
+                parser.parse(td if td.endswith(";") else td + ";")
+                counts["typedefs"] += 1
+            except Exception as exc:
+                _skip("typedef", td, exc)  # non-type bare lines are skipped
 
     sig_parser = None
     if apply_prototypes:
@@ -459,13 +500,22 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
         except Exception as exc:
             _skip("function", fn.name, exc)  # e.g. duplicate name; others still apply
             continue
-        if apply_prototypes and sig_parser is not None:
+        if sig_parser is not None and "(" in fn.signature:
             from ghidra.app.cmd.function import ApplyFunctionSignatureCmd
             try:
-                definition = sig_parser.parse(func.getSignature(), fn.signature + ";")
-                if definition is not None:
-                    cmd = ApplyFunctionSignatureCmd(addr, definition, SourceType.USER_DEFINED)
-                    cmd.applyTo(program, _monitor)
+                # The parser takes neither a calling convention nor a closing ';'
+                convention = _CALLING_CONVENTION.search(fn.signature)
+                definition = sig_parser.parse(func.getSignature(), _CALLING_CONVENTION.sub("", fn.signature))
+                if definition is None:
+                    _skip("prototype", fn.signature, "the signature parser returned nothing")
+                    continue
+                if convention:
+                    definition.setCallingConvention(convention.group())
+                cmd = ApplyFunctionSignatureCmd(addr, definition, SourceType.USER_DEFINED)
+                if cmd.applyTo(program, _monitor):
+                    counts["prototypes"] += 1
+                else:
+                    _skip("prototype", fn.signature, cmd.getStatusMsg())
             except Exception as exc:
                 _skip("prototype", fn.signature, exc)  # name is already applied
 
@@ -476,17 +526,6 @@ def _kb_apply_program(program, kb, *, apply_prototypes=True, apply_types=True) -
             counts["globals"] += 1
         except Exception as exc:
             _skip("global", g.name, exc)  # name may be invalid; others still apply
-
-    if apply_types:
-        from ghidra.app.util.cparser.C import CParser
-        dtm = program.getDataTypeManager()
-        parser = CParser(dtm)
-        for td in kb.typedefs:
-            try:
-                parser.parse(td if td.endswith(";") else td + ";")
-                counts["typedefs"] += 1
-            except Exception as exc:
-                _skip("typedef", td, exc)  # non-type bare lines are skipped
 
     return counts
 

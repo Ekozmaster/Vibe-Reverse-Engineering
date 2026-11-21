@@ -19,7 +19,7 @@ When analyzing a binary for the first time (no existing or sparsely populated `p
 3. Other static analysis can run in parallel but output is richer after bootstrap.
 
 **Detect "needs bootstrap":** `grep -cE '^[@$]|^struct |^enum ' patches/<project>/kb.h` — count under 50 = bootstrap.
-**Detect "needs pyghidra analyze":** Check if `patches/<project>/ghidra/<binary_stem>.gpr` exists.
+**Detect "needs pyghidra analyze":** Run `python retools/pyghidra_backend.py status <binary> --project patches/<project>`. The project file is `patches/<project>/ghidra/<binary_stem>/<binary_stem>.gpr`.
 
 ## Delegation Beyond CLAUDE.md
 
@@ -30,7 +30,7 @@ CLAUDE.md lists allowlisted fast commands (run directly) and the general delegat
 | dx9tracer offline analysis | `static-analyzer` subagent | |
 | Subsequent Ghidra decompile | `static-analyzer` subagent | Fast: JVM ~3s + decompile <1s, sub-second with a warm `ghidra_server.py` daemon |
 | sigdb scan / build | `static-analyzer` subagent | scan 1-3 min, build 1-5 min |
-| Dataflow: constants + backward slice (`dataflow.py`) | Main agent | fast (<5s) |
+| Dataflow: constants + backward slice (`dataflow.py`) | Main agent | fast (<5s); x86 binaries only |
 | KB updates from findings | `static-analyzer` writes kb.h, then `kb-apply` to push into Ghidra | main agent may refine |
 | `index status` / `query` (SQL over index.db) | Main agent | fast (<5s); prefer over xrefs/datarefs/search/funcinfo when index.db already has the answer |
 | `pyghidra_backend.py export` (seed index.db from Ghidra) | `static-analyzer` subagent | run once per analysis pass, after `kb-apply` |
@@ -89,8 +89,8 @@ r2ghidra: better `__thiscall` recovery, low-level D3D, no JVM/project dependency
 
 **"Find who writes to address 0x7A0000"**
 1. Spawn `static-analyzer`: `datarefs.py` for static references
-2. Ask user: "Is the game running? I can also set a `livetools memwatch` to catch runtime writes that static analysis might miss"
-3. Combine static xrefs with live write traces for complete picture
+2. Ask user: "Is the game running? I can trace the candidate writer functions live to confirm which ones run" (`livetools memwatch` only reports the first access to a page, read or write, so it cannot answer "who writes")
+3. Combine static xrefs with the live traces for complete picture
 
 **"Why does the game crash in d3d9.dll?"**
 1. Spawn `static-analyzer`: `dumpinfo.py diagnose`, `throwmap.py match`

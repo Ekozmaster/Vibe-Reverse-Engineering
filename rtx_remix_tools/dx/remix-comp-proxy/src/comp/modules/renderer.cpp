@@ -3,6 +3,7 @@
 
 #include "imgui.hpp"
 #include "diagnostics.hpp"
+#include "skinning.hpp"
 #include "shared/common/ffp_state.hpp"
 
 namespace comp
@@ -12,21 +13,23 @@ namespace comp
 		bool initialized = false;
 		LPDIRECT3DTEXTURE9 icon = nullptr;
 
-		void init_texture_addons(bool release)
+		// The textures are loaded again at the next BeginScene
+		void release_texture_addons()
 		{
-			if (release)
-			{
-				if (tex_addons::icon) tex_addons::icon->Release();
-				return;
-			}
+			if (tex_addons::icon) tex_addons::icon->Release();
+			tex_addons::icon = nullptr;
+			tex_addons::initialized = false;
+		}
 
+		void init_texture_addons()
+		{
 			const auto dev = shared::globals::d3d_device;
 			const char* icon_path = "rtx_comp\\textures\\icon.png";
 
 			// Only load if the file exists — no icon is shipped by default
 			if (GetFileAttributesA(icon_path) != INVALID_FILE_ATTRIBUTES)
 			{
-				HRESULT hr = D3DXCreateTextureFromFileA(dev, icon_path, &tex_addons::icon);
+				HRESULT hr = shared::utils::create_texture_from_file(dev, icon_path, &tex_addons::icon);
 				if (FAILED(hr))
 					shared::common::log("Renderer", std::format("Failed to load {}", icon_path), shared::common::LOG_TYPE::LOG_TYPE_ERROR, true);
 			}
@@ -131,8 +134,10 @@ namespace comp
 		 *   +-- NO  -> passthrough with shaders
 		 *   +-- YES
 		 *       +-- curDeclIsSkinned?
-		 *       |   +-- YES + skinning module -> skinning::draw_skinned_dip()
-		 *       |   +-- YES + no skinning     -> passthrough with shaders
+		 *       |   +-- [Skinning] Enabled=1 -> skinning::draw_skinned_dip(); passthrough with
+		 *       |   |   shaders when it cannot convert the draw (no bone palette, vertices it
+		 *       |   |   cannot read, a bone index past the palette)
+		 *       |   +-- [Skinning] Enabled=0 -> passthrough with shaders
 		 *       +-- !curDeclHasNormal?
 		 *       |   +-- passthrough (HUD/UI)
 		 *       |   GAME-SPECIFIC: remove this filter if world geometry lacks NORMAL
@@ -149,12 +154,22 @@ namespace comp
 		}
 		else if (ffp.cur_decl_is_skinned())
 		{
-			// Skinned mesh: passthrough with shaders.
-			// GAME-SPECIFIC: wire up skinning::get()->draw_skinned_dip() here when enabling skinning for this game.
-			ffp.disengage(dev);
-			hr = dev->DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+			// Skinned mesh: FFP indexed vertex blending where the skinning module is on and can
+			// convert it, passthrough with shaders otherwise
+			const auto skinned = skinning::is_available()
+				? skinning::get()->draw_skinned_dip(dev, PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount)
+				: std::nullopt;
+			if (skinned)
+			{
+				hr = *skinned;
+			}
+			else
+			{
+				ffp.disengage(dev);
+				hr = dev->DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+				im->m_stats._drawcall_indexed_prim_using_vs.track_single();
+			}
 			im->m_stats._drawcall_indexed_prim.track_single();
-			im->m_stats._drawcall_indexed_prim_using_vs.track_single();
 		}
 		else if (!ffp.cur_decl_has_normal())
 		{
@@ -257,7 +272,7 @@ namespace comp
 
 	renderer::~renderer()
 	{
-		tex_addons::init_texture_addons(true);
+		tex_addons::release_texture_addons();
 		p_this = nullptr;
 	}
 }

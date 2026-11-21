@@ -174,18 +174,23 @@ def _detect_compiler(b: Binary, db_path: str | None) -> dict:
         b: Loaded Binary instance.
         db_path: Optional path to a SignatureDB database file.
 
+    A database that is refused or cannot be read is reported on stderr and
+    the import heuristic decides instead.
+
     Returns:
         {"compiler": str, "confidence": float}.
     """
     try:
         if db_path and os.path.isfile(db_path):
-            from sigdb import SignatureDB
-            db = SignatureDB(db_path)
-            fp = db.fingerprint(b)
-            return {
-                "compiler": fp.get("compiler", "unknown"),
-                "confidence": fp.get("confidence", 0.0),
-            }
+            try:
+                fp = _fingerprint(b, db_path)
+            except sqlite3.Error as refusal:
+                print(f"[bootstrap] compiler fingerprint skipped: {refusal}", file=sys.stderr)
+            else:
+                return {
+                    "compiler": fp.get("compiler", "unknown"),
+                    "confidence": fp.get("confidence", 0.0),
+                }
         from sigdb import detect_crt_import
         crt = detect_crt_import(b)
         if crt:
@@ -193,6 +198,20 @@ def _detect_compiler(b: Binary, db_path: str | None) -> dict:
     except (ImportError, FileNotFoundError, ValueError):
         pass
     return {"compiler": "unknown", "confidence": 0.0}
+
+
+def _fingerprint(b: Binary, db_path: str) -> dict:
+    """The signature database's compiler fingerprint of *b*.
+
+    Raises:
+        sqlite3.Error: The file is refused as a signature database or cannot be read.
+    """
+    from sigdb import SignatureDB
+    db = SignatureDB.open_existing(db_path)
+    try:
+        return db.fingerprint(b)
+    finally:
+        db.close()
 
 
 def _scan_signatures(
@@ -212,10 +231,15 @@ def _scan_signatures(
         return {}, []
     try:
         from sigdb import SignatureDB
-        db = SignatureDB(db_path)
-        sig_results = db.scan(b, preferred_compiler=compiler_id)
-        db.close()
-    except (ImportError, FileNotFoundError, sqlite3.Error):
+        db = SignatureDB.open_existing(db_path)
+        try:
+            sig_results = db.scan(b, preferred_compiler=compiler_id)
+        finally:
+            db.close()
+    except (ImportError, FileNotFoundError):
+        return {}, []
+    except sqlite3.Error as refusal:
+        print(f"[bootstrap] signature scan skipped: {refusal}", file=sys.stderr)
         return {}, []
 
     kb_entries = []
@@ -223,6 +247,27 @@ def _scan_signatures(
         comment = f"// [sigdb: {match.tier}, {match.confidence:.2f}] {match.category}"
         kb_entries.append(f"{comment}\n@ 0x{va:X} {match.name};")
     return sig_results, kb_entries
+
+
+# MSVC RTTI type-name prefixes: class, struct, union, enum.
+_RTTI_TYPE_PREFIXES = (".?AV", ".?AU", ".?AT", ".?AW4")
+
+
+def rtti_class_identifier(mangled: str) -> str:
+    """C identifier for an MSVC RTTI type name such as ``.?AVActor@@``.
+
+    Args:
+        mangled: Type name as stored in the RTTI type descriptor.
+
+    Returns:
+        The name without its type prefix and ``@@`` terminator, with every
+        character that cannot appear in an identifier replaced by ``_``.
+    """
+    for prefix in _RTTI_TYPE_PREFIXES:
+        if mangled.startswith(prefix):
+            mangled = mangled[len(prefix):]
+            break
+    return re.sub(r"[^A-Za-z0-9_]", "_", mangled.rstrip("@"))
 
 
 def _scan_rtti(pe: pefile.PE) -> tuple[int, list[str]]:
@@ -243,7 +288,7 @@ def _scan_rtti(pe: pefile.PE) -> tuple[int, list[str]]:
     kb_entries = []
     for cls in rtti_classes:
         hierarchy_str = " -> ".join(cls.hierarchy) if cls.hierarchy else cls.name
-        clean_name = re.sub(r"[^A-Za-z0-9_]", "_", cls.name.lstrip(".?AV").rstrip("@@"))
+        clean_name = rtti_class_identifier(cls.name)
         comment = f"// [rtti] {cls.name}\n// hierarchy: {hierarchy_str}"
         kb_entries.append(f"{comment}\n@ 0x{cls.vtable_va:X} {clean_name}_vtable;")
     return len(rtti_classes), kb_entries
@@ -432,16 +477,16 @@ def bootstrap(
         db_path = str(DEFAULT_DB_PATH)
     if not os.path.isfile(db_path):
         try:
-            from sigdb import _download_file, _HF_REPO_DEFAULT, _HF_URL_TEMPLATE
-            url = _HF_URL_TEMPLATE.format(repo=_HF_REPO_DEFAULT, path="signatures.db")
-            print(f"Signature DB not found. Downloading from HuggingFace...")
-            _download_file(url, db_path)
-        except Exception as e:
+            from sigdb import download_signature_db, _hf_url, _HF_REPO_DEFAULT, _HF_REVISION_DEFAULT
+            url = _hf_url(_HF_REPO_DEFAULT, _HF_REVISION_DEFAULT, "signatures.db")
+            print("Signature DB not found. Downloading from HuggingFace...")
+            download_signature_db(url, db_path)
+        except (OSError, sqlite3.DatabaseError) as e:
             print(f"Could not download signature DB: {e}", file=sys.stderr)
 
-    pe = pefile.PE(binary_path, fast_load=False)
+    b = Binary(binary_path)
 
-    if _is_packed(pe):
+    if _is_packed(b.pe):
         report = (
             "Bootstrap Report\n"
             "================\n\n"
@@ -456,7 +501,6 @@ def bootstrap(
             Path(kb_path).write_text("// Auto-generated KB -- packed binary, no data\n")
         return {"packed": True, "functions_identified": 0}
 
-    b = Binary(binary_path)
     from kb import parse_kb, read_existing_addresses
     known_addresses = read_existing_addresses(kb_path)
     if os.path.isfile(kb_path):
@@ -484,7 +528,7 @@ def bootstrap(
     sig_results, sig_entries = _scan_signatures(b, db_path, comp["compiler"])
     stats["sigdb_matches"] = len(sig_results)
 
-    rtti_count, rtti_entries = _scan_rtti(pe)
+    rtti_count, rtti_entries = _scan_rtti(b.pe)
     stats["rtti_classes"] = rtti_count
 
     imports = _analyze_imports(b)

@@ -53,6 +53,21 @@ class TestRunQuery:
         conn.close()
         assert res["error"] is not None  # read-only connection
 
+    @pytest.mark.parametrize("statement", [
+        "ATTACH DATABASE '{other}' AS other",
+        "VACUUM INTO '{other}'",
+    ])
+    def test_statement_that_would_create_another_file_is_refused(self, tmp_path, statement):
+        from index import GameIndex
+        from query import run_query
+        db = _make_db(tmp_path)
+        other = tmp_path / "other.db"
+        conn = GameIndex.open_ro(db)
+        res = run_query(conn, statement.format(other=other.as_posix()))
+        conn.close()
+        assert res["error"] is not None
+        assert not other.exists()
+
 
 class TestCli:
     def test_missing_db_directs_user(self, tmp_path, capsys):
@@ -81,3 +96,36 @@ class TestCli:
         main(["Game", "", "--db", db, "--list-tables"])
         out = capsys.readouterr().out
         assert "imports" in out and "funcs" in out
+
+    def test_a_failing_query_prints_the_error_and_exits_1(self, tmp_path, capsys):
+        from query import main
+        db = _make_db(tmp_path)
+        with pytest.raises(SystemExit) as exc:
+            main(["Game", "SELECT nope FROM imports", "--db", db])
+        assert exc.value.code == 1
+        assert capsys.readouterr().out.startswith("[error] ")
+
+    def test_no_query_exits_1(self, tmp_path):
+        from query import main
+        db = _make_db(tmp_path)
+        with pytest.raises(SystemExit) as exc:
+            main(["Game", "--db", db])
+        assert exc.value.code == 1
+
+    def test_schema_lists_the_table_columns(self, tmp_path, capsys):
+        from query import main
+        db = _make_db(tmp_path)
+        main(["Game", "--db", db, "--schema", "imports"])
+        out = capsys.readouterr().out
+        for column in ("address", "name", "module", "ordinal", "source"):
+            assert column in out
+
+    def test_text_output_is_an_aligned_table_with_a_row_count(self, tmp_path, capsys):
+        from query import main
+        db = _make_db(tmp_path)
+        main(["Game", "SELECT name, module FROM imports ORDER BY name", "--db", db])
+        lines = capsys.readouterr().out.splitlines()
+        assert lines[0].split() == ["name", "module"]
+        assert lines[1] == "-" * len("malloc") + "  " + "-" * len("msvcrt.dll")
+        assert lines[2:4] == ["free    msvcrt.dll", "malloc  msvcrt.dll"]
+        assert lines[4].startswith("(2 rows, ")

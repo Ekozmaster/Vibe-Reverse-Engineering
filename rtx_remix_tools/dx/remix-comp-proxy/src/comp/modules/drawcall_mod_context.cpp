@@ -13,7 +13,7 @@ namespace comp
 		return has_saved_renderstate((D3DRENDERSTATETYPE)state);
 	}
 
-	void drawcall_mod_context::set_texture_transform(IDirect3DDevice9* device, const D3DXMATRIX* matrix)
+	void drawcall_mod_context::set_texture_transform(IDirect3DDevice9* device, const D3DMATRIX* matrix)
 	{
 		if (matrix)
 		{

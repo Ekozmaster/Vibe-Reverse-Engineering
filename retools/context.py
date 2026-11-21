@@ -26,7 +26,7 @@ from funcinfo import find_start, analyze
 from structrefs import aggregate_struct
 from search import find_strings
 from sigdb import SignatureDB, extract_structural_sig
-from dataflow import propagate_cfg, Const, Unknown
+from dataflow import propagate_cfg, Const
 from index import GameIndex
 
 # Pattern: fcn.XXXXXXXX or FUN_XXXXXXXX (r2ghidra or Ghidra naming)
@@ -145,6 +145,54 @@ def _find_kb_path(project_dir: str, project_dir_for_kb: str | None = None) -> Pa
     return Path(project_dir) / "kb.h"  # may not exist -- callers handle missing
 
 
+def _dataflow_section(b: Binary, start: int, func_size: int) -> list[str]:
+    """The ``[dataflow]`` lines: registers that hold a constant at a block's end."""
+    if b.is_64:
+        return ["[dataflow] skipped: constant propagation tracks x86 registers only"]
+    block_states = propagate_cfg(b, start, max_size=func_size)
+    constants = [
+        f"  0x{bva:08X}: {reg} = {val}"
+        for bva in sorted(block_states)
+        for reg, val in sorted(block_states[bva].items())
+        if isinstance(val, Const)
+    ]
+    return ["[dataflow]", *constants] if constants else []
+
+
+def _strings_section(b: Binary, func_insns: list) -> list[str]:
+    """The ``[strings]`` lines: each string of the binary that *func_insns* refer to, once."""
+    str_by_va = {s.va: s.value for s in find_strings(b, min_len=4) if s.va is not None}
+    w = 16 if b.is_64 else 8
+    referenced: dict[int, str] = {}
+    for insn in func_insns:
+        for ref_va in b.abs_imm_refs(insn) + b.abs_mem_refs(insn):
+            if ref_va in str_by_va:
+                referenced.setdefault(ref_va, str_by_va[ref_va])
+    if not referenced:
+        return []
+    return ["[strings]", *(f'  "{value}" at 0x{va:0{w}X}' for va, value in referenced.items())]
+
+
+def _similar_section(b: Binary, start: int, db_path: str) -> list[str]:
+    """The best structural match for the function at *start* in the signature DB."""
+    db = SignatureDB.open_existing(db_path)
+    try:
+        sig = extract_structural_sig(b, start)
+        if not sig:
+            return []
+        matches = db.match_structural(
+            sig["block_count"], sig["edge_count"], sig["call_count"],
+            sig["mnemonic_hash"], sig["constants"],
+        )
+    finally:
+        db.close()
+    if not matches:
+        return []
+    m = matches[0]
+    return [f"[similar] {m.source}: {m.name} "
+            f"(block_count={sig['block_count']}, call_count={sig['call_count']})"]
+
+
 def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
              project_dir_for_kb: str | None = None, no_dataflow: bool = False) -> str:
     """Gather structured analysis context for a function.
@@ -153,12 +201,15 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
         b: Loaded PE binary.
         va: Virtual address of the function (or address inside it).
         project_dir: Project directory path.
-        db_path: Optional path to sigdb database.
+        db_path: Optional path to an existing sigdb database.
         project_dir_for_kb: Optional override directory containing kb.h.
         no_dataflow: If True, skip forward constant propagation in output.
 
     Returns:
         Formatted text block with context sections.
+
+    Raises:
+        FileNotFoundError: *db_path* is given but no file is there.
     """
     w = 16 if b.is_64 else 8
     start = find_start(b, va) or va
@@ -205,50 +256,22 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
             else:
                 lines.append(f"  {target}: indirect call")
 
-    # -- Struct fields (best-effort) --
-    try:
-        fields = aggregate_struct(b, start, fn_size=end_va - start or 0x2000)
-        if fields:
-            lines.append("[struct]")
-            for fa in fields:
-                lines.append(
-                    f"  +0x{fa.offset:03X}: {fa.type_name} "
-                    f"({fa.access}, {len(fa.refs)} refs)"
-                )
-    except Exception:
-        pass
+    # -- Struct fields --
+    fields = aggregate_struct(b, start, fn_size=end_va - start or 0x2000)
+    if fields:
+        lines.append("[struct]")
+        for fa in fields:
+            lines.append(
+                f"  +0x{fa.offset:03X}: {fa.type_name} "
+                f"({fa.access}, {len(fa.refs)} refs)"
+            )
 
     # Shared disassembly for strings + globals sections
     func_size = end_va - start or 0x2000
-    try:
-        func_insns = b.disasm(start, count=2000, max_bytes=func_size)
-    except Exception:
-        func_insns = []
+    func_insns = b.disasm(start, count=2000, max_bytes=func_size)
 
-    # -- Strings (best-effort, O(1) lookup via VA dict) --
-    try:
-        all_strings = find_strings(b, min_len=4)
-        if all_strings:
-            # Build O(1) lookup by VA
-            str_by_va: dict[int, str] = {
-                s.va: s.value for s in all_strings if s.va is not None
-            }
-            # Collect memory refs from function's instructions
-            found_strings: list[tuple[str, int]] = []
-            for insn in func_insns:
-                for ref_va in b.abs_imm_refs(insn) + b.abs_mem_refs(insn):
-                    if ref_va in str_by_va:
-                        found_strings.append((str_by_va[ref_va], ref_va))
-            if found_strings:
-                lines.append("[strings]")
-                seen_str_vas: set[int] = set()
-                for val, sva in found_strings:
-                    if sva in seen_str_vas:
-                        continue
-                    seen_str_vas.add(sva)
-                    lines.append(f'  "{val}" at 0x{sva:0{w}X}')
-    except Exception:
-        pass
+    # -- Strings --
+    lines.extend(_strings_section(b, func_insns))
 
     # -- Globals (cross-ref KB globals with function memory refs) --
     if kb_globals:
@@ -268,44 +291,11 @@ def assemble(b: Binary, va: int, project_dir: str, db_path: str | None = None,
 
     # -- Dataflow (forward constant propagation) --
     if not no_dataflow:
-        try:
-            block_states = propagate_cfg(b, start, max_size=func_size)
-            resolved_any = False
-            dataflow_lines: list[str] = []
-            for bva in sorted(block_states):
-                state = block_states[bva]
-                for reg, val in sorted(state.items()):
-                    if isinstance(val, Const):
-                        dataflow_lines.append(
-                            f"  0x{bva:0{w}X}: {reg} = {val}"
-                        )
-                        resolved_any = True
-            if resolved_any:
-                lines.append("[dataflow]")
-                lines.extend(dataflow_lines)
-        except Exception:
-            pass
+        lines.extend(_dataflow_section(b, start, func_size))
 
-    # -- Sigdb structural match (best-effort) --
+    # -- Sigdb structural match --
     if db_path:
-        try:
-            db = SignatureDB(db_path)
-            sig = extract_structural_sig(b, start)
-            if sig:
-                matches = db.match_structural(
-                    sig["block_count"], sig["edge_count"], sig["call_count"],
-                    sig["mnemonic_hash"], sig["constants"],
-                )
-                if matches:
-                    m = matches[0]
-                    lines.append(
-                        f"[similar] {m.source}: {m.name} "
-                        f"(block_count={sig['block_count']}, "
-                        f"call_count={sig['call_count']})"
-                    )
-            db.close()
-        except Exception:
-            pass
+        lines.extend(_similar_section(b, start, db_path))
 
     return "\n".join(lines) + "\n"
 
@@ -341,8 +331,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "assemble":
         b = Binary(args.binary)
         va = int(args.va, 16)
-        result = assemble(b, va, args.project, db_path=args.db,
-                          no_dataflow=args.no_dataflow)
+        try:
+            result = assemble(b, va, args.project, db_path=args.db,
+                              no_dataflow=args.no_dataflow)
+        except (FileNotFoundError, sqlite3.DatabaseError) as e:
+            print(f"context: {e}", file=sys.stderr)
+            sys.exit(1)
         print(result, end="")
 
     elif args.command == "postprocess":

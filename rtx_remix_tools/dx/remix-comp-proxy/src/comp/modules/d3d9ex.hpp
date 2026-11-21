@@ -11,6 +11,7 @@ namespace comp
 		class D3D9Device : public IDirect3DDevice9
 		{
 		public:
+			// Takes over the one reference the game gets from CreateDevice
 			D3D9Device(IDirect3DDevice9* pOriginal) : m_pIDirect3DDevice9(pOriginal) {};
 			virtual ~D3D9Device() {};
 
@@ -136,6 +137,10 @@ namespace comp
 
 		private:
 			IDirect3DDevice9 *m_pIDirect3DDevice9;
+
+			// References to this wrapper. All are the game's: the proxy keeps none of its own.
+			std::atomic<ULONG> m_references = 1;
+			std::recursive_mutex m_release_mutex;
 		};
 
 	public:

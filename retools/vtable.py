@@ -25,8 +25,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
 
-CHUNK = 0x10000
-
 
 def cmd_dump(b: Binary, args):
     """Read sequential function pointers from a vtable address."""
@@ -52,17 +50,12 @@ def cmd_calls(b: Binary, args):
     """Find all indirect calls through [reg+offset]."""
     offset = int(args.offset, 16)
     hits = []
-    for sec_va, sec_off, sec_size in b.exec_ranges():
-        for chunk_start in range(0, sec_size, CHUNK):
-            chunk_end = min(chunk_start + CHUNK + 32, sec_size)
-            code = b.raw[sec_off + chunk_start : sec_off + chunk_end]
-            va = sec_va + chunk_start
-            for insn in b._cs.disasm(code, va):
-                if insn.mnemonic != "call":
-                    continue
-                for mop in b.mem_operands(insn):
-                    if mop.base and not mop.index and mop.disp == offset:
-                        hits.append((insn.address, mop.base, insn.op_str))
+    for insn in b.sweep():
+        if insn.mnemonic != "call":
+            continue
+        for mop in b.mem_operands(insn):
+            if mop.base and not mop.index and mop.disp == offset:
+                hits.append((insn.address, mop.base, insn.op_str))
 
     print(f"{len(hits)} indirect calls through [reg+0x{offset:X}]\n")
     for va, base, op_str in hits:

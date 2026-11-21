@@ -673,22 +673,35 @@ namespace comp
 		ImGui::End();
 	}
 
+	void imgui::release_device(IDirect3DDevice9* dev)
+	{
+		if (m_backend_device != dev) return;
+
+		// The reference the backend gives up as it shuts down
+		dev->AddRef();
+		ImGui_ImplDX9_Shutdown();
+		m_backend_device = nullptr;
+	}
+
 	void imgui::on_present()
 	{
 		if (auto* im = imgui::get(); im)
 		{
 			if (const auto dev = shared::globals::d3d_device; dev)
 			{
-				if (!im->m_initialized_device)
+				if (!im->m_backend_device)
 				{
-					//Sleep(1000);
 					shared::common::log("ImGui", "ImGui_ImplDX9_Init");
 					ImGui_ImplDX9_Init(dev);
-					im->m_initialized_device = true;
+
+					// The backend keeps the device without owning a reference to it, so the device
+					// goes when the game lets go of it; release_device() shuts the backend down first
+					dev->Release();
+					im->m_backend_device = dev;
 				}
 
 				// else so we render the first frame one frame later
-				else if (im->m_initialized_device)
+				else if (im->m_backend_device == dev)
 				{
 					// handle srgb
 					DWORD og_srgb_samp, og_srgb_write;

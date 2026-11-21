@@ -1,0 +1,118 @@
+"""PE32 parsing and the loading every DX scanner script starts with."""
+import struct
+import sys
+from pathlib import Path
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PE Parsing
+# ═══════════════════════════════════════════════════════════════════════
+
+_PE32_MAGIC = 0x10B
+_PE32_PLUS_MAGIC = 0x20B
+_OPTIONAL_HEADER_OFFSET = 24
+_IMAGE_BASE_OFFSET = 52
+
+
+def parse_pe(data):
+    """Parse PE32 headers. Returns (image_base, sections).
+
+    Each section: dict with name, va, raw, rawsz, vsz, chars.
+
+    Raises:
+        ValueError: *data* is not a PE file, is not a 32-bit one, or its
+            section table runs past the end of the file.
+    """
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise ValueError("not a PE file (no MZ header)")
+    pe_sig_off = struct.unpack_from("<I", data, 0x3C)[0]
+    if (data[pe_sig_off:pe_sig_off + 4] != b"PE\0\0"
+            or len(data) < pe_sig_off + _IMAGE_BASE_OFFSET + 4):
+        raise ValueError("not a PE file (no PE signature)")
+    magic = struct.unpack_from("<H", data, pe_sig_off + _OPTIONAL_HEADER_OFFSET)[0]
+    if magic == _PE32_PLUS_MAGIC:
+        raise ValueError("64-bit binary (PE32+); these scanners read 32-bit D3D9 call sites only")
+    if magic != _PE32_MAGIC:
+        raise ValueError(f"not a PE32 file (optional header magic 0x{magic:X})")
+    image_base = struct.unpack_from("<I", data, pe_sig_off + _IMAGE_BASE_OFFSET)[0]
+    num_sections = struct.unpack_from("<H", data, pe_sig_off + 6)[0]
+    opt_hdr_size = struct.unpack_from("<H", data, pe_sig_off + 20)[0]
+    section_start = pe_sig_off + 24 + opt_hdr_size
+    if section_start + num_sections * 40 > len(data):
+        raise ValueError(f"section table of {num_sections} sections runs past the end of the file")
+    sections = []
+    for i in range(num_sections):
+        off = section_start + i * 40
+        name = data[off:off + 8].rstrip(b'\x00').decode('ascii', errors='replace')
+        s_vsz = struct.unpack_from("<I", data, off + 8)[0]
+        s_va = struct.unpack_from("<I", data, off + 12)[0]
+        s_rawsz = struct.unpack_from("<I", data, off + 16)[0]
+        s_raw = struct.unpack_from("<I", data, off + 20)[0]
+        chars = struct.unpack_from("<I", data, off + 36)[0]
+        sections.append({
+            'name': name, 'va': s_va, 'raw': s_raw,
+            'rawsz': s_rawsz, 'vsz': s_vsz, 'chars': chars,
+        })
+    return image_base, sections
+
+
+def va_to_offset(sections, image_base, va):
+    """Convert virtual address to file offset. Returns None if unmapped."""
+    rva = va - image_base
+    for s in sections:
+        if s['va'] <= rva < s['va'] + s['vsz']:
+            return rva - s['va'] + s['raw']
+    return None
+
+
+def offset_to_va(sections, image_base, file_off):
+    """Convert file offset to virtual address. Returns None if unmapped."""
+    for s in sections:
+        if s['raw'] <= file_off < s['raw'] + s['rawsz']:
+            return image_base + s['va'] + (file_off - s['raw'])
+    return None
+
+
+def find_text_section(data, image_base, sections):
+    """Return (raw_offset, raw_size, section_va) for first executable section."""
+    for s in sections:
+        if s['chars'] & 0x20000000:
+            return s['raw'], s['rawsz'], image_base + s['va']
+    return None, None, None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Standard CLI Setup
+# ═══════════════════════════════════════════════════════════════════════
+
+def load_binary(path):
+    """Read binary + parse PE. Returns (data, image_base, sections).
+
+    Exits with a message for a file these scanners cannot read: one that is
+    missing or cannot be opened, is not a PE, or is a 64-bit one.
+    """
+    try:
+        data = Path(path).read_bytes()
+        image_base, sections = parse_pe(data)
+    except OSError as exc:
+        sys.exit(f"ERROR: {path}: {exc.strerror}")
+    except ValueError as exc:
+        sys.exit(f"ERROR: {path}: {exc}")
+    return data, image_base, sections
+
+
+def load_text_section(data, image_base, sections):
+    """Load first executable section. Returns (text_data, text_va) or exits."""
+    raw_start, raw_size, text_va = find_text_section(data, image_base, sections)
+    if raw_start is None:
+        print("ERROR: no executable section found")
+        sys.exit(1)
+    return data[raw_start:raw_start + raw_size], text_va
+
+
+def print_header(data, image_base, sections):
+    """Print standard binary info header."""
+    _, _, text_va = find_text_section(data, image_base, sections)
+    print(f"ImageBase: 0x{image_base:08X}")
+    if text_va:
+        print(f"Executable section VA: 0x{text_va:08X}")

@@ -19,45 +19,119 @@ Examples:
 """
 
 import argparse
+import bisect
+import itertools
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import Binary
 
+_MAX_FUNCTION_INSNS = 5000
+
 def find_start(b: Binary, va: int, **_kw) -> int | None:
     """Find the function entry point containing *va*.
 
-    Delegates to ``Binary.find_func_start`` which uses a sorted table
-    of CALL/JMP targets and PE exports with binary-search lookup.
-    Works for both x86 and x64 binaries without prologue heuristics.
+    Delegates to ``Binary.find_func_start``: the x64 exception table where
+    it covers *va*, else the nearest known entry point before it.
     """
     return b.find_func_start(va)
 
 
+def _branch_target(insn) -> int | None:
+    """Immediate target of a jump or loop instruction; None for anything else."""
+    if not insn.mnemonic.startswith(("j", "loop")):
+        return None
+    try:
+        return int(insn.op_str, 16)
+    except ValueError:
+        return None
+
+
+def _function_starts_after(b: Binary, start: int, end: int) -> list[int]:
+    """The known function entry points in (*start*, *end*), in address order."""
+    table = b.func_table
+    return table[bisect.bisect_right(table, start):bisect.bisect_left(table, end)]
+
+
+def _follows_a_function_end(b: Binary, va: int) -> bool:
+    """Whether the bytes before *va* end a function: padding, a return or an unconditional jump.
+
+    A known entry point reached that way starts a function of its own; one in
+    the middle of straight-line code is a call target inside a function.
+    """
+    before = b.read_va(va - 6, 6)
+    if len(before) < 6:
+        return True
+    return (before[-1] in (0xCC, 0x90, 0xC3) or before[-3] == 0xC2 or before[-2] == 0xEB
+            or before[-5] == 0xE9 or before[-6:-4] == b"\xFF\x25")
+
+
 def analyze(b: Binary, start: int, max_size: int):
-    """Return (rets, callees, end_va) for the function at *start*."""
-    insns = b.disasm(start, count=5000, max_bytes=max_size)
+    """Return (rets, callees, end_va) for the function at *start*.
+
+    The scan ends at a known function start that this function's code does not
+    run into, or at padding: three nops after a return, or an int3. A known
+    start that live code falls through to, or that a branch of this function
+    jumps past, lies inside the function (a call target in its body, or bytes
+    that only look like one) and does not end the scan. Compilers also put an
+    int3 after a call that does not return; such an int3 ends the scan only
+    when no branch seen so far jumps past it to a label of this function. A
+    ``jmp`` to the next function or beyond is a tail call and does not carry
+    the scan over an int3; the next function is the nearest known start that
+    follows a function end (padding, a return or a jump).
+
+    *end_va* is the end of the last return scanned, or of a later instruction
+    that is live and not padding (nop or int3), so a function without a return
+    still has an extent. The bytes behind a return or an unconditional jump are
+    alignment or a jump table unless a branch reaches them: instructions are
+    live from the function's start, stop being live behind a return or jump,
+    and are live again from the first address at or below the furthest branch
+    target seen before it. Only a live instruction's branch target counts.
+    """
     rets: list[tuple[int, int]] = []
     calls: list[tuple[int, int | str]] = []
     end_va = start
     nop_run = 0
+    furthest_branch = start
+    later_starts = _function_starts_after(b, start, start + max_size)
+    next_function = next((va for va in later_starts if _follows_a_function_end(b, va)), None)
+    previous = None
+    live = True
 
-    for insn in insns:
-        if insn.mnemonic in ("ret", "retn"):
+    window = b.iter_disasm(start, max_bytes=max_size)
+    for insn in itertools.islice(window, _MAX_FUNCTION_INSNS):
+        live = live or insn.address <= furthest_branch
+        ahead = bisect.bisect_left(later_starts, insn.address)
+        if not live and ahead < len(later_starts) and later_starts[ahead] < insn.address + insn.size:
+            break
+        is_ret = insn.mnemonic in ("ret", "retn")
+        if is_ret:
             cleanup = int(insn.op_str, 0) if insn.op_str else 0
             rets.append((insn.address, cleanup))
-            end_va = insn.address + insn.size
         elif insn.mnemonic == "call":
             try:
                 target: int | str = int(insn.op_str, 16)
             except ValueError:
                 target = insn.op_str
             calls.append((insn.address, target))
+        else:
+            branch = _branch_target(insn) if live else None
+            is_tail_call = insn.mnemonic == "jmp" and next_function is not None and branch is not None \
+                and branch >= next_function
+            if branch is not None and not is_tail_call and branch < start + max_size:
+                furthest_branch = max(furthest_branch, branch)
 
+        if is_ret or (live and insn.mnemonic not in ("nop", "int3")):
+            end_va = insn.address + insn.size
+        if is_ret or insn.mnemonic == "jmp":
+            live = False
         nop_run = nop_run + 1 if insn.mnemonic == "nop" else 0
-        if (nop_run >= 3 and rets) or insn.mnemonic == "int3":
+        if nop_run >= 3 and rets:
             break
+        if insn.mnemonic == "int3" and (previous in ("ret", "retn", "jmp") or insn.address >= furthest_branch):
+            break
+        previous = insn.mnemonic
 
     return rets, calls, end_va
 
@@ -81,7 +155,12 @@ def main():
     rets, calls, end_va = analyze(b, start, args.max_size)
     w = 16 if b.is_64 else 8
 
-    print(f"Function: 0x{start:0{w}X} .. 0x{end_va:0{w}X}  ({end_va - start} bytes)\n")
+    print(f"Function: 0x{start:0{w}X} .. 0x{end_va:0{w}X}  ({end_va - start} bytes)")
+    if not start <= va < max(end_va, start + 1):
+        print(f"[warning] 0x{va:0{w}X} is not inside this range. Its function is reached "
+              f"only through a pointer, so its start is not known; this is the "
+              f"nearest known start before the address.")
+    print()
 
     print(f"Returns ({len(rets)}):")
     for addr, cleanup in rets:

@@ -6,15 +6,15 @@ Usage:
 """
 
 import importlib
-import io
 import os
-import shutil
-import struct
+import pkgutil
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
 from urllib.request import urlopen
+
+from retools.jdk import MIN_MAJOR as MIN_JDK_MAJOR, find_jdk
 
 ROOT = Path(__file__).resolve().parent
 TOOLS_DIR = ROOT / "tools"
@@ -27,8 +27,7 @@ GHIDRA_DATE = "20251203"
 GHIDRA_ZIP = f"ghidra_{GHIDRA_VERSION}_PUBLIC_{GHIDRA_DATE}.zip"
 GHIDRA_URL = f"https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_{GHIDRA_VERSION}_build/{GHIDRA_ZIP}"
 GHIDRA_DIR_NAME = f"ghidra_{GHIDRA_VERSION}_PUBLIC"
-JDK_VERSION = "21"
-JDK_ADOPTIUM_URL = "https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse"
+JDK_ADOPTIUM_URL = f"https://api.adoptium.net/v3/binary/latest/{MIN_JDK_MAJOR}/ga/windows/x64/jdk/hotspot/normal/eclipse"
 
 
 def record(name: str, status: str, detail: str = ""):
@@ -111,24 +110,19 @@ def check_sigdb():
                f"signatures.db ({db_path.stat().st_size:,} bytes)")
     else:
         record("sigdb", WARN,
-               "signatures.db missing or empty -- run: python retools/sigdb.py pull")
+               "signatures.db missing or empty -- run: python -m retools.sigdb pull")
 
 
 def check_java() -> bool:
-    """Check for JDK 21+. Returns True if found."""
-    try:
-        out = subprocess.check_output(
-            ["java", "-version"], stderr=subprocess.STDOUT, timeout=10
-        ).decode(errors="replace")
-        first = out.strip().split("\n")[0]
-        record("java", PASS, first)
-        return True
-    except FileNotFoundError:
-        record("java", WARN, "java not found -- required for pyghidra/Ghidra backend")
+    """Check for a JDK new enough for Ghidra. Returns True if found."""
+    found = find_jdk()
+    if found is None:
+        record("java", WARN,
+               f"no JDK {MIN_JDK_MAJOR}+ in JAVA_HOME, on PATH or under tools/jdk-* -- "
+               "required for pyghidra/Ghidra backend")
         return False
-    except Exception as e:
-        record("java", WARN, f"java check failed: {e}")
-        return False
+    record("java", PASS, f"JDK {found.major} ({found.home})")
+    return True
 
 
 def _find_ghidra_dir() -> Path | None:
@@ -167,19 +161,17 @@ def check_pyghidra():
                "pyghidra not installed -- run: python verify_install.py --setup")
 
 
+def retools_modules() -> list[str]:
+    """Dotted names of every module in the retools package."""
+    return sorted(
+        f"retools.{info.name}"
+        for info in pkgutil.iter_modules([str(ROOT / "retools")])
+    )
+
+
 def check_retools_import():
-    modules = [
-        "retools.common", "retools.decompiler", "retools.disasm",
-        "retools.funcinfo", "retools.cfg", "retools.callgraph",
-        "retools.xrefs", "retools.datarefs", "retools.structrefs",
-        "retools.vtable", "retools.rtti", "retools.search",
-        "retools.readmem", "retools.dumpinfo", "retools.throwmap",
-        "retools.asi_patcher",
-        "retools.kb", "retools.index", "retools.query",
-        "retools.ghidra_server", "retools.ghidra_client",
-    ]
     ok, bad = 0, []
-    for mod in modules:
+    for mod in retools_modules():
         try:
             importlib.import_module(mod)
             ok += 1
@@ -214,46 +206,30 @@ def _download(url: str, desc: str) -> bytes:
 
 
 def setup_jdk():
-    """Download and install Adoptium JDK 21 to tools/jdk-21."""
-    if shutil.which("java"):
-        try:
-            out = subprocess.check_output(
-                ["java", "-version"], stderr=subprocess.STDOUT, timeout=10
-            ).decode(errors="replace")
-            if f'"{JDK_VERSION}.' in out or f" {JDK_VERSION}." in out:
-                print(f"  JDK {JDK_VERSION} already installed (system)")
-                return True
-        except Exception:
-            pass
+    """Download and install Adoptium JDK 21 under tools/ unless a JDK 21+ is already found."""
+    found = find_jdk()
+    if found is not None:
+        print(f"  JDK {found.major} already available ({found.home})")
+        return True
 
-    # Check if we already downloaded it
-    for d in TOOLS_DIR.glob(f"jdk-{JDK_VERSION}*"):
-        if (d / "bin" / "java.exe").exists():
-            print(f"  JDK already at {d}")
-            os.environ["JAVA_HOME"] = str(d)
-            os.environ["PATH"] = str(d / "bin") + os.pathsep + os.environ.get("PATH", "")
-            return True
-
-    print(f"\n  JDK {JDK_VERSION} not found. Downloading Adoptium Temurin JDK {JDK_VERSION}...")
+    print(f"\n  No JDK {MIN_JDK_MAJOR}+ found. Downloading Adoptium Temurin JDK {MIN_JDK_MAJOR}...")
     try:
-        data = _download(JDK_ADOPTIUM_URL, f"JDK {JDK_VERSION}")
+        data = _download(JDK_ADOPTIUM_URL, f"JDK {MIN_JDK_MAJOR}")
         TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-        zip_path = TOOLS_DIR / f"jdk-{JDK_VERSION}.zip"
+        zip_path = TOOLS_DIR / f"jdk-{MIN_JDK_MAJOR}.zip"
         zip_path.write_bytes(data)
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(TOOLS_DIR)
         zip_path.unlink()
-        jdk_dir = next(TOOLS_DIR.glob(f"jdk-{JDK_VERSION}*"), None)
-        if jdk_dir and (jdk_dir / "bin" / "java.exe").exists():
-            os.environ["JAVA_HOME"] = str(jdk_dir)
-            os.environ["PATH"] = str(jdk_dir / "bin") + os.pathsep + os.environ.get("PATH", "")
-            record("setup:jdk", PASS, f"Installed to {jdk_dir}")
-            return True
-        record("setup:jdk", FAIL, "Extraction succeeded but java.exe not found")
-        return False
     except Exception as e:
         record("setup:jdk", FAIL, f"Download failed: {e}")
         return False
+    found = find_jdk()
+    if found is None:
+        record("setup:jdk", FAIL, f"Extracted to {TOOLS_DIR}, but no JDK {MIN_JDK_MAJOR}+ runs from it")
+        return False
+    record("setup:jdk", PASS, f"Installed to {found.home}")
+    return True
 
 
 def setup_ghidra():
@@ -326,9 +302,9 @@ def run_setup():
 
     ghidra_dir = _find_ghidra_dir()
     if ghidra_dir:
-        print(f"\n  Set GHIDRA_INSTALL_DIR={ghidra_dir}")
-        print("  Add to your shell profile for persistent use:")
-        print(f'    export GHIDRA_INSTALL_DIR="{ghidra_dir}"')
+        print(f"\n  Ghidra is at {ghidra_dir}")
+        print("  retools finds a Ghidra under tools/ on its own; set GHIDRA_INSTALL_DIR")
+        print("  only to use an installation somewhere else.")
 
     print()
 
@@ -347,33 +323,38 @@ def main():
     check_retools_import()
     check_sigdb()
 
-    failures = sum(1 for _, s, _ in results if s == FAIL)
-    warns = sum(1 for _, s, _ in results if s == WARN)
     print()
+    _exit_if_failed()
 
+    ghidra_checks = ("java", "ghidra-install", "pip:pyghidra")
+    ghidra_missing = any(n in ghidra_checks for n, s, _ in results if s == WARN)
+
+    if setup_mode and ghidra_missing:
+        run_setup()
+        results[:] = [r for r in results if r[0] not in ghidra_checks]
+        print("Re-checking after setup...\n")
+        check_java()
+        check_ghidra()
+        check_pyghidra()
+        print()
+        _exit_if_failed()
+        ghidra_missing = any(n in ghidra_checks for n, s, _ in results if s == WARN)
+
+    warns = sum(1 for _, s, _ in results if s == WARN)
+    if warns:
+        print(f"ALL REQUIRED CHECKS PASSED ({warns} optional warning(s)).")
+        if ghidra_missing and not setup_mode:
+            print("Run 'python verify_install.py --setup' to auto-install optional Ghidra backend.")
+    else:
+        print("ALL CHECKS PASSED.")
+
+
+def _exit_if_failed():
+    failures = sum(1 for _, s, _ in results if s == FAIL)
     if failures:
         print(f"FAILED: {failures} check(s) did not pass.")
         print("Fix the above issues before using the toolkit.")
         sys.exit(1)
-
-    if warns and setup_mode:
-        ghidra_warns = any(
-            n in ("java", "ghidra-install", "pip:pyghidra")
-            for n, s, _ in results if s == WARN
-        )
-        if ghidra_warns:
-            run_setup()
-            # Re-check after setup
-            results.clear()
-            print("Re-checking after setup...\n")
-            check_java()
-            check_ghidra()
-            check_pyghidra()
-    elif warns:
-        print(f"ALL REQUIRED CHECKS PASSED ({warns} optional warning(s)).")
-        print("Run 'python verify_install.py --setup' to auto-install optional Ghidra backend.")
-    else:
-        print("ALL CHECKS PASSED.")
 
 
 if __name__ == "__main__":
