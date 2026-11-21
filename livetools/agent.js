@@ -964,7 +964,10 @@ function installStepTrace(addrStr, config) {
 // A repeated string instruction (rep movs, rep stos, ...) raises a single-step
 // exception after every iteration with the pc left on it, so a trap set on one
 // is armed again until the pc moves on: the thread passes the whole
-// instruction in one go, at the cost of one exception per iteration.
+// instruction in one go, at the cost of one exception per iteration. An int3
+// behind the instruction would cost one, but every thread shares that byte:
+// while another thread is sent past it the int3 is out, and a thread that
+// finishes its rep then would never write its breakpoint back.
 //
 // An exception nobody claims ends the process, so the handler returns true for
 // every exception this agent caused, whatever else goes wrong.
