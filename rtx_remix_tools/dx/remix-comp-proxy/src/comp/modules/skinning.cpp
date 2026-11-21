@@ -48,8 +48,9 @@ namespace comp
 			: vertex_range{};
 		const auto* expanded = source_range.num_verts ? get_expanded_vb(dev, src_vb, source_range, stride) : nullptr;
 
-		// No bone palette, a layout the expansion cannot read, no vertices inside the buffer or a
-		// vertex blended by a bone past the end of the palette: the game's shaders draw it
+		// No bone palette, a layout the expansion cannot read, no vertices inside the buffer, a
+		// dynamic buffer or a vertex blended by a bone past the end of the palette: the game's
+		// shaders draw it
 		if (!expanded || expanded->max_blend_index >= ffp.num_bones())
 			return std::nullopt;
 
@@ -130,6 +131,10 @@ namespace comp
 	{
 		D3DVERTEXBUFFER_DESC desc = {};
 		if (!src_vb || FAILED(src_vb->GetDesc(&desc)) || first_byte >= desc.Size)
+			return {};
+
+		// The game rewrites a dynamic buffer, and an expansion is kept for as long as its source is drawn
+		if (desc.Usage & D3DUSAGE_DYNAMIC)
 			return {};
 
 		// A loose NumVertices may run past the end of the buffer; the vertices the indices reach lie inside it

@@ -28,6 +28,7 @@ namespace shared::common
 		void on_set_texture(UINT stage, IDirect3DBaseTexture9* texture);
 		void on_set_stream_source(UINT stream, IDirect3DVertexBuffer9* vb, UINT offset, UINT stride);
 		void on_set_vertex_declaration(IDirect3DVertexDeclaration9* decl);
+		void on_set_fvf(DWORD fvf);
 		void on_present();
 		void on_begin_scene();
 		void on_reset();
@@ -134,7 +135,8 @@ namespace shared::common
 		IDirect3DVertexShader9* last_vs_ = nullptr;
 		IDirect3DPixelShader9* last_ps_ = nullptr;
 
-		// Vertex declaration tracking
+		// Vertex declaration tracking. last_decl_ is the declaration last set through the wrapper,
+		// nullptr after a SetFVF. It is not referenced here: the device holds the declaration it has in use.
 		IDirect3DVertexDeclaration9* last_decl_ = nullptr;
 		bool cur_decl_is_skinned_ = false;
 		bool cur_decl_has_texcoord_ = false;

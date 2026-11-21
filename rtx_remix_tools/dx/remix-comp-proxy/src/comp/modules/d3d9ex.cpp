@@ -614,6 +614,7 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetFVF(DWORD FVF)
 	{
 		TRACE_IF_ACTIVE(trace_SetFVF, FVF);
+		shared::common::ffp_state::get().on_set_fvf(FVF);
 		return m_pIDirect3DDevice9->SetFVF(FVF);
 	}
 

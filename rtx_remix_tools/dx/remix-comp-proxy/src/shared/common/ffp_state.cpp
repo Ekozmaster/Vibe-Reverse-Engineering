@@ -268,6 +268,14 @@ namespace shared::common
 		}
 	}
 
+	void ffp_state::on_set_fvf(DWORD fvf)
+	{
+		// Direct3D ignores an FVF of 0. Any other takes the place of the declaration, and a draw
+		// without one is left to the game's shaders.
+		if (fvf != 0)
+			on_set_vertex_declaration(nullptr);
+	}
+
 	void ffp_state::on_present()
 	{
 		frame_count_++;

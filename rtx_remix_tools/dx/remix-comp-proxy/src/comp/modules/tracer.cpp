@@ -15,15 +15,26 @@ namespace comp
 	namespace
 	{
 		// "<frame> <calls>" while capturing, " done" added once the capture file is
-		// closed: the format of the standalone tracer, which "trigger --wait" follows
-		void write_progress(int frame, int calls, bool done)
+		// closed, or "0 0 failed <reason>" for a capture that could not start: the
+		// format of the standalone tracer, which "trigger --wait" follows
+		void write_progress_line(const std::string& line)
 		{
 			const std::string path = shared::globals::root_path + "\\dxtrace_progress.txt";
 			if (FILE* f = fopen(path.c_str(), "w"))
 			{
-				fprintf(f, done ? "%d %d done\n" : "%d %d\n", frame, calls);
+				fprintf(f, "%s\n", line.c_str());
 				fclose(f);
 			}
+		}
+
+		void write_progress(int frame, int calls, bool done)
+		{
+			write_progress_line(std::format("{} {}{}", frame, calls, done ? " done" : ""));
+		}
+
+		void write_capture_failure(const std::string& reason)
+		{
+			write_progress_line("0 0 failed " + reason);
 		}
 	}
 
@@ -134,9 +145,9 @@ namespace comp
 
 		if (log_file_ == INVALID_HANDLE_VALUE)
 		{
-			shared::common::log("Tracer",
-				std::format("Failed to create: {}", full_path),
-				shared::common::LOG_TYPE::LOG_TYPE_ERROR);
+			const std::string reason = std::format("cannot create {}: Windows error {}", full_path, GetLastError());
+			shared::common::log("Tracer", "Capture not started, " + reason, shared::common::LOG_TYPE::LOG_TYPE_ERROR);
+			write_capture_failure(reason);
 			return;
 		}
 

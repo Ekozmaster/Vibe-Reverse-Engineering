@@ -13,7 +13,7 @@ namespace shared::common
 
 		bool holds_matrix(const int start, const int end)
 		{
-			return start >= 0 && start + MATRIX_REGISTERS <= CAPTURED_VS_REGISTERS && end == start + MATRIX_REGISTERS;
+			return start >= 0 && start <= CAPTURED_VS_REGISTERS - MATRIX_REGISTERS && end == start + MATRIX_REGISTERS;
 		}
 
 		// A bone palette is any upload from BoneThreshold on, so a matrix there could be taken for bones

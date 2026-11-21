@@ -64,6 +64,13 @@ def toy(builds, reference):
     return builds
 
 
+def variant_frames(toy, variant):
+    """The toy drawing its last cell as *variant*: the frame behind the proxy with skinning on, and its own reference."""
+    reference = toy.frame(f"reference_{variant}", MOVED_LAYOUT, proxy=False, variant=variant)
+    frame = toy.frame(variant, MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON), variant=variant)
+    return frame, reference
+
+
 def assert_drawn_by(frame, reference, shape, colour):
     """*shape* has the one *colour* and covers the pixels the reference shape covers."""
     drawn, expected = frame.shapes[shape], reference.shapes[shape]
@@ -210,6 +217,13 @@ class TestRegistersOutOfRange:
         assert "[FFP.Registers]" in frame.log and "using the default layout" in frame.log
         assert_drawn_by(frame, reference, "rigid quad", "green")
 
+    def test_a_start_so_large_that_adding_to_it_overflows_is_out_of_range(self, toy, reference):
+        wrapped_end = 2147483647 + 4 - 2**32
+        frame = toy.frame("overflowing_layout", SHIPPED_LAYOUT,
+                          ini={"FFP.Registers": {"ViewStart": 2147483647, "ViewEnd": wrapped_end}})
+        assert "[FFP.Registers]" in frame.log and "using the default layout" in frame.log
+        assert_drawn_by(frame, reference, "rigid quad", "green")
+
 
 class TestOverlayIcon:
     """rtx_comp/textures/icon.png, which the proxy decodes for its overlay when the file is there."""
@@ -251,6 +265,18 @@ class TestBuiltInTracer:
             assert re.fullmatch("0x[0-9A-F]{8}", record.get("created_handle", "")), record
 
 
+class TestBuiltInTracerCannotStart:
+    """A trigger taken while the capture file cannot be created."""
+
+    def test_the_reason_is_in_the_progress_file(self, toy):
+        frame = toy.frame("tracer_cannot_start", SHIPPED_LAYOUT,
+                          files={"dxtrace_capture.trigger": b"frames=2", "captures": b"a file where the folder goes"})
+
+        progress = (frame.folder / "dxtrace_progress.txt").read_text()
+        assert progress.startswith("0 0 failed cannot create "), frame.log
+        assert not (frame.folder / "dxtrace_capture.trigger").exists()
+
+
 class TestAlbedoStage:
     """The albedo texture on stage 1, a different texture on stage 0."""
 
@@ -268,23 +294,41 @@ class TestAlbedoStage:
 class TestSkinnedVertexFormats:
     """The strip in the last cell, drawn as one of the toy's variants, against its own reference."""
 
-    @staticmethod
-    def frames(toy, variant):
-        reference = toy.frame(f"reference_{variant}", MOVED_LAYOUT, proxy=False, variant=variant)
-        frame = toy.frame(variant, MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON), variant=variant)
-        return frame, reference
-
     def test_blend_indices_in_a_d3dcolor_decoded_with_d3dcolortoubyte4_are_converted(self, toy):
-        frame, reference = self.frames(toy, "color-indices")
+        frame, reference = variant_frames(toy, "color-indices")
         assert_drawn_by(frame, reference, "skinned strip variant", "green")
 
     def test_blend_weights_in_a_format_the_expansion_cannot_read_keep_their_shaders(self, toy):
-        frame, reference = self.frames(toy, "ushort-weights")
+        frame, reference = variant_frames(toy, "ushort-weights")
         assert_drawn_by(frame, reference, "skinned strip variant", "red")
 
     def test_blend_index_past_the_last_uploaded_bone_keeps_its_shaders(self, toy):
-        frame, reference = self.frames(toy, "partial-palette")
+        frame, reference = variant_frames(toy, "partial-palette")
         assert_drawn_by(frame, reference, "skinned strip variant", "red")
+
+
+class TestSkinnedSourceBuffer:
+    """The strip in the last cell, in a vertex buffer created with a usage of its own."""
+
+    def test_a_dynamic_buffer_the_toy_rewrites_keeps_its_shaders(self, toy):
+        frame, reference = variant_frames(toy, "dynamic-rewritten")
+        assert_drawn_by(frame, reference, "skinned strip variant", "red")
+
+    def test_a_write_only_buffer_in_the_managed_pool_is_converted(self, toy):
+        frame, reference = variant_frames(toy, "writeonly")
+        assert_drawn_by(frame, reference, "skinned strip variant", "green")
+
+
+class TestFvf:
+    """SetFVF in the last cell, after the skinned strip's declaration was set."""
+
+    def test_an_fvf_draw_is_not_read_with_the_declaration_set_before_it(self, toy):
+        frame, reference = variant_frames(toy, "fvf-after-skinned")
+        assert_drawn_by(frame, reference, "skinned strip variant", "red")
+
+    def test_an_fvf_of_zero_leaves_the_declaration_in_use(self, toy):
+        frame, reference = variant_frames(toy, "fvf-zero")
+        assert_drawn_by(frame, reference, "skinned strip variant", "green")
 
 
 class TestD3D9Ex:

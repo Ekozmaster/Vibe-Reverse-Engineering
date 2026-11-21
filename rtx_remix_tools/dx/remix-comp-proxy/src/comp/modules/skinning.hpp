@@ -53,8 +53,9 @@ namespace comp
 
 		// The vertices of one draw, in the expanded layout. A buffer is reused for as long as
 		// the same range of the same source buffer is drawn with the same declaration, so the
-		// game is taken not to rewrite a skinned mesh's vertices. The entry holds a reference
-		// to its source buffer and declaration until it is evicted.
+		// game is taken not to rewrite a skinned mesh's vertices; a D3DUSAGE_DYNAMIC source,
+		// made to be rewritten, is not expanded. The entry holds a reference to its source
+		// buffer and declaration until it is evicted.
 		struct expanded_range
 		{
 			IDirect3DVertexBuffer9* source = nullptr;
@@ -79,7 +80,7 @@ namespace comp
 		static void evict(expanded_range& entry);
 
 		// Vertex expansion. vertices_in_buffer gives the part of num_verts vertices from
-		// first_byte on that src_vb holds, num_verts 0 when none.
+		// first_byte on that src_vb holds, num_verts 0 when none or when src_vb is dynamic.
 		static vertex_range vertices_in_buffer(IDirect3DVertexBuffer9* src_vb, UINT64 first_byte, UINT num_verts, UINT stride);
 		// The cache entry for the range, expanded now if it was not cached; nullptr on failure
 		const expanded_range* get_expanded_vb(IDirect3DDevice9* dev,
