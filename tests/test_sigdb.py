@@ -1201,6 +1201,70 @@ def _v1_db(path, with_crc_len=False):
     return path
 
 
+def _db_with_an_older_shape_row(path, block_count=4, edge_count=5, call_count=1, mnemonic_hash=7, constants=""):
+    """A database whose one structural signature was stored before rows carried a shape version."""
+    conn = sqlite3.connect(_v1_db(path))
+    conn.execute("INSERT INTO structural_sigs (name, block_count, edge_count, call_count, mnemonic_hash, constants) "
+                 "VALUES ('old_shape', ?, ?, ?, ?, ?)", (block_count, edge_count, call_count, mnemonic_hash, constants))
+    conn.commit()
+    conn.close()
+    return path
+
+
+class TestStructuralShapeVersion:
+    """A structural signature matches only functions whose shape is counted the way its own was."""
+
+    def test_a_signature_is_stored_with_the_shape_version_cfg_counts_by(self):
+        import cfg
+        from sigdb import SignatureDB
+        db = SignatureDB(":memory:")
+        db.add_structural_sig(name="f", block_count=4, edge_count=5, call_count=1, mnemonic_hash=7)
+        assert db._conn.execute("SELECT shape_version FROM structural_sigs").fetchall() == [(cfg.SHAPE_VERSION,)]
+
+    def test_a_row_stored_before_shape_versions_matches_nothing_in_an_unmigrated_file(self, tmp_path):
+        from sigdb import SignatureDB
+        db = SignatureDB.open_existing(_db_with_an_older_shape_row(str(tmp_path / "old.db")))
+        assert db.match_structural(4, 5, 1, 7, "") == []
+        assert db.outdated_structural_count() == 1
+        db.close()
+
+    def test_a_row_stored_before_shape_versions_matches_nothing_after_the_migration(self, tmp_path):
+        from sigdb import SignatureDB
+        db = SignatureDB(_db_with_an_older_shape_row(str(tmp_path / "old.db")))
+        db.add_structural_sig(name="other", block_count=9, edge_count=9, call_count=0, mnemonic_hash=1)
+        assert db.match_structural(4, 5, 1, 7, "") == []
+        assert db.outdated_structural_count() == 1
+        assert [m.name for m in db.match_structural(9, 9, 0, 1, "")] == ["other"]
+        db.close()
+
+    def test_building_again_adds_the_current_shape_beside_the_older_row(self, tmp_path):
+        from common import Binary
+        from sigdb import SignatureDB, extract_structural_sig, read_manifest_sigs
+        image, manifest = _manifest_for(tmp_path, _BRANCHY, [(0, "solo", 40)])
+        sig = extract_structural_sig(Binary(str(image)), CODE_VA)
+        key = (sig["block_count"], sig["edge_count"], sig["call_count"], sig["mnemonic_hash"], sig["constants"])
+        db = SignatureDB(_db_with_an_older_shape_row(str(tmp_path / "old.db"), *key))
+        assert db.match_structural(*key) == []
+
+        stats = read_manifest_sigs(manifest).add_to(db)
+
+        assert stats["structural_added"] == 1
+        assert [m.name for m in db.match_structural(*key)] == ["solo"]
+        assert db.outdated_structural_count() == 1
+        db.close()
+
+    def test_build_and_scan_say_how_many_signatures_are_in_an_older_shape(self, tmp_path, capsys):
+        import sigdb
+        image, manifest = _manifest_for(tmp_path, _BRANCHY, [(0, "solo", 40)])
+        db = _db_with_an_older_shape_row(str(tmp_path / "old.db"))
+        _cli_build(tmp_path, manifest, db)
+        built = capsys.readouterr().out
+        sigdb.main(["scan", str(image), "--db", db])
+        scanned = capsys.readouterr().out
+        note = "1 structural sigs were built with an older CFG shape and match nothing until they are rebuilt"
+        assert note in built and note in scanned
+
+
 @pytest.fixture
 def read_only():
     """Make every file in a database's directory read-only for the rest of the test."""

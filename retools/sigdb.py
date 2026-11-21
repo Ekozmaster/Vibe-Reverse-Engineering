@@ -42,6 +42,7 @@ import pefile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from capstone import x86_const as x86
+from cfg import SHAPE_VERSION, build_cfg
 from common import Binary
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "signatures.db"
@@ -58,8 +59,11 @@ def _hf_url(repo: str, revision: str, path: str) -> str:
 
 SCHEMA_VERSION = 2
 
-# byte_sigs columns schema version 2 added to version 1.
+# Columns schema version 2 added to version 1.
 _V2_BYTE_COLUMNS = ("crc_len", "crc16")
+_V2_STRUCTURAL_COLUMN = "shape_version"
+# The shape version of a structural row stored before rows carried one.
+_FIRST_SHAPE_VERSION = 1
 
 # Longest run of bytes after the 32-byte prefix a FLIRT CRC16 can cover.
 _MAX_CRC_LEN = 0xFF
@@ -93,7 +97,8 @@ CREATE TABLE IF NOT EXISTS structural_sigs (
     constants     TEXT    NOT NULL DEFAULT '',
     compiler      TEXT    NOT NULL DEFAULT '',
     source        TEXT    NOT NULL DEFAULT '',
-    category      TEXT    NOT NULL DEFAULT ''
+    category      TEXT    NOT NULL DEFAULT '',
+    shape_version INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS compiler_fingerprints (
@@ -314,14 +319,9 @@ def extract_structural_sig(b: Binary, va: int) -> dict | None:
     """Extract structural (CFG-based) signature for the function at *va*.
 
     Returns:
-        Dict with block_count, edge_count, call_count, mnemonic_hash,
-        constants -- or None if the function can't be analyzed.
+        Dict with shape_version, block_count, edge_count, call_count,
+        mnemonic_hash, constants -- or None if the function can't be analyzed.
     """
-    try:
-        from cfg import build_cfg
-    except ImportError:
-        return None
-
     blocks, edges = build_cfg(b, va)
     if not blocks:
         return None
@@ -348,6 +348,7 @@ def extract_structural_sig(b: Binary, va: int) -> dict | None:
     const_str = ",".join(f"0x{c:X}" for c in sorted_consts)
 
     return {
+        "shape_version": SHAPE_VERSION,
         "block_count": len(blocks),
         "edge_count": len(edges),
         "call_count": call_count,
@@ -706,6 +707,13 @@ class SignatureDB:
     def _byte_columns(self) -> set[str]:
         return {row[1] for row in self._conn.execute("PRAGMA table_info(byte_sigs)")}
 
+    def _structural_columns(self) -> set[str]:
+        """Column names of structural_sigs; empty for a database without that table."""
+        return {row[1] for row in self._conn.execute("PRAGMA table_info(structural_sigs)")}
+
+    def _has_shape_versions(self) -> bool:
+        return _V2_STRUCTURAL_COLUMN in self._structural_columns()
+
     def _ensure_writable_schema(self) -> None:
         """Before the first write: switch to WAL and migrate to the current schema.
 
@@ -730,6 +738,9 @@ class SignatureDB:
             self._conn.execute("BEGIN")
             for col in missing:
                 self._conn.execute(f"ALTER TABLE byte_sigs ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+            if self._structural_columns() and not self._has_shape_versions():
+                self._conn.execute(f"ALTER TABLE structural_sigs ADD COLUMN {_V2_STRUCTURAL_COLUMN} "
+                                   f"INTEGER NOT NULL DEFAULT {_FIRST_SHAPE_VERSION}")
             self._conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
         self._schema_writable = True
 
@@ -755,7 +766,8 @@ class SignatureDB:
         compiler: str = "", source: str = "", category: str = "",
     ) -> None:
         self._write_sigs(structural_rows=[
-            (name, block_count, edge_count, call_count, mnemonic_hash, constants, compiler, source, category),
+            (name, block_count, edge_count, call_count, mnemonic_hash, constants, compiler, source, category,
+             SHAPE_VERSION),
         ])
 
     def add_new_sigs(
@@ -803,7 +815,7 @@ class SignatureDB:
 
         held_structural = set(self._conn.execute(
             "SELECT name, block_count, edge_count, call_count, mnemonic_hash, "
-            "constants, compiler, source, category FROM structural_sigs")) if structural_rows else set()
+            "constants, compiler, source, category, shape_version FROM structural_sigs")) if structural_rows else set()
         new_structural_rows = list(dict.fromkeys(row for row in structural_rows if row not in held_structural))
         stats["structural_added"] = len(new_structural_rows)
         stats["structural_already_in_db"] = len(structural_rows) - len(new_structural_rows)
@@ -815,6 +827,13 @@ class SignatureDB:
         """Number of byte signatures and of structural signatures held."""
         return tuple(self._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                      for table in ("byte_sigs", "structural_sigs"))
+
+    def outdated_structural_count(self) -> int:
+        """Number of structural signatures counted by another shape version than cfg's, which match nothing."""
+        if not self._has_shape_versions():
+            return self.sig_counts()[1]
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM structural_sigs WHERE shape_version != ?", (SHAPE_VERSION,)).fetchone()[0]
 
     def _write_sigs(
         self, byte_rows: Collection[tuple] = (),
@@ -838,8 +857,8 @@ class SignatureDB:
                 self._conn.executemany(
                     "INSERT INTO structural_sigs "
                     "(name, block_count, edge_count, call_count, mnemonic_hash, "
-                    "constants, compiler, source, category) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "constants, compiler, source, category, shape_version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     structural_rows,
                 )
         self._byte_index = None
@@ -933,7 +952,9 @@ class SignatureDB:
 
         Requires exact mnemonic_hash match plus CFG shape (block_count,
         edge_count). call_count and constants refine the score. Signatures
-        labelled with MSVC versions absent from *toolchains* are skipped.
+        labelled with MSVC versions absent from *toolchains* are skipped, and
+        so are those whose shape was counted by another version of cfg than
+        the current one (cfg.SHAPE_VERSION), which counted the arguments.
 
         A shape that the remaining signatures hold under more than one name
         cannot tell those functions apart, so it matches nothing.
@@ -941,15 +962,15 @@ class SignatureDB:
         Skips trivially small functions (< 3 blocks) -- their structural
         signatures are too generic to produce meaningful matches.
         """
-        if block_count < 3:
+        if block_count < 3 or not self._has_shape_versions():
             return []
 
         cur = self._conn.execute(
             "SELECT name, block_count, edge_count, call_count, "
             "mnemonic_hash, constants, compiler, source, category "
             "FROM structural_sigs "
-            "WHERE mnemonic_hash = ? AND block_count = ? AND edge_count = ?",
-            (mnemonic_hash, block_count, edge_count),
+            "WHERE mnemonic_hash = ? AND block_count = ? AND edge_count = ? AND shape_version = ?",
+            (mnemonic_hash, block_count, edge_count, SHAPE_VERSION),
         )
         candidates: list[tuple[Match, float]] = []
         for (name, db_bc, db_ec, db_cc, db_mh, db_consts,
@@ -1185,6 +1206,7 @@ def _read_binary_with_map(binary_path: str, map_path: str, compiler: str, sigs: 
                 sigs.structural_rows.append((
                     name, ssig["block_count"], ssig["edge_count"], ssig["call_count"],
                     ssig["mnemonic_hash"], ssig["constants"], compiler, source_name, category,
+                    ssig["shape_version"],
                 ))
 
 
@@ -1476,6 +1498,13 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
 
+def _print_outdated_structural_sigs(db: SignatureDB) -> None:
+    outdated = db.outdated_structural_count()
+    if outdated:
+        print(f"  {outdated} structural sigs were built with an older CFG shape and match nothing until they are "
+              "rebuilt from their binaries (sigdb build)")
+
+
 def _dispatch(args: argparse.Namespace) -> None:
     if args.command == "build":
         with open(args.manifest) as f:
@@ -1487,6 +1516,7 @@ def _dispatch(args: argparse.Namespace) -> None:
         print(f"Built {args.output}: {byte_count} byte sigs, {structural_count} structural sigs")
         for reason, count in sorted(stats.items()):
             print(f"  {reason}: {count}")
+        _print_outdated_structural_sigs(db)
         db.close()
 
     elif args.command == "import-pat":
@@ -1506,6 +1536,7 @@ def _dispatch(args: argparse.Namespace) -> None:
             print(f"  0x{va:0{w}X}  {m.name:40s} "
                   f"{m.confidence:.0%} ({m.tier}) [{m.category}]")
         print(f"\n{len(results)} / {len(b.func_table)} functions identified")
+        _print_outdated_structural_sigs(db)
         db.close()
 
     elif args.command == "identify":

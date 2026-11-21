@@ -41,6 +41,11 @@ _COND_JUMPS = {
 # execution never falls through it: it ends its block without a successor.
 _NO_SUCCESSOR = {"ret", "retn", "int3"}
 
+# Names the way build_cfg divides a function into blocks and edges. A stored
+# shape (sigdb's structural signatures) compares only with shapes counted the
+# same way, so a change to the sets above or to the block rules raises it.
+SHAPE_VERSION = 2
+
 
 def _resolve_target(insn) -> int | None:
     try:
