@@ -21,7 +21,7 @@ python -m livetools detach                            # release target, stop dae
 python -m livetools status                            # check state
 ```
 
-`detach` returns once the daemon process has exited, so an `attach` right after it starts cleanly. One daemon runs at a time, on port 27042. The daemon's errors, including those the agent reports from inside the target, go to `livetools/.daemon.log`, which the next `attach` overwrites.
+`detach` returns once the daemon process has exited, so an `attach` right after it starts cleanly. While a thread still owes a single step the agent stays loaded, because the step's exception needs its handler: `detach` then prints which thread it waits for and exits 1 after 10 s, and the daemon finishes the detach when the step has been taken. One daemon runs at a time, on port 27042. The daemon's errors, including those the agent reports from inside the target, go to `livetools/.daemon.log`, which the next `attach` overwrites.
 
 ### Breakpoints (blocking)
 ```
@@ -60,7 +60,7 @@ python -m livetools resume                    # unfreeze target
 - One thread is frozen at a time. Every other thread keeps running; when one reaches a breakpoint its hit is counted and it runs on. The exception is the breakpoint the frozen thread sits on: its original byte is back while that thread is frozen, so other threads run through that address unseen and uncounted.
 - A breakpoint on a repeated string instruction counts one hit per execution of the whole instruction. Releasing a thread from it raises one exception per iteration, so a breakpoint on a `rep movs` that copies megabytes stalls that thread noticeably.
 - `bp del` on the breakpoint a thread is frozen at also resumes that thread. After a `step` the thread is frozen somewhere else, and `bp del` leaves it frozen.
-- `detach` removes every breakpoint and the vishook, releases the frozen thread, and takes back the trap flag of a thread whose step has not finished before the agent unloads.
+- `detach` removes every breakpoint and the vishook, releases the frozen thread, and takes back the trap flag of a thread whose step has not finished before the agent unloads. Each of those is done on its own, so one that fails does not stop the rest; a breakpoint whose memory is no longer mapped is let go. What could not be undone is written to `.daemon.log` as `shutdown: ...`, and a thread that stays in the exception handler is waited for 2 s and then reported. A thread that still owes a single step is waited for without that bound (`.daemon.log` says `detach is waiting for thread N`).
 - `bp` and `step` need a Windows process. `trace`, `collect`, `steptrace` and `mem` load in any process Frida attaches to.
 - `disasm` and `mem read` show the `int3` (`CC`) of a breakpoint that is set, except at the address a thread is frozen at, where the original byte is back.
 - Breakpoints, hooks, the vishook and `mem write` never share bytes; two hooks share bytes only when both sit at the same address. `trace`, `collect` and its fence refuse an address whose first bytes hold a breakpoint or the vishook's jump, or overlap the bytes of a hook at another address (5 bytes in a 32-bit process, 14 in a 64-bit one); `bp add` refuses an address inside the bytes of an active hook or the vishook's jump; `vishook on` refuses a site whose 5 bytes hold a breakpoint or a hook; `mem write` refuses a range that holds any of them (remove it, write, then set it again) and leaves each page it writes with the protection it had; and `steptrace` refuses to start while any breakpoint is set. `bp add` also refuses an address that already holds an `int3`, such as the padding between functions.
@@ -178,7 +178,7 @@ Output format:
 
 `<addr>` must be a **function entry**. The hook traps the function's return through the slot on top of the stack, which holds a return address only at an entry. A `call` instruction is refused with an error that says so, also when a probe or fence already sits on it. The check looks at that one instruction only: a function whose first instruction is a `call` is refused as well (use `--probe` on it), and any other address inside a function is not detected, so there the hook overwrites that stack slot for as long as the trace runs.
 
-**`--probe` records at an instruction instead.** It hooks the instruction itself and leaves the stack alone, so `<addr>` may be any instruction. Use it on the call sites that `xrefs.py`, `vtable.py calls` and the DX scripts report:
+**`--probe` records at an instruction instead.** It hooks the instruction itself and leaves the stack alone, so `<addr>` need not be a function entry. The hook is a jump that replaces at least 5 bytes (the result says how many), and it is refused where a `ret` or `jmp` ends the code before the jump fits, where a later branch targets the replaced bytes, or where `<addr>` is a `jmp` that Frida follows (a direct one, or one through a fixed pointer); a branch from before `<addr>` into those bytes cannot be seen. A function hook on such a `jmp` sits at the jump's target, and the result names that address (`followedTo`). Use `bp add` (one byte) at such a site. Use it on the call sites that `xrefs.py`, `vtable.py calls` and the DX scripts report:
 
 ```bash
 # Arguments of one call site. At a call instruction the arguments are already
@@ -246,7 +246,7 @@ python -m livetools collect 0x4012AB 0x4015C0 --probe \
 
 The addresses are function entries, as for `trace`. If one of them is a `call` instruction the whole command is refused before anything is hooked. With `--probe` every address is an instruction probe instead (see `trace`), and the records have no `caller` and no `leave`.
 
-The **fence** concept: `--fence ADDR` counts an interval each time ADDR is reached, for example the game's call to DX Present or the entry of a per-frame function. A fence is a probe, so ADDR may be any instruction. Every trace record includes the current interval ID. Enables per-frame analysis, per-N-calls partitioning, and cross-function correlation.
+The **fence** concept: `--fence ADDR` counts an interval each time ADDR is reached, for example the game's call to DX Present or the entry of a per-frame function. A fence is a probe, with the same limits on ADDR. Every trace record includes the current interval ID. Enables per-frame analysis, per-N-calls partitioning, and cross-function correlation.
 
 Output: JSONL in `patches/<exe_name>/traces/` by default (gitignored). The output file is opened before anything is hooked, so a path that cannot be written is an error that leaves the target untouched, and the hooks are removed when collecting fails part-way.
 
@@ -535,7 +535,7 @@ python -m livetools analyze scene.jsonl --export-csv scene.csv
    - **One call site:** `trace <call_site> --probe` on the `call [reg+offset]` or `call <addr>` instruction in the game's code, found with `xrefs.py`, `vtable.py calls` or the DX scripts. At a call instruction the arguments are already pushed: `[esp]` is `this` and `[esp+4]` the first declared argument (x86). A probe records no return value.
    - **Every caller:** hook the entry of the method the game actually calls, read from the device vtable at runtime with three pointer reads (x86; each prints `As ptr: [-> 0x...]`): `mem read <dev_global> 4 --as ptr` gives the device object, where `<dev_global>` is the address of the game's global `IDirect3DDevice9*` variable (the same address `dipcnt on` takes); `mem read <device> 4 --as ptr` gives its vtable; `mem read <vtable + slot*4> 4 --as ptr` gives the entry. At an entry `[esp+4]` is `this` and `[esp+8]` the first declared argument. Each record's `caller` is the return address, so group or filter by `caller` to isolate one call site.
 
-   Breakpoints (`bp add`) and the `collect --fence` address may sit on any instruction.
+   A breakpoint (`bp add`) may sit on any instruction; the `collect --fence` address is a probe and has a probe's limits.
 
 10. **Zero hits means something is wrong — diagnose, don't give up.** If trace/collect returns 0 samples: (a) Ask the user: is the game window focused and actively rendering? (b) Verify the address: `disasm <addr>` in livetools — confirm real code exists there. (c) Try a known-hot address: `dipcnt callers 10` lists return addresses of confirmed active call sites; trace the entry of the function containing one of them (not the return address itself) to prove the hook pipeline works. (d) Only after all three pass should you reconsider whether the original address is actually called during gameplay.
 
