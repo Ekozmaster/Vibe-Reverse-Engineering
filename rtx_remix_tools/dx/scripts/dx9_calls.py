@@ -106,6 +106,11 @@ def scan_vtable_mov(text_data, text_va, vtable_offset, interface=DEVICE):
     and when that call is not shown to be a call of another method (see
     _is_com_method_call).
 
+    A method pointer kept in a register that calls preserve serves several
+    calls. The load is the site of the first; each later one is a site of
+    its own, at its call instruction, kept unless its own arguments show
+    another method.
+
     Args:
         interface: Declared parameter count by vtable offset of the interface
             whose method is sought.
@@ -117,9 +122,14 @@ def scan_vtable_mov(text_data, text_va, vtable_offset, interface=DEVICE):
     for mod_bits, displacement, bases in _displacement_encodings(vtable_offset):
         description_by_modrm = {mod_bits | (dst_idx << 3) | src_idx: f"mov {dst_name}, [{src_name}+0x{vtable_offset:03X}]"
                                 for src_idx, src_name in bases.items() for dst_idx, dst_name in _GP_REGS.items()}
-        results.extend((va, description_by_modrm[modrm])
-                       for va, modrm in _find_modrm(text_data, text_va, 0x8B, description_by_modrm, displacement)
-                       if _is_com_method_call(text_data, text_va, va, param_count))
+        for va, modrm in _find_modrm(text_data, text_va, 0x8B, description_by_modrm, displacement):
+            if not _is_com_method_call(text_data, text_va, va, param_count):
+                continue
+            load = description_by_modrm[modrm]
+            results.append((va, load))
+            results.extend((call.address, f"call {call.op_str} ({load} at 0x{va:08X})")
+                           for call in _later_calls(text_data, text_va, va)
+                           if _is_com_method_call(text_data, text_va, call.address, param_count))
     results.sort()
     return results
 
@@ -173,7 +183,7 @@ _ENCLOSING_REGISTER = {part: whole for whole, parts in {
     x86.X86_REG_ESI: (x86.X86_REG_SI,),
     x86.X86_REG_EDI: (x86.X86_REG_DI,),
 }.items() for part in parts}
-_LOOKAHEAD = 64         # bytes after a method-pointer load searched for the call through it
+_LOOKAHEAD = 64         # bytes after a method-pointer load, and after each call through it, searched for the next
 
 _END_GROUPS = (CS_GRP_RET, CS_GRP_INT, CS_GRP_IRET)
 
@@ -256,9 +266,9 @@ def _instructions_before_call(text_data, text_va, site_va):
 
     The hit is either the call itself, or a load of the method pointer into a
     register that is then called; the load and what runs between it and the
-    call are part of the list. The last instruction ends where the call
-    starts. None when the hit is not an instruction, or leads to no call (a
-    field that happens to sit at the method's offset).
+    first call through it are part of the list. The last instruction ends
+    where the call starts. None when the hit is not an instruction, or leads
+    to no call (a field that happens to sit at the method's offset).
     """
     path = _path_to_call(text_data, text_va, site_va)
     if path is None:
@@ -273,40 +283,73 @@ def _instructions_before_call(text_data, text_va, site_va):
 def _path_to_call(text_data, text_va, site_va):
     """Instructions from *site_va* up to the call it leads to, the call left out.
 
-    Empty when the site is the call. None when it is neither a call nor a
-    load of a register that the code then calls through, before an
-    unconditional jump or return and before the register is overwritten.
-    A conditional jump is passed by its fall-through: compilers often test
-    something between loading a method and calling it. Another call is passed
-    only when the method sits in ebx, esi, edi or ebp, which every x86
-    calling convention preserves; it may overwrite eax, ecx and edx.
+    Empty when the site is a call. None when it is neither a call nor a load
+    of a register that the code then calls through (see _calls_through).
     """
-    site_off = site_va - text_va
-    ahead = _decoder.disasm(text_data[site_off:site_off + _LOOKAHEAD], site_va)
-    site = next(ahead, None)
+    site = _site_instruction(text_data, text_va, site_va)
     if site is None:
         return None
     if site.id == x86.X86_INS_CALL:
         return []
     if site.id != x86.X86_INS_MOV or site.operands[0].type != x86.X86_OP_REG:
         return None
+    first = next(_calls_through(text_data, text_va, site), None)
+    return None if first is None else first[1]
 
-    method_reg = site.operands[0].reg
-    path = [site]
-    for insn in ahead:
-        flow = _flow(insn)
-        if flow is _Flow.CALL:
-            target = insn.operands[0]
-            if target.type == x86.X86_OP_REG and target.reg == method_reg:
-                return path
-            if method_reg not in _CALLEE_SAVED:
-                return None
-        if flow is _Flow.END:
-            return None
-        if _writes(insn, method_reg):
-            return None
-        path.append(insn)
-    return None
+
+def _later_calls(text_data, text_va, load_va):
+    """The calls through the register the load at *load_va* sets that follow the first one."""
+    calls = _calls_through(text_data, text_va, _site_instruction(text_data, text_va, load_va))
+    next(calls)
+    return [call for call, _path in calls]
+
+
+def _site_instruction(text_data, text_va, site_va):
+    """The instruction at a scan hit, None when the bytes there are not one."""
+    site_off = site_va - text_va
+    return next(_decoder.disasm(text_data[site_off:site_off + _MAX_INSN], site_va, 1), None)
+
+
+def _calls_through(text_data, text_va, load):
+    """Each call through the register *load* sets, in turn, while the register still holds what was loaded.
+
+    The search ends at an unconditional jump or a return, where the register
+    is written, and _LOOKAHEAD bytes after the load or the last call found.
+    A conditional jump is passed by its fall-through: compilers often test
+    something between loading a method and calling it. A call, the sought
+    one included, is passed only when the method sits in ebx, esi, edi or
+    ebp, which every x86 calling convention preserves; it may overwrite eax,
+    ecx and edx.
+
+    Yields:
+        (call instruction, instructions from *load* up to it).
+    """
+    method_reg = load.operands[0].reg
+    path = [load]
+    start = load.address + load.size - text_va
+    end = load.address - text_va + _LOOKAHEAD
+    while True:
+        call = None
+        for insn in _decoder.disasm(text_data[start:end], text_va + start):
+            flow = _flow(insn)
+            if flow is _Flow.CALL:
+                target = insn.operands[0]
+                if target.type == x86.X86_OP_REG and target.reg == method_reg:
+                    call = insn
+                    break
+                if method_reg not in _CALLEE_SAVED:
+                    return
+            if flow is _Flow.END or _writes(insn, method_reg):
+                return
+            path.append(insn)
+        if call is None:
+            return
+        yield call, list(path)
+        if method_reg not in _CALLEE_SAVED:
+            return
+        path.append(call)
+        start = call.address + call.size - text_va
+        end = start + _LOOKAHEAD
 
 
 def _stack_arg(insn, operand, source):
@@ -360,20 +403,25 @@ def _jump_targets(text_data, text_va):
     return frozenset(targets)
 
 
+class _WalkEnd(enum.Enum):
+    """Where the walk back from a call stopped, which decides what the slots it left unwritten can hold."""
+    SETTLED = enum.auto()   # every slot asked for was written
+    ENTRY = enum.auto()     # the entry of the code (after a ret, a jmp or int3 padding): nothing older exists
+    RESERVED = enum.auto()  # a reservation of stack space that covers an unwritten slot: nothing older is in it
+    CALL = enum.auto()      # an earlier call: how many of the dwords pushed before it are left is not known
+    UNKNOWN = enum.auto()   # a join, a change of esp or a store the walk cannot follow, or the instructions ran out
+
+
 class _StackWalk(NamedTuple):
     """What the walk back from a call found on the stack.
 
     Attributes:
         slots: Slot -> the StackArg written there, or None for a write whose
             dword the walk cannot read. Only slots the walk saw written.
-        bounded: The walk ended where nothing older can be on the stack for
-            the call: at an earlier call, at a change of esp it cannot follow,
-            or at the entry of the code (after a ret, a jmp or int3 padding).
-            False when it ended at a join, an indexed store or the start of
-            the instructions it was given, or once every slot was written.
+        end: Where the walk stopped.
     """
     slots: dict
-    bounded: bool
+    end: _WalkEnd
 
 
 def _stack_args(insns, count, jump_targets):
@@ -393,22 +441,29 @@ def _walk_stack(insns, count, jump_targets):
     fstp) settles its slot as None, so an older write to that slot is never
     taken for it. An add or sub of a constant to esp and a pop shift the
     slots that older writes land in, and a conditional jump is passed by its
-    fall-through. The walk ends at anything else that moves the stack pointer
-    or transfers control, at a store whose address depends on a register,
-    and before an instruction followed by an address in *jump_targets*:
-    another path joins there, and what it put on the stack is not in front
-    of us.
+    fall-through.
+
+    An earlier call is passed only when the top slot is written and the
+    caller cleans up after the call (see _caller_cleans_up): the callee then
+    left the stack as it found it. Any other callee may have taken its
+    arguments off the stack or left them, so the slots older writes land in
+    are not known and the walk ends there.
+    It also ends at any other change of esp, at a store whose address
+    depends on a register, and before an instruction followed by an address
+    in *jump_targets*: another path joins there, and what it put on the
+    stack is not in front of us.
 
     Returns:
         _StackWalk.
     """
     slots = {}
     pushed = 0              # dwords pushed between this point and the end
-    for insn in reversed(insns):
+    for index in range(len(insns) - 1, -1, -1):
+        insn = insns[index]
         if all(slot in slots for slot in range(count)):
-            return _StackWalk(slots, bounded=False)
+            return _StackWalk(slots, _WalkEnd.SETTLED)
         if _joined_after(insn, jump_targets):
-            return _StackWalk(slots, bounded=False)
+            return _StackWalk(slots, _WalkEnd.UNKNOWN)
         if insn.id == x86.X86_INS_PUSH:
             slots.setdefault(pushed, _stack_arg(insn, insn.operands[0], insn.op_str))
             pushed += 1
@@ -416,20 +471,40 @@ def _walk_stack(insns, count, jump_targets):
         flow = _flow(insn)
         if flow is _Flow.CONDITIONAL:
             continue    # the call is on its fall-through path
-        if flow is not _Flow.STRAIGHT:
-            return _StackWalk(slots, bounded=True)
+        if flow is _Flow.CALL:
+            if 0 not in slots or not _caller_cleans_up(insns, index):
+                return _StackWalk(slots, _WalkEnd.CALL)
+            continue
+        if flow is _Flow.END:
+            return _StackWalk(slots, _WalkEnd.ENTRY)
         if _writes(insn, x86.X86_REG_ESP):
             popped = _dwords_released(insn)
             if popped is None:
-                return _StackWalk(slots, bounded=True)
+                return _StackWalk(slots, _WalkEnd.UNKNOWN)
             pushed -= popped
+            # Older writes land at slot `pushed` and above: a slot below it
+            # that this reservation left unwritten stays unwritten.
+            if not all(slot in slots for slot in range(min(pushed, count))):
+                return _StackWalk(slots, _WalkEnd.RESERVED)
             continue
         stores = _stack_stores(insn)
         if any(store.mem.index != x86.X86_REG_INVALID for store in stores):
-            return _StackWalk(slots, bounded=False)
+            return _StackWalk(slots, _WalkEnd.UNKNOWN)
         for store in stores:
             _settle_store(slots, pushed, insn, store)
-    return _StackWalk(slots, bounded=False)
+    return _StackWalk(slots, _WalkEnd.UNKNOWN)
+
+
+def _caller_cleans_up(insns, call_index):
+    """Whether the call at insns[call_index] is followed at once by add esp, imm.
+
+    That is how the caller of a cdecl function takes the arguments off the
+    stack, so the function itself returned with esp where it found it.
+    """
+    if call_index + 1 == len(insns):
+        return False
+    after = insns[call_index + 1]
+    return after.id == x86.X86_INS_ADD and (_dwords_released(after) or 0) > 0
 
 
 def _dwords_released(insn):
@@ -473,16 +548,19 @@ def _settle_store(slots, pushed, insn, store):
 # Calls of other methods
 # ═══════════════════════════════════════════════════════════════════════
 #
-# A call through the sought slot may belong to another class. Two things the
-# code in front of the call can show drop it; when it shows neither, the call
+# A call through the sought slot may belong to another class. Four things
+# the code in front of the call can show drop it; when it shows none, the call
 # is kept.
 #
 # Argument count: a stdcall method finds its parameters and `this` on the
 # stack, so the code must have put that many dwords there. When the walk back
-# reaches a point nothing older can come from (an earlier call, a change of
-# esp it cannot follow, the entry of the code) with fewer slots written, the
-# call takes fewer arguments than the method. More slots never drop a call:
-# an outer call's arguments precede an inner one's (f(g(y), x) is push x /
+# reaches a point nothing older can come from (the entry of the code, or a
+# reservation of stack space the code then leaves partly unwritten) with
+# fewer slots written, the call takes fewer arguments than the method. An
+# earlier call is no such point: what was pushed before it is still there
+# unless the callee took it off (dev->SetRenderState(State(), value) is
+# push value / call State / push eax). More slots never drop a call: an
+# outer call's arguments precede an inner one's (f(g(y), x) is push x /
 # push y / call g).
 #
 # COM `this`: `this` is the last thing put on the stack, and it is the object
@@ -492,6 +570,16 @@ def _settle_store(slots, pushed, insn, store):
 # the code shows that the top dword differs from the vtable's object, or that
 # ecx holds the object. A COM call on another interface that shares the slot
 # passes this check.
+#
+# No `this`: an argument that is itself a call is evaluated before `this` is
+# pushed, so a COM call writes the top of the stack after every call made on
+# the way to it. A call reached with nothing put on the stack since is a
+# __thiscall without stack parameters (mov ecx, obj / mov eax, [ecx] /
+# call [eax+X]).
+#
+# Register argument: a stdcall method takes nothing in registers, and no call
+# preserves ecx. Code that loads ecx and reads it nowhere before the call
+# loads it for the callee (mov ecx, obj / push eax / call [edx+X]).
 
 # What _register_value cannot follow. _holds_object treats it as undecided.
 _UNKNOWN = ("unknown",)
@@ -508,15 +596,45 @@ def _is_com_method_call(text_data, text_va, site_va, param_count):
     if insns is None:
         return False
     jump_targets = _jump_targets(text_data, text_va)
-    if param_count is not None and _passes_too_few_arguments(insns, param_count, jump_targets):
+    walk = _walk_stack(insns, (param_count or 0) + 1, jump_targets)
+    if _pushes_no_this(walk):
+        return False
+    if param_count is not None and _passes_too_few_arguments(walk, param_count):
+        return False
+    call = _site_instruction(text_data, text_va, insns[-1].address + insns[-1].size if insns else site_va)
+    if _loads_ecx_for_the_callee(insns, call, jump_targets):
         return False
     return not _passes_another_this(text_data, text_va, site_va, insns)
 
 
-def _passes_too_few_arguments(insns, param_count, jump_targets):
+def _pushes_no_this(walk):
+    """Whether nothing was put on top of the stack between the call before and this one."""
+    return walk.end is _WalkEnd.CALL and 0 not in walk.slots
+
+
+def _passes_too_few_arguments(walk, param_count):
     """Whether the stack is shown to hold fewer than *param_count* + 1 dwords at the call."""
-    walk = _walk_stack(insns, param_count + 1, jump_targets)
-    return walk.bounded and not all(slot in walk.slots for slot in range(param_count + 1))
+    return (walk.end in (_WalkEnd.ENTRY, _WalkEnd.RESERVED)
+            and not all(slot in walk.slots for slot in range(param_count + 1)))
+
+
+def _loads_ecx_for_the_callee(insns, call, jump_targets):
+    """Whether the code loads ecx and only *call* can read what it loaded.
+
+    Nothing between the load and the call reads ecx, and no conditional
+    jump lies between them that could take the value elsewhere. Only a mov
+    or lea into ecx counts as a load: a pop or a string instruction writes
+    it by the way.
+    """
+    first, _entered = _straight_line_start(insns, len(insns), jump_targets)
+    for index in range(len(insns) - 1, first - 1, -1):
+        insn = insns[index]
+        if _flow(insn) is not _Flow.STRAIGHT:
+            return False
+        if _writes(insn, x86.X86_REG_ECX):
+            return (insn.id in (x86.X86_INS_MOV, x86.X86_INS_LEA) and insn.operands[0].type == x86.X86_OP_REG
+                    and not any(_reads(later, x86.X86_REG_ECX) for later in (*insns[index + 1:], call)))
+    return False
 
 
 def _passes_another_this(text_data, text_va, site_va, insns):
@@ -531,8 +649,11 @@ def _passes_another_this(text_data, text_va, site_va, insns):
     [this] = _stack_args(insns, 1, jump_targets)
     if this is None:
         return False
+    vtable_reg = _vtable_register(text_data, text_va, site_va)
+    if vtable_reg is None:
+        return False
     site_index = next((k for k, insn in enumerate(insns) if insn.address == site_va), len(insns))
-    load_index = _last_write(insns, site_index, _vtable_register(text_data, text_va, site_va), jump_targets)
+    load_index = _last_write(insns, site_index, vtable_reg, jump_targets)
     if load_index is None:
         return False
     obj = _object_of_vtable_load(insns[load_index])
@@ -553,10 +674,14 @@ def _passes_another_this(text_data, text_va, site_va, insns):
 
 
 def _vtable_register(text_data, text_va, site_va):
-    """The register a scan hit reads the method pointer through: reg in call [reg+X] or mov r, [reg+X]."""
-    site = next(_decoder.disasm(text_data[site_va - text_va:site_va - text_va + _MAX_INSN], site_va))
-    [method_slot] = [op for op in site.operands if op.type == x86.X86_OP_MEM]
-    return method_slot.mem.base
+    """The register a scan hit reads the method pointer through: reg in call [reg+X] or mov r, [reg+X].
+
+    None for a later call through a loaded method pointer (see scan_vtable_mov):
+    the vtable was read before the calls made through the pointer since.
+    """
+    site = _site_instruction(text_data, text_va, site_va)
+    method_slots = [op for op in site.operands if op.type == x86.X86_OP_MEM]
+    return method_slots[0].mem.base if method_slots else None
 
 
 def _holds_object(insns, load_index, obj, index, operand, jump_targets):
@@ -622,6 +747,12 @@ def _writes(insn, reg):
     """Whether *insn* writes *reg*, or any part of the 32-bit register that holds it."""
     whole = _ENCLOSING_REGISTER.get(reg, reg)
     return any(_ENCLOSING_REGISTER.get(written, written) == whole for written in insn.regs_access()[1])
+
+
+def _reads(insn, reg):
+    """Whether *insn* reads *reg* or any part of it, as an operand or in an address."""
+    whole = _ENCLOSING_REGISTER.get(reg, reg)
+    return any(_ENCLOSING_REGISTER.get(read, read) == whole for read in insn.regs_access()[0])
 
 
 def _last_write(insns, index, reg, jump_targets):
@@ -815,16 +946,19 @@ def arg_text(arg):
 DEVICE_LOW_SLOT_END = 0x80      # vtable offsets below this are shared with most classes
 
 # A place counts as the device's when the hits on objects read from it call
-# at least half as many different device methods at and above vtable+0x80 as
-# the place with the most, and at least _MIN_DEVICE_METHODS. The device is the
-# object a D3D9 game calls by far the most different methods of up there
-# (render states, textures, transforms, draws, shaders: 25 or more in a full
-# renderer); the other objects that reach those slots, an ID3DXEffect
-# (SetFloatArray at +0x80, SetVector at +0x88, SetMatrix at +0x98) or the
-# game's own large classes, are called through fewer than ten of them. The
-# floor holds them out when the device itself lives where it cannot be
-# learned, and the half keeps a busy effect out beside a device global.
+# one of the draw methods, at least _MIN_DEVICE_METHODS different device
+# methods at and above vtable+0x80, and at least half as many of them as the
+# place with the most. The device is the object a D3D9 game calls the most
+# different methods of up there (render states, textures, transforms, draws,
+# shaders: 25 or more in a full renderer). The busiest other object is an
+# ID3DXEffect, called through a dozen or more slots from +0x80 on (SetVector
+# at +0x88, SetMatrixTranspose at +0xB0, SetTexture at +0xD0), which can be
+# half of the device's; its vtable ends at +0x138, before the draws. The
+# floor and the half hold out a class of the game's own whose vtable reaches
+# the draw slots.
 _MIN_DEVICE_METHODS = 12
+_DRAW_METHODS = frozenset(spec.slot * 4 for spec in D3D9_METHODS.values() if spec.name in (
+    "DrawPrimitive", "DrawIndexedPrimitive", "DrawPrimitiveUP", "DrawIndexedPrimitiveUP"))
 
 _PROVENANCE_REACH = 512         # bytes before a hit that the object's origin is followed back
 _MAX_FIELD_HOPS = 2             # [[[g]+a]+b]: fields followed from the global to the object
@@ -845,7 +979,7 @@ def _instructions_back_from(text_data, text_va, site_va):
         end = start
 
 
-def _global_load_chain(back, reg, jump_targets):
+def _global_load_chain(back, reg, jump_targets, max_loads):
     """Follow *reg* back through register copies and loads from [base+disp] to the global it was read from.
 
     Passes a call when *reg* is one it preserves, and a conditional jump by
@@ -858,8 +992,7 @@ def _global_load_chain(back, reg, jump_targets):
         (global address, [displacement of each load, outermost first]), or
         None when the chain does not reach a global: it meets a join, a
         jump, a return, a call that clobbers the register, any write other
-        than a mov, a load from the stack, or more than _MAX_FIELD_HOPS
-        fields.
+        than a mov, a load from the stack, or more than *max_loads* loads.
     """
     displacements = []
     for insn in back:
@@ -885,7 +1018,7 @@ def _global_load_chain(back, reg, jump_targets):
             return None
         if mem.base == x86.X86_REG_INVALID:
             return mem.disp & 0xFFFFFFFF, displacements
-        if mem.base in (x86.X86_REG_ESP, x86.X86_REG_EBP) or len(displacements) > _MAX_FIELD_HOPS:
+        if mem.base in (x86.X86_REG_ESP, x86.X86_REG_EBP) or len(displacements) == max_loads:
             return None
         displacements.append(mem.disp)
         reg = mem.base
@@ -897,7 +1030,8 @@ def object_origin(text_data, text_va, site_va):
 
     Follows the register the method pointer is read through back to the
     load of the vtable, mov vt, [obj], and obj back through register copies
-    and loads, across calls for a register they preserve.
+    and loads, across calls for a register they preserve. A later call
+    through a loaded method pointer is followed back to that load first.
 
     Args:
         site_va: A hit of scan_vtable_calls or scan_vtable_mov.
@@ -910,10 +1044,18 @@ def object_origin(text_data, text_va, site_va):
         object.
     """
     back = _instructions_back_from(text_data, text_va, site_va)
-    chain = _global_load_chain(back, _vtable_register(text_data, text_va, site_va), _jump_targets(text_data, text_va))
+    jump_targets = _jump_targets(text_data, text_va)
+    vtable_reg = _vtable_register(text_data, text_va, site_va)
+    if vtable_reg is None:
+        method_reg = _site_instruction(text_data, text_va, site_va).operands[0].reg
+        chain = _global_load_chain(back, method_reg, jump_targets, _MAX_FIELD_HOPS + 2)
+    else:
+        chain = _global_load_chain(back, vtable_reg, jump_targets, _MAX_FIELD_HOPS + 1)
     if chain is None:
         return None
     address, displacements = chain
+    if vtable_reg is None:
+        displacements = displacements[1:]   # the first is the load of the method pointer out of the vtable
     if not displacements or displacements[0] != 0:
         return None
     location = f"[0x{address:08X}]"
@@ -929,7 +1071,7 @@ def device_origins(text_data, text_va):
 
     Scans every device method from vtable+0x80 on, once per code section,
     and keeps the object locations (see object_origin) that the hits on them
-    call enough different methods of (see _MIN_DEVICE_METHODS).
+    draw with and call enough different methods of (see _MIN_DEVICE_METHODS).
 
     Returns:
         frozenset of locations, empty when none qualifies: the game reaches
@@ -949,7 +1091,8 @@ def device_origins(text_data, text_va):
         return frozenset()
     most = max(len(methods) for methods in methods_by_origin.values())
     needed = max(_MIN_DEVICE_METHODS, (most + 1) // 2)
-    return frozenset(origin for origin, methods in methods_by_origin.items() if len(methods) >= needed)
+    return frozenset(origin for origin, methods in methods_by_origin.items()
+                     if len(methods) >= needed and methods & _DRAW_METHODS)
 
 
 class DeviceHits(NamedTuple):

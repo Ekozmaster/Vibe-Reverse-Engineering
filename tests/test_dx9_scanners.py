@@ -27,7 +27,7 @@ from proxy_template import ini_section_in, keys_of, keys_the_proxy_reads
 PRESENT, CREATE_TEXTURE, SET_TRANSFORM, SET_RENDER_STATE = 0x44, 0x5C, 0xB0, 0xE4
 CREATE_RENDER_TARGET, BEGIN_SCENE = 0x70, 0xA4
 CREATE_STATE_BLOCK, SET_TEXTURE, SET_TEXTURE_STAGE_STATE, SET_SAMPLER_STATE = 0xEC, 0x104, 0x10C, 0x114
-CREATE_VERTEX_DECLARATION, SET_FVF, CREATE_VERTEX_SHADER = 0x158, 0x164, 0x16C
+DRAW_PRIMITIVE, CREATE_VERTEX_DECLARATION, SET_FVF, CREATE_VERTEX_SHADER = 0x144, 0x158, 0x164, 0x16C
 SET_VS_CONSTANT_F, SET_PS_CONSTANT_F = 0x178, 0x1B4
 
 # D3DRENDERSTATETYPE
@@ -87,6 +87,7 @@ def known_calls(tmp_path_factory):
              push32(640), load_render_target, PUSH_ECX, call_eax)
     code.add("vertex_shader", device, PUSH_EAX, push32(shader_va), PUSH_ECX, call_method(CREATE_VERTEX_SHADER))
     code.add("begin_scene", device, PUSH_ECX, call_method(BEGIN_SCENE))
+    code.add("draw", device, push(2), push(0), push(4), PUSH_ECX, call_method(DRAW_PRIMITIVE))
     code.add("vertex_declaration", device, PUSH_EAX, push32(declaration_va), PUSH_ECX,
              call_method(CREATE_VERTEX_DECLARATION))
     path = write_pe32(tmp_path_factory.mktemp("dx") / "known_calls.exe", code.data)

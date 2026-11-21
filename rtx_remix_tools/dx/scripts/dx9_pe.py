@@ -89,11 +89,13 @@ def load_binary(path):
     """Read binary + parse PE. Returns (data, image_base, sections).
 
     Exits with a message for a file these scanners cannot read: one that is
-    not a PE, or a 64-bit one.
+    missing or cannot be opened, is not a PE, or is a 64-bit one.
     """
-    data = Path(path).read_bytes()
     try:
+        data = Path(path).read_bytes()
         image_base, sections = parse_pe(data)
+    except OSError as exc:
+        sys.exit(f"ERROR: {path}: {exc.strerror}")
     except ValueError as exc:
         sys.exit(f"ERROR: {path}: {exc}")
     return data, image_base, sections

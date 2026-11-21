@@ -62,6 +62,10 @@ class TestShippedTracer:
         dll = (Path(cli.__file__).parent / "bin" / "d3d9.dll").read_bytes()
         assert b"frames=" in dll
 
+    def test_reports_a_capture_file_it_cannot_open(self):
+        dll = (Path(cli.__file__).parent / "bin" / "d3d9.dll").read_bytes()
+        assert b"0 0 failed %s" in dll
+
 
 class TestNoTracerAnswers:
     @pytest.fixture
@@ -167,6 +171,48 @@ class TestTracerAnswers:
         assert "Capture complete" not in out
         assert "took the trigger but reported no progress" in out
         assert time.time() - started < 1.2    # well inside the 1.5 s timeout
+
+
+class TestTracerCannotStartTheCapture:
+    REASON = r"cannot open C:\Games\My Game\dxtrace_frame.jsonl: Permission denied"
+
+    def test_reason_the_tracer_gives_is_reported_at_once(self, tmp_path, capsys):
+        _tracer(tmp_path, progress=[f"0 0 failed {self.REASON}\n"], capture=None)
+        started = time.time()
+        status = _trigger(tmp_path)
+        out = capsys.readouterr().out
+        assert status == 1
+        assert f"[error] the tracer could not start the capture: {self.REASON}\n" in out
+        assert "predates" not in out
+        assert "Capture complete" not in out
+        assert time.time() - started < 1.2    # well inside the 1.5 s timeout
+
+    def test_reason_read_while_the_tracer_is_still_writing_it_is_not_reported_cut_short(self, tmp_path, capsys):
+        _tracer(tmp_path, progress=["0 0 failed cannot op", f"0 0 failed {self.REASON}\n"], capture=None, pause=0.3)
+        assert _trigger(tmp_path) == 1
+        assert f"could not start the capture: {self.REASON}\n" in capsys.readouterr().out
+
+    def test_reason_with_a_path_outside_utf8_is_still_reported(self, tmp_path, capsys):
+        def answer():
+            trigger = tmp_path / "dxtrace_capture.trigger"
+            while not trigger.exists():
+                time.sleep(0.005)
+            trigger.unlink()
+            (tmp_path / "dxtrace_progress.txt").write_bytes(
+                b"0 0 failed cannot open C:/Jeux/\xe9t\xe9.jsonl: Permission denied\n")
+
+        threading.Thread(target=answer, daemon=True).start()
+        assert _trigger(tmp_path) == 1
+        out = capsys.readouterr().out
+        assert "could not start the capture: cannot open C:/Jeux/" in out
+        assert "Permission denied" in out
+
+    def test_silent_tracer_is_not_said_to_be_out_of_date_for_certain(self, tmp_path, capsys):
+        _tracer(tmp_path)
+        _trigger(tmp_path)
+        out = capsys.readouterr().out
+        assert "could not write" in out
+        assert "dxtrace_proxy.log" in out
 
 
 class TestProxyTracerAnswers:

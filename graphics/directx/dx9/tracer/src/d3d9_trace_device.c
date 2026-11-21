@@ -11,6 +11,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -407,13 +408,23 @@ static void trace_on_present(void);
 
 /* "<frame> <calls>" while capturing. The last write adds " done", once every
  * captured call is in the JSONL file: "trigger --wait" takes that word for
- * the capture being complete. The file is rewritten in place rather than
+ * the capture being complete. A capture that cannot start is reported as
+ * "0 0 failed <reason>" instead. The file is rewritten in place rather than
  * replaced by a rename: a reader holding it open blocks a rename, which would
  * lose the final line, while a half-written read is retried by the reader. */
 static void write_progress(int done) {
     FILE *pf = fopen(g_progressPath, "w");
     if (pf) {
         fprintf(pf, done ? "%d %d done\n" : "%d %d\n", g_currentFrame, g_seq);
+        fclose(pf);
+    }
+}
+
+/* reason: one line of text, which "trigger --wait" prints as it stands */
+static void write_capture_failure(const char *reason) {
+    FILE *pf = fopen(g_progressPath, "w");
+    if (pf) {
+        fprintf(pf, "0 0 failed %s\n", reason);
         fclose(pf);
     }
 }
@@ -517,28 +528,47 @@ static int trigger_frames(void) {
     return frames >= 1 ? frames : g_cfgCaptureFrames;
 }
 
+static void report_capture_file_error(int open_errno) {
+    char reason[MAX_PATH + 128];
+    _snprintf(reason, sizeof(reason), "cannot open %s: %s",
+              g_jsonlPath, strerror(open_errno));
+    reason[sizeof(reason) - 1] = 0;
+    log_str("ERROR: capture not started, ");
+    log_str(reason);
+    log_str("\r\n");
+    write_capture_failure(reason);
+}
+
+/* Takes the trigger file whether or not the capture can start: left in place,
+ * it would be retried on every Present. */
+static void start_capture_on_trigger(void) {
+    int frames = trigger_frames();
+    int open_errno = 0;
+
+    /* The capture file exists before the trigger goes: "trigger --wait"
+     * takes a missing trigger for a capture under way */
+    if (!g_jsonlFile) {
+        g_jsonlFile = fopen(g_jsonlPath, "w");
+        open_errno = errno;
+    }
+    DeleteFileA(g_triggerPath);
+    if (!g_jsonlFile) {
+        report_capture_file_error(open_errno);
+        return;
+    }
+    g_capturing = 1;
+    g_currentFrame = 0;
+    g_seq = 0;
+    g_frameTarget = frames;
+    init_code_ranges(); /* refresh: DLLs may have loaded since init */
+    log_str("=== CAPTURE STARTED ===\r\n");
+    write_progress(0);
+}
+
 static void trace_on_present(void) {
     if (!g_capturing) {
-        DWORD attr = GetFileAttributesA(g_triggerPath);
-        if (attr != INVALID_FILE_ATTRIBUTES) {
-            int frames = trigger_frames();
-
-            /* The capture file exists before the trigger goes: "trigger --wait"
-             * takes a missing trigger for a capture under way */
-            if (!g_jsonlFile) {
-                g_jsonlFile = fopen(g_jsonlPath, "w");
-            }
-            DeleteFileA(g_triggerPath);
-            if (g_jsonlFile) {
-                g_capturing = 1;
-                g_currentFrame = 0;
-                g_seq = 0;
-                g_frameTarget = frames;
-                init_code_ranges(); /* refresh: DLLs may have loaded since init */
-                log_str("=== CAPTURE STARTED ===\r\n");
-                write_progress(0);
-            }
-        }
+        if (GetFileAttributesA(g_triggerPath) != INVALID_FILE_ATTRIBUTES)
+            start_capture_on_trigger();
         return;
     }
 

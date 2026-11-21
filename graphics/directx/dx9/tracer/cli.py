@@ -59,25 +59,41 @@ _PROGRESS_GRACE_SECONDS = 2.0
 
 
 class _Progress(NamedTuple):
-    """One line of the tracer's progress file: "<frame> <calls>", then " done" on the last.
+    """The one line of the tracer's progress file.
+
+    "<frame> <calls>" while capturing, then " done" on the last write; or
+    "0 0 failed <reason>" from a tracer that could not start the capture.
 
     Attributes:
         frame: Frames the capture has finished.
         calls: Calls it has recorded.
         done: The capture is over and every recorded call is in the JSONL file.
+        failure: Why the tracer could not start the capture; None when it could.
     """
     frame: int
     calls: int
-    done: bool
+    done: bool = False
+    failure: str | None = None
 
 
 def _read_progress(path: Path) -> _Progress | None:
-    """The tracer's progress; None while there is nothing to read."""
+    """The tracer's progress; None while there is no whole line to read.
+
+    The tracer rewrites the file in place, so a line without its newline is
+    one it is still writing.
+    """
     try:
-        frame, calls, *rest = path.read_text().split()
-        return _Progress(int(frame), int(calls), rest == ["done"])
+        # A failure names a path, in the ANSI code page of the game's machine
+        line = path.read_text(errors="replace")
+        if not line.endswith("\n"):
+            return None
+        frame, calls, *outcome = line.split(maxsplit=3)
+        progress = _Progress(int(frame), int(calls))
     except (OSError, ValueError):
         return None
+    if outcome[:1] == ["failed"]:
+        return progress._replace(failure=" ".join(outcome[1:]).strip() or "no reason given")
+    return progress._replace(done=outcome == ["done"])
 
 
 def _frames_short(progress: _Progress, frames: int) -> str:
@@ -97,6 +113,8 @@ def _wait_for_capture(trigger_path: Path, progress_path: Path, frames: int) -> s
     while time.time() - start < _WAIT_TIMEOUT_SECONDS:
         time.sleep(_POLL_SECONDS)
         seen = _read_progress(progress_path)
+        if seen is not None and seen.failure is not None:
+            return f"the tracer could not start the capture: {seen.failure}"
         if seen is not None and seen != progress:
             progress = seen
             print(f"\r  [frame {seen.frame}] {seen.calls} calls captured ({time.time() - start:.1f}s)  ",
@@ -106,9 +124,11 @@ def _wait_for_capture(trigger_path: Path, progress_path: Path, frames: int) -> s
         if taken_at is None and not trigger_path.exists():
             taken_at = time.time()
         if taken_at is not None and progress is None and time.time() - taken_at > _PROGRESS_GRACE_SECONDS:
-            return (f"a tracer took the trigger but reported no progress. Most likely it predates progress reports: "
-                    f"copy the current graphics/directx/dx9/tracer/bin/d3d9.dll, or a current remix-comp-proxy "
-                    f"build, to {trigger_path.parent}")
+            return (f"a tracer took the trigger but reported no progress. Either it could not write "
+                    f"{progress_path} or start the capture (dxtrace_proxy.log, or the remix-comp-proxy log, "
+                    f"says which), or it predates progress reports: then copy the current "
+                    f"graphics/directx/dx9/tracer/bin/d3d9.dll, or a current remix-comp-proxy build, "
+                    f"to {trigger_path.parent}")
 
     if progress is None:
         return (f"no tracer took the trigger within {_WAIT_TIMEOUT_SECONDS:.0f}s. Is the game running, "
