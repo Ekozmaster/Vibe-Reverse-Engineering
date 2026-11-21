@@ -17,7 +17,9 @@ import pytest
 # Ensure retools is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
 
-from pe_fakes import CODE_VA, binary_from_sections, binary_over, pe_image  # noqa: E402
+from pe_fakes import (  # noqa: E402
+    CODE_VA, DATA_RVA, IMAGE_BASE64, TEXT_RVA, binary_from_sections, binary_over, fake_section, pe_image,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -773,10 +775,10 @@ class TestScoring:
     def test_structural_score_order(self):
         from sigdb import SignatureDB
         db = SignatureDB(":memory:")
-        for name, calls, consts in (("none", 9, "0x9"), ("overlap", 2, "0x100,0x9"), ("exact", 2, "0x100,0x200")):
-            db.add_structural_sig(name=name, block_count=4, edge_count=5, call_count=calls,
-                                  mnemonic_hash=77, constants=consts)
-        assert [m.name for m in db.match_structural(4, 5, 2, 77, "0x100,0x200")] == ["exact", "overlap", "none"]
+        for source, calls, consts in (("none", 9, "0x9"), ("overlap", 2, "0x100,0x9"), ("exact", 2, "0x100,0x200")):
+            db.add_structural_sig(name="f", block_count=4, edge_count=5, call_count=calls,
+                                  mnemonic_hash=77, constants=consts, source=source)
+        assert [m.source for m in db.match_structural(4, 5, 2, 77, "0x100,0x200")] == ["exact", "overlap", "none"]
         assert db.match_structural(2, 1, 2, 77, "0x100,0x200") == []
 
     def test_identify_prefers_the_best_byte_match(self, tmp_path):
@@ -942,6 +944,7 @@ class TestToolchains:
     @pytest.mark.parametrize("label, versions", [
         ("msvc2008", {"9.0"}), ("msvc6.0", {"6.0"}), ("msvc2003_2005", {"7.1", "8.0"}),
         ("msvc4.2", {"4.2"}), ("msvc", set()), ("gcc", set()), ("", set()), ("msvc2005sp1", set()),
+        ("msvc14.0", {"14+"}), ("msvc14.29", {"14+"}), ("msvc12.0_14.1", {"12.0", "14+"}),
     ])
     def test_label_toolchains(self, label, versions):
         from sigdb import label_toolchains
@@ -957,6 +960,22 @@ class TestToolchains:
             (0x0001 << 16 | 0, 300),       # imports: no version
         ])
         assert msvc_toolchains(binary_from_sections(raw, [])) == {"9.0", "8.0", "11.0", "14+"}
+
+    def test_an_entry_with_an_unknown_build_adds_no_version(self):
+        from sigdb import msvc_toolchains
+        raw = _rich_stub([
+            (0x0084 << 16 | 21022, 652),   # VS2008 C++
+            (0x0096 << 16 | 20413, 3),     # a tool build the table lacks, as shipped games carry
+            (0x0001 << 16 | 0, 390),       # imports: no version
+        ])
+        assert msvc_toolchains(binary_from_sections(raw, [])) == {"9.0"}
+
+    def test_a_label_for_vs2015_or_later_matches_a_vs2015_image(self):
+        from sigdb import SignatureDB
+        db = SignatureDB(":memory:")
+        db.add_byte_sig(name="ucrt", pattern=b"\x55" * 32, mask=b"\xff" * 32, func_size=0,
+                        tail_crc=0, compiler="msvc14.0")
+        assert [m.name for m in db.match_bytes(b"\x55" * 32, 0, "", 0, frozenset({"14+"}))] == ["ucrt"]
 
     def test_sigs_from_absent_toolchains_are_skipped(self):
         from sigdb import SignatureDB
@@ -1190,6 +1209,12 @@ def read_only():
         os.chmod(p, stat.S_IREAD | stat.S_IWRITE)
 
 
+_OPENERS = {
+    "SignatureDB": lambda sigdb: sigdb.SignatureDB,
+    "open_existing": lambda sigdb: sigdb.SignatureDB.open_existing,
+}
+
+
 class TestSchemaMigrationSafety:
     def test_a_half_migrated_db_finishes_its_migration(self, tmp_path):
         from sigdb import SignatureDB, SCHEMA_VERSION
@@ -1201,19 +1226,21 @@ class TestSchemaMigrationSafety:
             ("old", 0, 0), ("new", 2, 7)]
         db.close()
 
-    def test_a_read_only_version_1_db_can_be_scanned(self, tmp_path, read_only):
-        from sigdb import SignatureDB
-        db = SignatureDB(read_only(_v1_db(str(tmp_path / "v1.db"))))
+    @pytest.mark.parametrize("opener", ["SignatureDB", "open_existing"])
+    def test_a_read_only_version_1_db_can_be_scanned(self, tmp_path, read_only, opener):
+        import sigdb
+        db = _OPENERS[opener](sigdb)(read_only(_v1_db(str(tmp_path / "v1.db"))))
         assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0)] == ["old"]
         db.close()
 
-    def test_a_read_only_current_db_can_be_scanned(self, tmp_path, read_only):
-        from sigdb import SignatureDB
+    @pytest.mark.parametrize("opener", ["SignatureDB", "open_existing"])
+    def test_a_read_only_current_db_can_be_scanned(self, tmp_path, read_only, opener):
+        import sigdb
         path = str(tmp_path / "v2.db")
-        db = SignatureDB(path)
+        db = sigdb.SignatureDB(path)
         db.add_byte_sig(name="f", pattern=b"\x55" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0)
         db.close()
-        db = SignatureDB(read_only(path))
+        db = _OPENERS[opener](sigdb)(read_only(path))
         assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0)] == ["f"]
         db.close()
 
@@ -1226,42 +1253,6 @@ class TestSchemaMigrationSafety:
         assert db._conn.execute("SELECT name, crc_len, crc16 FROM byte_sigs ORDER BY id").fetchall() == [
             ("old", 0, 0), ("_good", 2, 0xABCD)]
         db.close()
-
-
-class TestVs2015RichHeader:
-    def test_a_vs2015_image_is_14_plus_only(self):
-        from sigdb import msvc_toolchains
-        raw = _rich_stub([
-            (0x00FF << 16 | 23026, 1),     # cvtres 14.00
-            (0x0102 << 16 | 23026, 1),     # linker 14.00
-            (0x0104 << 16 | 23026, 20),    # utc1900 C
-            (0x0105 << 16 | 23026, 80),    # utc1900 C++
-            (0x0103 << 16 | 23026, 3),     # masm 14.00
-            (0x0001 << 16 | 0, 120),       # imports
-        ])
-        assert msvc_toolchains(binary_from_sections(raw, [])) == {"14+"}
-
-
-class TestReviewFixes:
-    def test_crc_span_stops_where_the_section_ends(self):
-        from sigdb import extract_flirt_crc, flirt_crc16
-        code = b"\x90" * 40
-        assert extract_flirt_crc(binary_over(code), CODE_VA, 100) == (8, flirt_crc16(code[32:]))
-
-    @pytest.mark.parametrize("line", [
-        "zz" + "90" * 31 + " 00 0000 0030 :0000 _f",
-        "90" * 32 + " 00 zzzz 0030 :0000 _f",
-        "90" * 32 + " 00 0000 00g0 :0000 _f",
-    ])
-    def test_a_pat_line_with_bad_hex_is_unparsed(self, line):
-        from sigdb import parse_pat_line
-        assert parse_pat_line(line) is None
-
-    def test_pat_prefix_bytes_past_a_short_function_are_wildcards(self):
-        from sigdb import parse_pat_line
-        sig = parse_pat_line("90" * 32 + " 00 0000 0010 :0000 _f")
-        assert sig.mask == b"\xff" * 16 + b"\0" * 16
-        assert sig.pattern == b"\x90" * 16 + b"\0" * 16
 
     def test_a_failed_migration_leaves_the_db_unmigrated(self, tmp_path):
         from sigdb import SignatureDB
@@ -1289,3 +1280,420 @@ class TestReviewFixes:
         assert [r[0] for r in db._conn.execute("SELECT name FROM byte_sigs ORDER BY id")] == [
             "old", "pending", "new"]
         db.close()
+
+
+class TestVs2015RichHeader:
+    def test_a_vs2015_image_is_14_plus_only(self):
+        from sigdb import msvc_toolchains
+        raw = _rich_stub([
+            (0x00FF << 16 | 23026, 1),     # cvtres 14.00
+            (0x0102 << 16 | 23026, 1),     # linker 14.00
+            (0x0104 << 16 | 23026, 20),    # utc1900 C
+            (0x0105 << 16 | 23026, 80),    # utc1900 C++
+            (0x0103 << 16 | 23026, 3),     # masm 14.00
+            (0x0001 << 16 | 0, 120),       # imports
+        ])
+        assert msvc_toolchains(binary_from_sections(raw, [])) == {"14+"}
+
+
+class TestCrcSpan:
+    """Which bytes after the prefix a build's FLIRT CRC16 covers."""
+
+    def _crc_len(self, tmp_path, insn):
+        from sigdb import SignatureDB, build_from_manifest
+        text = b"\x90" * 34 + insn + b"\x90" * 12 + b"\xc3"
+        image = pe_image(tmp_path / "lib.dll", text)
+        (tmp_path / "map.csv").write_text(f"address,name,size\n0x{CODE_VA:X},f,{len(text)}\n")
+        db = SignatureDB(":memory:")
+        build_from_manifest(db, {"sources": [{"type": "binary_with_map", "binary": str(image),
+                                              "map": str(tmp_path / "map.csv"), "compiler": "msvc2008"}]})
+        return db._conn.execute("SELECT crc_len FROM byte_sigs").fetchone()[0], len(text) - 32
+
+    def test_crc_span_stops_where_the_section_ends(self):
+        from sigdb import extract_flirt_crc, flirt_crc16
+        code = b"\x90" * 40
+        assert extract_flirt_crc(binary_over(code), CODE_VA, 100) == (8, flirt_crc16(code[32:]))
+
+    @pytest.mark.parametrize("insn", [
+        "6aff",             # push -1
+        "83c8ff",           # or eax, -1
+        "83c4f0",           # add esp, -0x10
+        "83e0f0",           # and eax, 0xfffffff0
+        "64a100000000",     # mov eax, fs:[0]
+        "6878563412",       # push 0x12345678
+        "8d04cd00000000",   # lea eax, [ecx*8]
+        "8b80ffffefff",     # mov eax, [eax - 0x100001]
+    ])
+    def test_an_operand_outside_the_image_does_not_end_the_span(self, tmp_path, insn):
+        crc_len, to_function_end = self._crc_len(tmp_path, bytes.fromhex(insn))
+        assert crc_len == to_function_end
+
+    @pytest.mark.parametrize("insn", [
+        "6800204000",       # push 0x402000
+        "b900104000",       # mov ecx, 0x401000
+        "a100204000",       # mov eax, [0x402000]
+    ])
+    def test_an_operand_inside_the_image_ends_the_span(self, tmp_path, insn):
+        crc_len, _ = self._crc_len(tmp_path, bytes.fromhex(insn))
+        assert crc_len == 2
+
+    @pytest.mark.parametrize("insn, ends_the_span", [
+        ("8b0500100000", True),             # mov eax, [rip + 0x1000]
+        ("48b80020004001000000", True),     # movabs rax, 0x140002000
+        ("83c8ff", False),                  # or eax, -1
+        ("65488b042530000000", False),      # mov rax, gs:[0x30]
+    ])
+    def test_a_64_bit_function(self, insn, ends_the_span):
+        from sigdb import extract_flirt_crc
+        text = b"\x90" * 34 + bytes.fromhex(insn) + b"\x90" * 12 + b"\xc3"
+        section = fake_section(TEXT_RVA, len(text), 0, len(text), executable=True)
+        b = binary_from_sections(text, [section, fake_section(DATA_RVA, 0x200, 0, 0)], is_64=True)
+        b.base = IMAGE_BASE64
+        crc_len, _ = extract_flirt_crc(b, IMAGE_BASE64 + TEXT_RVA, len(text))
+        assert crc_len == (2 if ends_the_span else len(text) - 32)
+
+    def test_a_stored_row_is_matched_over_its_own_crc_len(self, tmp_path):
+        from common import Binary
+        from sigdb import SignatureDB, flirt_crc16
+        text = b"\x90" * 34 + bytes.fromhex("6aff") + b"\x90" * 12 + b"\xc3"
+        db = SignatureDB(":memory:")
+        db.add_byte_sig(name="stored", pattern=text[:32], mask=b"\xff" * 32, func_size=len(text), tail_crc=0,
+                        crc_len=2, crc16=flirt_crc16(text[32:34]))
+        game = Binary(str(pe_image(tmp_path / "game.exe", text)))
+        assert db.identify(game, CODE_VA).name == "stored"
+
+
+class TestPatParsing:
+    @pytest.mark.parametrize("line", [
+        "zz" + "90" * 31 + " 00 0000 0030 :0000 _f",
+        "90" * 32 + " 00 zzzz 0030 :0000 _f",
+        "90" * 32 + " 00 0000 00g0 :0000 _f",
+    ])
+    def test_a_pat_line_with_bad_hex_is_unparsed(self, line):
+        from sigdb import parse_pat_line
+        assert parse_pat_line(line) is None
+
+    def test_pat_prefix_bytes_past_a_short_function_are_wildcards(self):
+        from sigdb import parse_pat_line
+        sig = parse_pat_line("90" * 32 + " 00 0000 0010 :0000 _f")
+        assert sig.mask == b"\xff" * 16 + b"\0" * 16
+        assert sig.pattern == b"\x90" * 16 + b"\0" * 16
+
+    def _import(self, tmp_path, *lines):
+        from sigdb import SignatureDB, import_pat
+        pat = tmp_path / "x.pat"
+        pat.write_text("\n".join(lines))
+        db = SignatureDB(":memory:")
+        stats = import_pat(db, str(pat), "msvc2008", "test")
+        return +stats, [r[0] for r in db._conn.execute("SELECT name FROM byte_sigs")]
+
+    def test_a_local_label_at_offset_zero_is_skipped(self, tmp_path):
+        stats, names = self._import(tmp_path, "5589E5" + "96" * 29 + " 00 0000 0030 :0000@ _static_fn")
+        assert names == [] and stats == {"local_or_managed": 1}
+
+    def test_an_unnamed_function_is_skipped(self, tmp_path):
+        stats, names = self._import(tmp_path, "5589E5" + "97" * 29 + " 00 0000 0030 :0000 ?")
+        assert names == [] and stats == {"unparsed": 1}
+
+    def test_a_public_name_wins_over_a_local_label_at_offset_zero(self, tmp_path):
+        _, names = self._import(tmp_path, "5589E5" + "98" * 29 + " 00 0000 0030 :0000@ _static_fn :0000 _public")
+        assert names == ["_public"]
+
+    def test_a_prefix_with_too_few_fixed_bytes_is_skipped(self, tmp_path):
+        stats, names = self._import(
+            tmp_path, "5589E5" + "99" * 8 + ".." * 21 + " 00 0000 0030 :0000 _mostly_relocated")
+        assert names == [] and stats == {"too_few_fixed_bytes": 1}
+
+
+def _manifest_for(tmp_path, text, rows, compiler="msvc2008"):
+    """A one-source manifest over an image holding *text*, mapping (offset, name, size) *rows*."""
+    image = pe_image(tmp_path / "lib.dll", text)
+    lines = ["address,name,size"] + [f"0x{CODE_VA + off:X},{name},{size}" for off, name, size in rows]
+    (tmp_path / "map.csv").write_text("\n".join(lines) + "\n")
+    return image, {"sources": [{"type": "binary_with_map", "binary": str(image),
+                                "map": str(tmp_path / "map.csv"), "compiler": compiler}]}
+
+
+# test eax, eax / jz +1 / inc eax / nops / ret: three basic blocks in 40 bytes.
+_BRANCHY = bytes.fromhex("85c0740140") + b"\x90" * 34 + b"\xc3"
+
+
+class TestBuildSkipsCallOnlyPrefixes:
+    def test_a_prefix_with_too_few_fixed_bytes_is_skipped(self, tmp_path):
+        from sigdb import SignatureDB, build_from_manifest
+        text = b"\xe8\x00\x00\x00\x00" * 6 + b"\x90" * 9 + b"\xc3"
+        _, manifest = _manifest_for(tmp_path, text, [(0, "thunks", len(text))])
+        db = SignatureDB(":memory:")
+        stats = build_from_manifest(db, manifest)
+        assert stats["too_few_fixed_bytes"] == 1
+        assert db._conn.execute("SELECT COUNT(*) FROM byte_sigs").fetchone()[0] == 0
+
+
+class TestStructuralSafeguards:
+    def _counts(self, db):
+        return tuple(db._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                     for table in ("byte_sigs", "structural_sigs"))
+
+    def test_identical_functions_with_two_names_match_in_neither_tier(self, tmp_path):
+        from common import Binary
+        from sigdb import SignatureDB, build_from_manifest
+        twins = _BRANCHY + b"\xcc" * 8 + _BRANCHY
+        image, manifest = _manifest_for(tmp_path, twins, [(0, "a", 40), (48, "b", 40)])
+        db = SignatureDB(":memory:")
+        stats = build_from_manifest(db, manifest)
+        assert stats["ambiguous_prefix"] == 1
+        assert db.identify(Binary(str(image)), CODE_VA) is None
+
+    def test_a_single_name_still_matches_structurally(self, tmp_path):
+        from common import Binary
+        from sigdb import SignatureDB, build_from_manifest, extract_structural_sig
+        image, manifest = _manifest_for(tmp_path, _BRANCHY, [(0, "solo", 40)])
+        db = SignatureDB(":memory:")
+        build_from_manifest(db, manifest)
+        sig = extract_structural_sig(Binary(str(image)), CODE_VA)
+        matches = db.match_structural(sig["block_count"], sig["edge_count"], sig["call_count"],
+                                      sig["mnemonic_hash"], sig["constants"])
+        assert [m.name for m in matches] == ["solo"]
+
+    def test_building_twice_adds_nothing_the_second_time(self, tmp_path):
+        from sigdb import SignatureDB, build_from_manifest
+        _, manifest = _manifest_for(tmp_path, _BRANCHY, [(0, "solo", 40)])
+        db = SignatureDB(":memory:")
+        build_from_manifest(db, manifest)
+        assert self._counts(db) == (1, 1)
+        stats = build_from_manifest(db, manifest)
+        assert self._counts(db) == (1, 1)
+        assert stats["already_in_db"] == 1 and stats["structural_already_in_db"] == 1
+
+    def test_a_bad_map_row_leaves_the_database_as_it_was(self, tmp_path):
+        from sigdb import SignatureDB, build_from_manifest
+        _, manifest = _manifest_for(tmp_path, _BRANCHY, [(0, "solo", 40)])
+        with open(tmp_path / "map.csv", "a") as f:
+            f.write("not_an_address,broken,40\n")
+        db = SignatureDB(":memory:")
+        with pytest.raises(ValueError):
+            build_from_manifest(db, manifest)
+        assert self._counts(db) == (0, 0)
+
+    def _two_names(self, second_compiler):
+        from sigdb import SignatureDB
+        db = SignatureDB(":memory:")
+        db.add_structural_sig(name="a", block_count=4, edge_count=5, call_count=1, mnemonic_hash=7,
+                              constants="0x401000", compiler="msvc2008")
+        db.add_structural_sig(name="b", block_count=4, edge_count=5, call_count=1, mnemonic_hash=7,
+                              compiler=second_compiler)
+        return db
+
+    def test_a_key_held_under_two_names_is_not_a_match(self):
+        assert self._two_names("msvc2008").match_structural(4, 5, 1, 7, "0x401000") == []
+
+    def test_a_name_from_an_absent_toolchain_does_not_make_a_key_ambiguous(self):
+        db = self._two_names("msvc6.0")
+        assert [m.name for m in db.match_structural(4, 5, 1, 7, "", frozenset({"9.0"}))] == ["a"]
+
+    def test_one_name_held_twice_is_a_match(self):
+        from sigdb import SignatureDB
+        db = SignatureDB(":memory:")
+        for source in ("first.dll", "second.dll"):
+            db.add_structural_sig(name="a", block_count=4, edge_count=5, call_count=1, mnemonic_hash=7,
+                                  source=source)
+        assert {m.name for m in db.match_structural(4, 5, 1, 7, "")} == {"a"}
+
+
+class TestKeyHeldUnderAnotherName:
+    _FOO = "5589E5" + "9A" * 29 + " 00 0000 0030 :0000 _foo"
+    _BAR = "5589E5" + "9A" * 29 + " 00 0000 0030 :0000 _bar"
+
+    def _import(self, db, tmp_path, line, compiler):
+        from sigdb import import_pat
+        pat = tmp_path / "x.pat"
+        pat.write_text(line)
+        return import_pat(db, str(pat), compiler, "test")
+
+    def _names(self, db):
+        return [r[0] for r in db._conn.execute("SELECT name FROM byte_sigs ORDER BY name")]
+
+    def test_the_held_row_is_dropped_and_the_new_one_is_not_added(self, tmp_path):
+        from sigdb import SignatureDB
+        db = SignatureDB(":memory:")
+        self._import(db, tmp_path, self._FOO, "msvc2008")
+        stats = self._import(db, tmp_path, self._BAR, "msvc2008")
+        assert self._names(db) == []
+        assert +stats == {"conflicts_with_db": 1}
+        code = bytes.fromhex("5589E5") + b"\x9a" * 29
+        assert db.match_bytes(code, 0x30, "", 0) == []
+
+    def test_names_for_toolchains_that_never_meet_are_both_kept(self, tmp_path):
+        from sigdb import SignatureDB
+        db = SignatureDB(":memory:")
+        self._import(db, tmp_path, self._FOO, "msvc2008")
+        stats = self._import(db, tmp_path, self._BAR, "msvc6.0")
+        assert self._names(db) == ["_bar", "_foo"] and stats["conflicts_with_db"] == 0
+
+
+def _other_file(path, kind):
+    """A file at *path* that is not a signature database."""
+    if kind == "not_sqlite":
+        path.write_bytes(b"not a database " * 100)
+        return path
+    conn = sqlite3.connect(path)
+    if kind == "unrelated_wal":
+        conn.execute("PRAGMA journal_mode=WAL")
+    table = "schema_version" if kind == "schema_version_only" else "notes"
+    conn.execute(f"CREATE TABLE {table} (version INTEGER)")
+    conn.execute(f"INSERT INTO {table} VALUES (1)")
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _dir_bytes(directory):
+    return {p.name: p.read_bytes() for p in directory.iterdir()}
+
+
+_OTHER_KINDS = ["unrelated", "unrelated_wal", "schema_version_only", "not_sqlite"]
+
+
+class TestNotASignatureDatabase:
+    def _args(self, tmp_path, command, db):
+        image = _sig_image(tmp_path)
+        if command == "scan":
+            return ["scan", str(image), "--db", str(db)]
+        if command == "identify":
+            return ["identify", str(image), f"{CODE_VA:x}", "--db", str(db)]
+        if command == "build":
+            (tmp_path / "map.csv").write_text(f"address,name\n0x{CODE_VA:X},_initterm\n")
+            manifest = tmp_path / "m.json"
+            manifest.write_text(json.dumps({"sources": [{"type": "binary_with_map", "binary": str(image),
+                                                         "map": str(tmp_path / "map.csv"), "compiler": "msvc"}]}))
+            return ["build", str(manifest), "-o", str(db)]
+        pat = tmp_path / "x.pat"
+        pat.write_text(PAT_FIXTURE)
+        return ["import-pat", str(pat), "-d", str(db), "--compiler", "msvc2008", "--source", "t"]
+
+    def _refused_unchanged(self, tmp_path, capsys, command, db):
+        from sigdb import main
+        before = _dir_bytes(db.parent)
+        with pytest.raises(SystemExit) as exc:
+            main(self._args(tmp_path, command, db))
+        assert exc.value.code == 1
+        assert "not a signature database" in capsys.readouterr().err
+        assert _dir_bytes(db.parent) == before
+
+    @pytest.mark.parametrize("kind", _OTHER_KINDS)
+    @pytest.mark.parametrize("command", ["scan", "identify", "build", "import-pat"])
+    def test_every_command_refuses_it_and_leaves_it_unchanged(self, tmp_path, capsys, command, kind):
+        (tmp_path / "db").mkdir()
+        self._refused_unchanged(tmp_path, capsys, command, _other_file(tmp_path / "db" / "other.db", kind))
+
+    @pytest.mark.parametrize("command", ["scan", "identify"])
+    def test_read_commands_refuse_an_empty_file(self, tmp_path, capsys, command):
+        (tmp_path / "db").mkdir()
+        db = tmp_path / "db" / "empty.db"
+        db.write_bytes(b"")
+        self._refused_unchanged(tmp_path, capsys, command, db)
+
+    @pytest.mark.parametrize("command", ["build", "import-pat"])
+    def test_write_commands_create_the_schema_in_an_empty_file(self, tmp_path, command):
+        from sigdb import SignatureDB, main
+        db = tmp_path / "empty.db"
+        db.write_bytes(b"")
+        main(self._args(tmp_path, command, db))
+        opened = SignatureDB.open_existing(str(db))
+        assert opened._conn.execute("SELECT COUNT(*) FROM byte_sigs").fetchone()[0] == 1
+        opened.close()
+
+    @pytest.mark.parametrize("kind", _OTHER_KINDS)
+    def test_the_constructor_refuses_it(self, tmp_path, kind):
+        from sigdb import NotASignatureDB, SignatureDB
+        path = _other_file(tmp_path / "other.db", kind)
+        with pytest.raises(NotASignatureDB):
+            SignatureDB(str(path))
+
+
+class TestReadOnlyOpen:
+    def _current_db(self, path):
+        from sigdb import SignatureDB
+        db = SignatureDB(str(path))
+        db.add_byte_sig(name="f", pattern=b"\x55" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0)
+        db.close()
+        return path
+
+    def _assert_writes_refused(self, db):
+        with pytest.raises(sqlite3.OperationalError):
+            db.add_byte_sig(name="new", pattern=b"\x56" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0)
+        with pytest.raises(sqlite3.OperationalError):
+            db.add_structural_sig(name="new", block_count=4, edge_count=5, call_count=1, mnemonic_hash=7)
+        with pytest.raises(sqlite3.OperationalError):
+            db._conn.execute("DELETE FROM byte_sigs")
+
+    def test_a_database_opened_for_reading_refuses_writes(self, tmp_path):
+        from sigdb import SignatureDB
+        path = self._current_db(tmp_path / "sigs.db")
+        before = _dir_bytes(tmp_path)
+        db = SignatureDB.open_existing(str(path))
+        self._assert_writes_refused(db)
+        assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0)] == ["f"]
+        db.close()
+        assert _dir_bytes(tmp_path) == before
+
+    def test_a_version_1_database_opened_for_reading_is_not_migrated(self, tmp_path):
+        from sigdb import SignatureDB
+        path = _v1_db(str(tmp_path / "v1.db"))
+        before = _dir_bytes(tmp_path)
+        db = SignatureDB.open_existing(path)
+        self._assert_writes_refused(db)
+        assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0)] == ["old"]
+        db.close()
+        assert _dir_bytes(tmp_path) == before
+
+    def test_scanning_leaves_the_database_directory_unchanged(self, tmp_path, capsys):
+        from sigdb import main
+        (tmp_path / "db").mkdir()
+        path = self._current_db(tmp_path / "db" / "sigs.db")
+        before = _dir_bytes(path.parent)
+        main(["scan", str(_sig_image(tmp_path)), "--db", str(path)])
+        assert capsys.readouterr().out.strip().endswith("functions identified")
+        assert _dir_bytes(path.parent) == before
+
+
+class _FakeResponse:
+    def __init__(self, body):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._body
+
+
+class TestPullUrls:
+    def test_the_revision_is_quoted_into_every_url(self, tmp_path, monkeypatch):
+        import sigdb
+        urls = []
+
+        def urlopen(request, timeout):
+            urls.append(request.full_url)
+            return _FakeResponse(json.dumps({"sources": ["sources/a.csv"]}).encode())
+
+        monkeypatch.setattr(sigdb, "DEFAULT_DB_PATH", tmp_path / "signatures.db")
+        monkeypatch.setattr(sigdb.urllib.request, "urlopen", urlopen)
+        sigdb.main(["pull", "--sources", "--repo", "org/repo", "--revision", "feat/x y?z#w"])
+        base = "https://huggingface.co/org/repo/resolve/feat%2Fx%20y%3Fz%23w/"
+        assert urls == [base + "signatures.db", base + "manifest.json", base + "sources/a.csv"]
+
+
+class TestImportPatInputs:
+    def test_a_missing_pat_file_is_reported_before_a_database_is_created(self, tmp_path, capsys):
+        from sigdb import main
+        db = tmp_path / "s.db"
+        with pytest.raises(SystemExit) as exc:
+            main(["import-pat", str(tmp_path / "missing.pat"), "-d", str(db),
+                  "--compiler", "msvc2008", "--source", "t"])
+        assert exc.value.code == 1
+        assert "missing.pat" in capsys.readouterr().err
+        assert not db.exists()

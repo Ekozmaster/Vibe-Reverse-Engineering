@@ -30,20 +30,28 @@ import sqlite3
 import struct
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import zlib
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from capstone import x86_const as x86
-from common import MIN_ABS_ADDRESS, Binary
+from common import Binary
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "signatures.db"
 
 _HF_REPO_DEFAULT = "RTX-Remix/Vibe-Reverse-Engineering-Signature-DB"
 _HF_REVISION_DEFAULT = "main"
 _HF_URL_TEMPLATE = "https://huggingface.co/{repo}/resolve/{revision}/{path}"
+
+
+def _hf_url(repo: str, revision: str, path: str) -> str:
+    """URL of *path* in the HF *repo* at *revision*, a branch (which may hold "/"), tag or commit."""
+    return _HF_URL_TEMPLATE.format(repo=repo, revision=urllib.parse.quote(revision, safe=""), path=path)
+
 
 SCHEMA_VERSION = 2
 
@@ -199,10 +207,10 @@ def extract_flirt_crc(b: Binary, va: int, func_size: int) -> tuple[int, int]:
 
     The span starts after the 32-byte prefix and ends at the function's end,
     after 255 bytes, or at the first instruction whose bytes depend on where
-    the code was linked: a call, a branch leaving the function, an absolute
-    memory operand, or an immediate that looks like an address. The same
-    library function linked into another game at another address still
-    passes, as FLIRT's relocation-masked CRC does.
+    the code was linked: a call, a branch leaving the function, a
+    RIP-relative operand, or an immediate or displacement that is an address
+    inside the image. The same library function linked into another game at
+    another address still passes, as FLIRT's relocation-masked CRC does.
 
     Returns:
         (0, 0) when no byte after the prefix qualifies. A span running past
@@ -211,11 +219,12 @@ def extract_flirt_crc(b: Binary, va: int, func_size: int) -> tuple[int, int]:
     stop = min(func_size, 32 + _MAX_CRC_LEN)
     if stop <= 32:
         return 0, 0
+    image = _image_range(b)
     for insn in b.iter_disasm(va, max_bytes=stop):
         offset = insn.address - va
         if offset >= stop:
             break
-        if offset + insn.size > 32 and _depends_on_layout(b, insn, va, func_size):
+        if offset + insn.size > 32 and _depends_on_layout(b, insn, range(va, va + func_size), image):
             stop = offset
             break
     if stop <= 32:
@@ -243,23 +252,31 @@ def _wildcard_rel32(pattern: bytearray, mask: bytearray) -> None:
             i += 1
 
 
-def _depends_on_layout(b: Binary, insn, va: int, func_size: int) -> bool:
+def _image_range(b: Binary) -> range:
+    """Virtual addresses from the image base to the end of its last section."""
+    size = max((s.VirtualAddress + max(s.Misc_VirtualSize, s.SizeOfRawData) for s in b.pe.sections), default=0)
+    return range(b.base, b.base + size)
+
+
+def _depends_on_layout(b: Binary, insn, func: range, image: range) -> bool:
+    """Whether *insn*'s bytes change when its function is linked at another address.
+
+    Only a value inside *image* is taken for an address: -1, a stack
+    adjustment, an alignment mask or a segment-relative offset such as
+    fs:[0] is the same wherever the code lands.
+    """
     if insn.group(x86.X86_GRP_CALL):
         return True
+    pointer_mask = (1 << 8 * b.ptr_size) - 1
     for op in insn.operands:
         if op.type == x86.X86_OP_IMM:
             if insn.group(x86.X86_GRP_JUMP):
-                if not va <= op.imm < va + func_size:
+                if op.imm not in func:
                     return True
-            elif b.abs_imm_refs(insn):
+            elif op.imm & pointer_mask in image:
                 return True
         elif op.type == x86.X86_OP_MEM:
-            mem = op.mem
-            if mem.base in (0, x86.X86_REG_RIP, x86.X86_REG_EIP) and mem.index == 0:
-                return True
-            # x86 has no RIP-relative form: a switch table or global array is
-            # reached through [index*scale + abs32] or [reg + abs32].
-            if not b.is_64 and (mem.base == 0 or abs(mem.disp) > MIN_ABS_ADDRESS):
+            if op.mem.base in (x86.X86_REG_RIP, x86.X86_REG_EIP) or op.mem.disp & pointer_mask in image:
                 return True
     return False
 
@@ -431,7 +448,9 @@ def msvc_toolchains(b: Binary) -> frozenset[str]:
 
     Returns:
         Versions such as {"9.0", "8.0"}; empty when the binary has no Rich
-        header or none of its build numbers is known.
+        header or none of its build numbers is known. A build this module
+        cannot place adds nothing: shipped games carry such entries beside
+        their compiler's (assembler and resource tools, prebuilt libraries).
     """
     found: set[str] = set()
     for entry in parse_rich_header(b):
@@ -449,7 +468,8 @@ def label_toolchains(compiler: str) -> frozenset[str]:
     """MSVC versions named by a signature's compiler label.
 
     Understands ``msvc2008``, ``msvc6.0`` and ``_``-joined lists such as
-    ``msvc2003_2005``.
+    ``msvc2003_2005``. Every version from 14.0 up is ``14+``, the one name
+    msvc_toolchains has for VS2015 and later.
 
     Returns:
         The named versions, or an empty set when the label names no specific
@@ -462,7 +482,7 @@ def label_toolchains(compiler: str) -> frozenset[str]:
         if part in _LABEL_YEAR_TOOLCHAIN:
             found.add(_LABEL_YEAR_TOOLCHAIN[part])
         elif _LABEL_VERSION_RE.match(part):
-            found.add(part)
+            found.add("14+" if int(part.split(".")[0]) >= 14 else part)
         else:
             return frozenset()
     return frozenset(found)
@@ -548,52 +568,83 @@ class _ByteIndex:
         yield from self._wildcard_start
 
 
-class SignatureDB:
-    """SQLite-backed signature database.
+class NotASignatureDB(sqlite3.DatabaseError):
+    """The file holds something other than a signature database."""
 
-    Opening an existing database does not write to it, so a read-only or
-    older-schema file can be scanned as it is. The first write switches the
-    file to WAL and migrates it to the current schema.
+
+class SignatureDB:
+    """SQLite-backed signature database, opened for writing.
+
+    A schema is created only in a new or empty file. Opening an existing
+    signature database does not write to it, so a read-only or older-schema
+    file can be scanned as it is; the first write switches the file to WAL
+    and migrates it to the current schema. open_existing gives a connection
+    that cannot write at all.
 
     Args:
         path: Filesystem path to the database file, or ":memory:".
+
+    Raises:
+        NotASignatureDB: *path* holds anything but a signature database.
+        RuntimeError: The database's schema is newer than this code.
     """
 
     def __init__(self, path: str = ":memory:"):
-        self._conn = sqlite3.connect(path)
-        self._byte_index: _ByteIndex | None = None
-        self._schema_writable = False
-        self._init_schema()
+        self._open(path, read_only=False)
 
     @classmethod
     def open_existing(cls, path: str) -> "SignatureDB":
-        """Open a database file that is already there, never creating one.
+        """Open a database file that is already there for reading only.
+
+        The file is never created, migrated or otherwise written: the
+        connection refuses every write.
 
         Raises:
             FileNotFoundError: No file at *path*.
+            NotASignatureDB: The file is not a signature database.
+            RuntimeError: The database's schema is newer than this code.
         """
         if not Path(path).is_file():
             raise FileNotFoundError(
                 f"no signature database at {path} (download one with: python -m retools.sigdb pull)")
-        return cls(path)
+        db = cls.__new__(cls)
+        db._open(path, read_only=True)
+        return db
 
-    def _init_schema(self) -> None:
-        cur = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name='schema_version'"
-        )
-        if cur.fetchone() is not None:
-            row = self._conn.execute(
-                "SELECT version FROM schema_version"
-            ).fetchone()
+    def _open(self, path: str, read_only: bool) -> None:
+        self._conn = sqlite3.connect(path)
+        self._byte_index: _ByteIndex | None = None
+        self._schema_writable = False
+        self._read_only = read_only
+        try:
+            if read_only:
+                self._conn.execute("PRAGMA query_only=ON")
+            self._init_schema(path)
+        except BaseException:
+            self.close()
+            raise
+
+    def _table_names(self, path: str) -> set[str]:
+        try:
+            return {row[0] for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError as e:
+            raise NotASignatureDB(f"{path} is not a signature database: {e}") from e
+
+    def _init_schema(self, path: str) -> None:
+        tables = self._table_names(path)
+        if "schema_version" in tables:
+            row = self._conn.execute("SELECT version FROM schema_version").fetchone()
             if row and row[0] > SCHEMA_VERSION:
-                self._conn.close()
-                self._conn = None
                 raise RuntimeError(
                     f"Database schema version {row[0]} is newer than "
                     f"code version {SCHEMA_VERSION}. Update the code."
                 )
-            return
+            if "byte_sigs" in tables:
+                return
+        if tables or self._read_only:
+            raise NotASignatureDB(f"{path} is not a signature database")
 
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA_SQL)
@@ -621,7 +672,14 @@ class SignatureDB:
         transaction, so a file left half-migrated is finished, not rejected.
         Statements still pending on the connection are committed first: neither
         a journal mode change nor BEGIN can run inside an open transaction.
+
+        Raises:
+            sqlite3.OperationalError: The database was opened for reading.
+                Checked here because a journal mode change is the one write
+                that query_only lets through.
         """
+        if self._read_only:
+            raise sqlite3.OperationalError("attempt to write a signature database opened for reading")
         if self._schema_writable:
             return
         self._conn.commit()
@@ -646,36 +704,48 @@ class SignatureDB:
                 *crc16*; 0 when the signature carries no FLIRT CRC.
             crc16: FLIRT CRC16 of those bytes (see flirt_crc16).
         """
-        self._insert_byte_sigs([
+        self._write_sigs(byte_rows=[
             (name, pattern, mask, func_size, tail_crc, crc_len, crc16, compiler, source, category),
         ])
-
-    def _insert_byte_sigs(self, rows: list[tuple]) -> None:
-        self._ensure_writable_schema()
-        self._conn.executemany(
-            "INSERT INTO byte_sigs "
-            "(name, pattern, mask, func_size, tail_crc, crc_len, crc16, compiler, source, category) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            rows,
-        )
-        self._conn.commit()
-        self._byte_index = None
 
     def add_structural_sig(
         self, *, name: str, block_count: int, edge_count: int,
         call_count: int, mnemonic_hash: int, constants: str = "",
         compiler: str = "", source: str = "", category: str = "",
     ) -> None:
+        self._write_sigs(structural_rows=[
+            (name, block_count, edge_count, call_count, mnemonic_hash, constants, compiler, source, category),
+        ])
+
+    def _write_sigs(
+        self, byte_rows: Collection[tuple] = (),
+        structural_rows: Collection[tuple] = (),
+        dropped_byte_ids: Collection[int] = (),
+    ) -> None:
+        """Apply one batch of row changes to both tables: all of it, or none on an error.
+
+        A table the batch has no rows for is not touched, so a database
+        without it still takes the rest.
+        """
         self._ensure_writable_schema()
-        self._conn.execute(
-            "INSERT INTO structural_sigs "
-            "(name, block_count, edge_count, call_count, mnemonic_hash, "
-            "constants, compiler, source, category) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (name, block_count, edge_count, call_count, mnemonic_hash,
-             constants, compiler, source, category),
-        )
-        self._conn.commit()
+        with self._conn:
+            self._conn.executemany("DELETE FROM byte_sigs WHERE id = ?", ((i,) for i in dropped_byte_ids))
+            if byte_rows:
+                self._conn.executemany(
+                    "INSERT INTO byte_sigs "
+                    "(name, pattern, mask, func_size, tail_crc, crc_len, crc16, compiler, source, category) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    byte_rows,
+                )
+            if structural_rows:
+                self._conn.executemany(
+                    "INSERT INTO structural_sigs "
+                    "(name, block_count, edge_count, call_count, mnemonic_hash, "
+                    "constants, compiler, source, category) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    structural_rows,
+                )
+        self._byte_index = None
 
     # -- Byte matching -----------------------------------------------------
 
@@ -760,6 +830,9 @@ class SignatureDB:
         edge_count). call_count and constants refine the score. Signatures
         labelled with MSVC versions absent from *toolchains* are skipped.
 
+        A shape that the remaining signatures hold under more than one name
+        cannot tell those functions apart, so it matches nothing.
+
         Skips trivially small functions (< 3 blocks) -- their structural
         signatures are too generic to produce meaningful matches.
         """
@@ -793,6 +866,8 @@ class SignatureDB:
                 score,
             ))
 
+        if len({m.name for m, _ in candidates}) > 1:
+            return []
         candidates.sort(key=lambda c: c[1], reverse=True)
         return [m for m, _ in candidates]
 
@@ -942,11 +1017,20 @@ def build_from_manifest(db: SignatureDB, manifest: dict) -> collections.Counter:
     are skipped. Byte signatures carry a FLIRT CRC16 (extract_flirt_crc) and
     go through the same prefix checks as import_pat.
 
+    Every map is read before anything is written, and both tables change in
+    one transaction: a bad row leaves the database as it was. A structural
+    signature the database already holds is not added again.
+
     Returns:
-        Counts of added and skipped byte signatures by reason.
+        Counts of added and skipped signatures by reason; the structural
+        ones are prefixed ``structural_``.
+
+    Raises:
+        ValueError: A map row's address or size is not a number.
     """
     stats: collections.Counter = collections.Counter()
     by_key: dict[_SigKey, list[tuple]] = collections.defaultdict(list)
+    structural_rows: list[tuple] = []
     for source in manifest.get("sources", []):
         if source.get("type") != "binary_with_map":
             continue
@@ -991,49 +1075,89 @@ def build_from_manifest(db: SignatureDB, manifest: dict) -> collections.Counter:
 
                 ssig = extract_structural_sig(b, va)
                 if ssig is not None:
-                    db.add_structural_sig(
-                        name=name, compiler=compiler,
-                        source=source_name, category=category,
-                        **ssig,
-                    )
+                    structural_rows.append((
+                        name, ssig["block_count"], ssig["edge_count"], ssig["call_count"],
+                        ssig["mnemonic_hash"], ssig["constants"], compiler, source_name, category,
+                    ))
 
-    _insert_unique_byte_sigs(db, by_key, stats)
+    _insert_new_sigs(db, by_key, structural_rows, stats)
     return stats
 
 
-def _insert_unique_byte_sigs(
+def _insert_new_sigs(
     db: SignatureDB, by_key: dict[_SigKey, list[tuple]],
-    stats: collections.Counter,
+    structural_rows: list[tuple], stats: collections.Counter,
 ) -> None:
-    """Insert the byte_sigs rows of every signature key that names exactly one function.
-
-    A key given more than one name cannot tell those functions apart. A row
-    whose key is already held under a compiler label that can match the same
-    binaries would only repeat it; one held for other MSVC versions only is
-    added, since matching skips each row on the other's binaries.
-    """
+    """Write one build's or import's new signatures to both tables in a single transaction."""
     db._ensure_writable_schema()
-    held: dict[_SigKey, list[str]] = collections.defaultdict(list)
-    for pattern, mask, crc_len, crc16, compiler in db._conn.execute(
-            "SELECT pattern, mask, crc_len, crc16, compiler FROM byte_sigs"):
-        held[(pattern, mask, crc_len, crc16)].append(compiler)
+    byte_rows, dropped_ids = _unique_byte_rows(db, by_key, stats)
+    new_structural = _unheld_structural_rows(db, structural_rows, stats) if structural_rows else []
+    db._write_sigs(byte_rows, new_structural, dropped_ids)
+    stats["added"] += len(byte_rows)
+
+
+def _unique_byte_rows(
+    db: SignatureDB, by_key: dict[_SigKey, list[tuple]], stats: collections.Counter,
+) -> tuple[list[tuple], set[int]]:
+    """The byte_sigs rows of every signature key that names exactly one function.
+
+    A key given more than one name cannot tell those functions apart, whether
+    the names come together or the database already holds the key under
+    another name: that held row is dropped and the new one is not added. Only
+    rows whose compiler labels can match the same binaries are compared; a
+    key held for other MSVC versions only is added, since matching skips each
+    row on the other's binaries. A row repeating a held name is not added.
+
+    Returns:
+        (rows to insert, ids of held rows to delete).
+    """
+    held: dict[_SigKey, list[tuple[int | None, str, str]]] = collections.defaultdict(list)
+    for row_id, name, pattern, mask, crc_len, crc16, compiler in db._conn.execute(
+            "SELECT id, name, pattern, mask, crc_len, crc16, compiler FROM byte_sigs"):
+        held[(pattern, mask, crc_len, crc16)].append((row_id, name, compiler))
     rows = []
+    dropped_ids: set[int] = set()
     for key, candidates in by_key.items():
         if len({row[0] for row in candidates}) > 1:
             stats["ambiguous_prefix"] += 1
             continue
         for row in candidates:
-            toolchains = label_toolchains(row[7])
-            if any(_toolchain_allows(compiler, toolchains) for compiler in held[key]):
+            name, compiler = row[0], row[7]
+            toolchains = label_toolchains(compiler)
+            overlapping = [h for h in held[key] if _toolchain_allows(h[2], toolchains)]
+            other_names = [h for h in overlapping if h[1] != name]
+            if other_names:
+                stats["conflicts_with_db"] += 1
+                dropped_ids.update(row_id for row_id, _, _ in other_names)
+            elif overlapping:
                 stats["already_in_db"] += 1
             else:
                 rows.append(row)
-                held[key].append(row[7])
-    db._insert_byte_sigs(rows)
-    stats["added"] += len(rows)
+                held[key].append((None, name, compiler))
+    return rows, dropped_ids
 
 
-_PAT_PUBLIC_RE = re.compile(r":([0-9A-Fa-f]{4,8})@? (\S+)")
+def _unheld_structural_rows(
+    db: SignatureDB, rows: list[tuple], stats: collections.Counter,
+) -> list[tuple]:
+    """*rows* without repeats and without those the database holds in every column.
+
+    Names are not compared here: match_structural is what refuses a shape
+    held under more than one name.
+    """
+    held = set(db._conn.execute(
+        "SELECT name, block_count, edge_count, call_count, mnemonic_hash, "
+        "constants, compiler, source, category FROM structural_sigs"))
+    new = list(dict.fromkeys(row for row in rows if row not in held))
+    stats["structural_added"] += len(new)
+    if len(new) < len(rows):
+        stats["structural_already_in_db"] += len(rows) - len(new)
+    return new
+
+
+# ":OFFSET name" is a public; ":OFFSET@ name" a local label. "?" stands for a function with no name.
+_PAT_SYMBOL_RE = re.compile(r":([0-9A-Fa-f]{4,8})(@?) (\S+)")
+_PAT_UNNAMED = "?"
 _PAT_LOCAL_NAME_RE = re.compile(r"^(\.|\$|_LN\d+$)")
 
 
@@ -1041,6 +1165,7 @@ _PAT_LOCAL_NAME_RE = re.compile(r"^(\.|\$|_LN\d+$)")
 class PatSig:
     """The offset-0 function of one FLIRT .pat line."""
     name: str
+    is_local: bool
     pattern: bytes
     mask: bytes
     length: int
@@ -1053,24 +1178,27 @@ def parse_pat_line(line: str) -> PatSig | None:
 
     A line is: 64 hex chars for the first 32 bytes ("..": relocated byte),
     CRC16 length, CRC16, module length, then ":OFFSET name" publics. Only the
-    public at offset 0 starts at the prefix, so the others are ignored. The
-    sigdb E8/E9 rel32 wildcards are applied on top of the relocation ones.
+    public at offset 0 starts at the prefix, so the others are ignored; a
+    local label there (":0000@ name") is taken when no public is. The sigdb
+    E8/E9 rel32 wildcards are applied on top of the relocation ones.
 
     Prefix bytes past the end of a function shorter than 32 bytes are
     wildcards, as extract_byte_sig makes them.
 
     Returns:
         The parsed signature, or None for "---", malformed lines and lines
-        with no public at offset 0.
+        with no named symbol at offset 0.
     """
     parts = line.split(" ", 4)
     if len(parts) < 5 or len(parts[0]) != 64:
         return None
     hexpat, crc_len_hex, crc_hex, length_hex, rest = parts
     publics = rest.split(" ^", 1)[0]
-    name = next((sym for off, sym in _PAT_PUBLIC_RE.findall(publics) if int(off, 16) == 0), None)
-    if name is None:
+    at_start = [(bool(local), sym) for off, local, sym in _PAT_SYMBOL_RE.findall(publics)
+                if int(off, 16) == 0 and sym != _PAT_UNNAMED]
+    if not at_start:
         return None
+    is_local, name = min(at_start, key=lambda symbol: symbol[0])
     pattern = bytearray(32)
     mask = bytearray(32)
     try:
@@ -1086,11 +1214,11 @@ def parse_pat_line(line: str) -> PatSig | None:
         pattern[length:] = bytes(32 - length)
         mask[length:] = bytes(32 - length)
     _wildcard_rel32(pattern, mask)
-    return PatSig(name, bytes(pattern), bytes(mask), length, crc_len, crc16)
+    return PatSig(name, is_local, bytes(pattern), bytes(mask), length, crc_len, crc16)
 
 
 def _pat_skip_reason(sig: PatSig) -> str | None:
-    if _PAT_LOCAL_NAME_RE.match(sig.name) or "CrtImplementationDetails" in sig.name:
+    if sig.is_local or _PAT_LOCAL_NAME_RE.match(sig.name) or "CrtImplementationDetails" in sig.name:
         return "local_or_managed"
     if sig.length < _MIN_SIG_FUNC_SIZE:
         return "too_small"
@@ -1102,10 +1230,11 @@ def _pat_skip_reason(sig: PatSig) -> str | None:
 def import_pat(db: SignatureDB, path: str, compiler: str, source: str) -> collections.Counter:
     """Add the byte signatures of a FLIRT .pat file to *db*.
 
-    Skips local labels, functions under 16 bytes, prefixes with fewer than 12
-    fixed bytes, signatures (prefix plus CRC16) the file gives more than one
-    name, and signatures the database already holds for an overlapping
-    compiler label (see _insert_unique_byte_sigs).
+    Skips local labels, unnamed functions, functions under 16 bytes, prefixes
+    with fewer than 12 fixed bytes, signatures (prefix plus CRC16) the file
+    gives more than one name, and signatures the database already holds for
+    an overlapping compiler label; one held there under another name is
+    dropped from the database too (see _insert_new_sigs).
 
     Returns:
         Counts of added and skipped lines by reason.
@@ -1126,7 +1255,7 @@ def import_pat(db: SignatureDB, path: str, compiler: str, source: str) -> collec
                 sig.name, sig.pattern, sig.mask, sig.length, 0, sig.crc_len, sig.crc16,
                 compiler, source, _categorize_name(sig.name),
             ))
-    _insert_unique_byte_sigs(db, by_key, stats)
+    _insert_new_sigs(db, by_key, [], stats)
     return stats
 
 
@@ -1170,13 +1299,13 @@ def _download_file(url: str, dest: str) -> None:
 
 def _pull_sources(repo: str, dest_dir: str, revision: str = _HF_REVISION_DEFAULT) -> None:
     """Download source files listed in the HF repo's manifest.json at *revision*."""
-    manifest_url = _HF_URL_TEMPLATE.format(repo=repo, revision=revision, path="manifest.json")
+    manifest_url = _hf_url(repo, revision, "manifest.json")
     req = urllib.request.Request(manifest_url)
     with urllib.request.urlopen(req, timeout=60) as resp:
         manifest = json.loads(resp.read())
 
     for rel_path in manifest.get("sources", []):
-        url = _HF_URL_TEMPLATE.format(repo=repo, revision=revision, path=rel_path)
+        url = _hf_url(repo, revision, rel_path)
         dest = Path(dest_dir) / rel_path.removeprefix("sources/")
         try:
             _download_file(url, str(dest))
@@ -1204,7 +1333,8 @@ def main(argv: list[str] | None = None) -> None:
     # -- import-pat --------------------------------------------------------
     s = sub.add_parser("import-pat", help="Add a FLIRT .pat file to a signature DB")
     s.add_argument("pat", help="FLIRT .pat file")
-    s.add_argument("-d", "--db", required=True, help="Signature DB path (created if missing)")
+    s.add_argument("-d", "--db", required=True,
+                   help="Signature DB path (created if missing; refused if it holds something else)")
     s.add_argument("--compiler", required=True,
                    help="Compiler label for every signature, e.g. msvc2008 or msvc6.0")
     s.add_argument("--source", required=True, help="Source label, e.g. rizin_vs2008")
@@ -1244,7 +1374,7 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         _dispatch(args)
-    except (FileNotFoundError, OSError) as e:
+    except (OSError, sqlite3.DatabaseError) as e:
         print(f"sigdb: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -1265,6 +1395,8 @@ def _dispatch(args: argparse.Namespace) -> None:
         db.close()
 
     elif args.command == "import-pat":
+        if not Path(args.pat).is_file():
+            raise FileNotFoundError(f"no .pat file at {args.pat}")
         db = SignatureDB(args.db)
         stats = import_pat(db, args.pat, args.compiler, args.source)
         db.close()
@@ -1310,7 +1442,7 @@ def _dispatch(args: argparse.Namespace) -> None:
 
     elif args.command == "pull":
         data_dir = DEFAULT_DB_PATH.parent
-        db_url = _HF_URL_TEMPLATE.format(repo=args.repo, revision=args.revision, path="signatures.db")
+        db_url = _hf_url(args.repo, args.revision, "signatures.db")
         print(f"Downloading from {args.repo}@{args.revision}...")
         _download_file(db_url, str(data_dir / "signatures.db"))
         if args.sources:
