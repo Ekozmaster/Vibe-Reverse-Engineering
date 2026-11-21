@@ -19,6 +19,7 @@ Examples:
 """
 
 import argparse
+import bisect
 import itertools
 import sys
 from pathlib import Path
@@ -47,18 +48,30 @@ def _branch_target(insn) -> int | None:
         return None
 
 
+def _next_function_start(b: Binary, start: int) -> int | None:
+    """The nearest known function entry point after *start*; None when there is none."""
+    idx = bisect.bisect_right(b.func_table, start)
+    return b.func_table[idx] if idx < len(b.func_table) else None
+
+
 def analyze(b: Binary, start: int, max_size: int):
     """Return (rets, callees, end_va) for the function at *start*.
 
     The scan ends at padding: three nops after a return, or an int3. Compilers
     also put an int3 after a call that does not return; such an int3 ends the
-    scan only when no branch seen so far jumps past it.
+    scan only when no branch seen so far jumps past it to a label of this
+    function. A branch to the next known function or beyond is a tail call
+    and does not carry the scan over an int3.
+
+    *end_va* is the end of the last instruction scanned that is not padding
+    (nop or int3), so a function without a return still has an extent.
     """
     rets: list[tuple[int, int]] = []
     calls: list[tuple[int, int | str]] = []
     end_va = start
     nop_run = 0
     furthest_branch = start
+    next_function = _next_function_start(b, start)
     previous = None
 
     window = b.iter_disasm(start, max_bytes=max_size)
@@ -66,7 +79,6 @@ def analyze(b: Binary, start: int, max_size: int):
         if insn.mnemonic in ("ret", "retn"):
             cleanup = int(insn.op_str, 0) if insn.op_str else 0
             rets.append((insn.address, cleanup))
-            end_va = insn.address + insn.size
         elif insn.mnemonic == "call":
             try:
                 target: int | str = int(insn.op_str, 16)
@@ -75,9 +87,11 @@ def analyze(b: Binary, start: int, max_size: int):
             calls.append((insn.address, target))
         else:
             branch = _branch_target(insn)
-            if branch is not None:
+            if branch is not None and (next_function is None or branch < next_function):
                 furthest_branch = max(furthest_branch, branch)
 
+        if insn.mnemonic not in ("nop", "int3"):
+            end_va = insn.address + insn.size
         nop_run = nop_run + 1 if insn.mnemonic == "nop" else 0
         if nop_run >= 3 and rets:
             break

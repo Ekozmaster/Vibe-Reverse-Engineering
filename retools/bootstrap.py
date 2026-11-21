@@ -180,8 +180,11 @@ def _detect_compiler(b: Binary, db_path: str | None) -> dict:
     try:
         if db_path and os.path.isfile(db_path):
             from sigdb import SignatureDB
-            db = SignatureDB(db_path)
-            fp = db.fingerprint(b)
+            db = SignatureDB.open_existing(db_path)
+            try:
+                fp = db.fingerprint(b)
+            finally:
+                db.close()
             return {
                 "compiler": fp.get("compiler", "unknown"),
                 "confidence": fp.get("confidence", 0.0),
@@ -190,7 +193,7 @@ def _detect_compiler(b: Binary, db_path: str | None) -> dict:
         crt = detect_crt_import(b)
         if crt:
             return {"compiler": crt, "confidence": 0.3}
-    except (ImportError, FileNotFoundError, ValueError):
+    except (ImportError, FileNotFoundError, ValueError, sqlite3.Error):
         pass
     return {"compiler": "unknown", "confidence": 0.0}
 
@@ -212,9 +215,11 @@ def _scan_signatures(
         return {}, []
     try:
         from sigdb import SignatureDB
-        db = SignatureDB(db_path)
-        sig_results = db.scan(b, preferred_compiler=compiler_id)
-        db.close()
+        db = SignatureDB.open_existing(db_path)
+        try:
+            sig_results = db.scan(b, preferred_compiler=compiler_id)
+        finally:
+            db.close()
     except (ImportError, FileNotFoundError, sqlite3.Error):
         return {}, []
 
@@ -453,9 +458,8 @@ def bootstrap(
         db_path = str(DEFAULT_DB_PATH)
     if not os.path.isfile(db_path):
         try:
-            from sigdb import _download_file, _HF_REPO_DEFAULT, _HF_REVISION_DEFAULT, _HF_URL_TEMPLATE
-            url = _HF_URL_TEMPLATE.format(repo=_HF_REPO_DEFAULT, revision=_HF_REVISION_DEFAULT,
-                                          path="signatures.db")
+            from sigdb import _download_file, _hf_url, _HF_REPO_DEFAULT, _HF_REVISION_DEFAULT
+            url = _hf_url(_HF_REPO_DEFAULT, _HF_REVISION_DEFAULT, "signatures.db")
             print(f"Signature DB not found. Downloading from HuggingFace...")
             _download_file(url, db_path)
         except Exception as e:

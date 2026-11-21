@@ -171,6 +171,79 @@ class TestDeclarationsOverSeveralLines:
         assert [g.name for g in kb.globals] == ["g_x"]
 
 
+class TestOneLineEntries:
+    def test_preprocessor_lines_stand_alone(self):
+        from kb import parse_kb
+        kb = parse_kb("#define A 1\n#define B 2\n#include <x.h>\nstruct Foo { int x; };\n")
+        assert kb.typedefs == ["#define A 1", "#define B 2", "#include <x.h>", "struct Foo { int x; };"]
+
+    def test_a_preprocessor_line_ends_a_typedef_missing_its_semicolon(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef int Handle\n#define MAX 4\n")
+        assert kb.typedefs == ["typedef int Handle", "#define MAX 4"]
+
+    def test_a_typedef_without_braces_missing_its_semicolon_is_one_line(self):
+        from kb import parse_kb
+        kb = parse_kb("typedef int Handle\nint g;\n")
+        assert kb.typedefs == ["typedef int Handle", "int g;"]
+
+    def test_a_struct_ends_at_its_closing_brace_when_the_semicolon_is_missing(self):
+        from kb import parse_kb
+        kb = parse_kb("struct A { int x; }\nint g;\nunion U {\n    int i;\n}\nint h;\n")
+        assert kb.typedefs == ["struct A { int x; }", "int g;", "union U { int i; }", "int h;"]
+
+    def test_a_forward_declaration_missing_its_semicolon_takes_only_a_brace_line(self):
+        from kb import parse_kb
+        kb = parse_kb("struct Fwd\nint g;\n")
+        assert kb.typedefs == ["struct Fwd", "int g;"]
+
+    def test_a_keyword_directly_followed_by_its_brace_opens_a_declaration(self):
+        from kb import parse_kb
+        kb = parse_kb("enum{\n    A,\n    B\n};\nstruct{ int x; } anonymous;\n")
+        assert kb.typedefs == ["enum{ A, B };", "struct{ int x; } anonymous;"]
+
+    def test_lines_that_are_not_type_declarations_stay_separate(self):
+        from kb import parse_kb
+        kb = parse_kb("int g\nint h\nvoid (*callback)(int a,\nint b);\n")
+        assert kb.typedefs == ["int g", "int h", "void (*callback)(int a,", "int b);"]
+
+
+class TestBlockComments:
+    def test_a_brace_in_a_comment_does_not_open_a_declaration(self):
+        from kb import parse_kb
+        kb = parse_kb("/* layout { */\nstruct A { int x; };\nstruct B { int y; };\n")
+        assert kb.typedefs == ["struct A { int x; };", "struct B { int y; };"]
+
+    def test_a_brace_in_a_comment_does_not_close_a_declaration(self):
+        from kb import parse_kb
+        kb = parse_kb("struct A {\n    int x; /* } */\n    int y;\n};\nstruct B { int z; };\n")
+        assert kb.typedefs == ["struct A { int x; int y; };", "struct B { int z; };"]
+
+    def test_a_comment_over_several_lines_is_dropped(self):
+        from kb import parse_kb
+        kb = parse_kb("/* types {\n   recovered // so far\n*/\nstruct A { int x; };\n$ 0x7C5548 int g_x\n")
+        assert kb.typedefs == ["struct A { int x; };"]
+        assert [g.name for g in kb.globals] == ["g_x"]
+
+    def test_a_comment_after_a_function_or_global_is_dropped(self):
+        from kb import parse_kb
+        kb = parse_kb("@ 0x401000 void Foo(void); /* draws */\n$ 0x7C5548 int g_x /* frame counter */\n")
+        assert kb.functions[0].signature == "void Foo(void)"
+        assert (kb.globals[0].type, kb.globals[0].name) == ("int", "g_x")
+
+    def test_a_comment_inside_a_signature_or_a_struct_leaves_one_space(self):
+        from kb import parse_kb
+        kb = parse_kb("@ 0x4D4530 void __fastcall Resolve(Poly* rp /*EAX*/, void* out /*ECX*/);\n"
+                      "struct Poly { /*0x00*/ int id; /*0x04*/ float u; };\n")
+        assert kb.functions[0].signature == "void __fastcall Resolve(Poly* rp , void* out )"
+        assert kb.typedefs == ["struct Poly { int id; float u; };"]
+
+    def test_a_comment_opener_inside_a_line_comment_opens_nothing(self):
+        from kb import parse_kb
+        kb = parse_kb("$ 0x7C5548 int g_x // see /* below\n$ 0x7C554C int g_y // */\n")
+        assert [g.name for g in kb.globals] == ["g_x", "g_y"]
+
+
 class TestParseKbInputHandling:
     def test_content_that_names_a_file_is_parsed_as_content(self, tmp_path, monkeypatch):
         """A one-line kb string is parsed as content even if it happens to match

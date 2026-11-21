@@ -4,15 +4,18 @@ kb.h lines take three shapes:
     @ 0xADDR <signature>;      -- function at an address
     $ 0xADDR <type...> <name>  -- global variable at an address
     <C declaration>            -- bare typedef / struct / enum
-Lines that are blank or begin with ``//`` are ignored. A declaration may span
-lines: it runs until its braces are closed and a line ends in ``;`` or the next
-line starts another declaration (``typedef``, ``struct``, ``union``, ``enum``,
-``class``).
+Blank lines and ``//`` and ``/* */`` comments are ignored. A declaration that
+starts with ``typedef``, ``struct``, ``union``, ``enum`` or ``class`` may span
+lines: it continues while its braces or parentheses are open, its opening brace
+may stand on the line after its name, and the name of a ``typedef`` on the line
+after its closing brace. Every other line, a preprocessor line included, is one
+entry.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -55,12 +58,38 @@ def extract_function_name(sig: str) -> str:
 _DECLARATION_KEYWORDS = frozenset(("typedef", "struct", "union", "enum", "class"))
 
 
-def _complete(lines: list[str]) -> bool:
-    """Whether the lines so far can be a whole declaration: braces and parentheses
-    closed, and more than declaration keywords (``typedef`` alone on its line is not)."""
-    text = " ".join(lines)
-    return (text.count("{") <= text.count("}") and text.count("(") <= text.count(")")
-            and not set(text.split()) <= _DECLARATION_KEYWORDS)
+_COMMENT = re.compile(r"[ \t]*(?://[^\n]*|/\*.*?\*/)[ \t]*", re.DOTALL)
+_FIRST_WORD = re.compile(r"\w*")
+
+
+def _without_comments(text: str) -> str:
+    """*text* with each comment and the blanks around it replaced by one space, keeping
+    the line breaks a block comment spans."""
+    return _COMMENT.sub(lambda comment: " " + "\n" * comment.group().count("\n"), text)
+
+
+def _first_word(text: str) -> str:
+    return _FIRST_WORD.match(text).group()
+
+
+def _continues(declaration: list[str], line: str) -> bool:
+    """Whether *line* belongs to the declaration read so far.
+
+    "struct Foo" / "{" and "typedef struct { ... }" / "Foo;" each stay one entry,
+    while a declaration missing its ";" does not swallow the line after it.
+    """
+    text = " ".join(declaration)
+    if _first_word(text) not in _DECLARATION_KEYWORDS:
+        return False
+    if text.count("{") > text.count("}") or text.count("(") > text.count(")"):
+        return True
+    if set(text.split()) <= _DECLARATION_KEYWORDS:
+        return True
+    if text.endswith(";") or line.startswith("#") or _first_word(line) in _DECLARATION_KEYWORDS:
+        return False
+    if _first_word(text) == "typedef" and text.endswith("}"):
+        return True
+    return "{" not in text and line.startswith("{")
 
 
 def parse_kb(text_or_path: str | Path) -> Kb:
@@ -80,10 +109,10 @@ def parse_kb(text_or_path: str | Path) -> Kb:
             kb.typedefs.append(" ".join(declaration))
             declaration.clear()
 
-    for raw in text.splitlines():
-        # Inline comments never reach entries: signatures/names/types feed
-        # backend command strings (r2, Ghidra) where stray text is unsafe.
-        line = raw.split("//", 1)[0].strip()
+    # Comments never reach entries: signatures/names/types feed backend command
+    # strings (r2, Ghidra) where stray text is unsafe.
+    for raw in _without_comments(text).splitlines():
+        line = raw.strip()
         if not line:
             continue
 
@@ -114,12 +143,7 @@ def parse_kb(text_or_path: str | Path) -> Kb:
             type_ = " ".join(parts[1:-1])
             kb.globals.append(KbGlobal(address=addr, type=type_, name=name))
         else:
-            # A declaration runs until its braces and parentheses are closed and either a
-            # line ends in ";" or the next line opens a new declaration, so "struct Foo" /
-            # "{" and "typedef struct { ... }" / "Foo;" each stay one entry while a
-            # declaration missing its ";" does not swallow the one after it.
-            if declaration and _complete(declaration) and (
-                    declaration[-1].endswith(";") or line.split(None, 1)[0] in _DECLARATION_KEYWORDS):
+            if declaration and not _continues(declaration, line):
                 end_declaration()
             declaration.append(line)
     end_declaration()

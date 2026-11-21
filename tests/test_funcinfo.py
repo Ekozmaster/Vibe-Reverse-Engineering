@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "retools"))
 
 import funcinfo  # noqa: E402
 from common import Binary  # noqa: E402
-from pe_fakes import DATA_RVA, IMAGE_BASE, TEXT_RVA, pe_image  # noqa: E402
+from pe_fakes import (DATA_RVA, IMAGE_BASE, TEXT_RVA, binary_from_sections, fake_section,  # noqa: E402
+                      pe_image)
 
 TEXT = IMAGE_BASE + TEXT_RVA
 REPO = Path(__file__).resolve().parent.parent
@@ -45,9 +46,9 @@ class TestReturns:
         rets, _, end = funcinfo.analyze(_binary(tmp_path, b"\xC2\x08\x00"), TEXT, 0x100)
         assert rets == [(TEXT, 8)] and end == TEXT + 3
 
-    def test_no_ret_leaves_end_at_start(self, tmp_path):
+    def test_without_a_ret_the_end_is_after_the_last_instruction_before_the_padding(self, tmp_path):
         rets, _, end = funcinfo.analyze(_binary(tmp_path, MOV * 3), TEXT, 0x100)
-        assert rets == [] and end == TEXT
+        assert rets == [] and end == TEXT + 12
 
 
 class TestCalls:
@@ -119,7 +120,7 @@ class TestScanStops:
     def test_int3_that_no_branch_jumps_past_ends_the_scan_even_before_any_ret(self, tmp_path):
         code = _call(0, 0x40) + b"\xCC" + b"\xC3"
         rets, calls, end = funcinfo.analyze(_binary(tmp_path, code), TEXT, 0x100)
-        assert calls == [(TEXT, TEXT + 0x40)] and rets == [] and end == TEXT
+        assert calls == [(TEXT, TEXT + 0x40)] and rets == [] and end == TEXT + 5
 
     def test_int3_after_a_noreturn_call_that_a_branch_jumps_past_does_not_end_the_scan(self, tmp_path):
         # je over / call noreturn / int3 / over: ret / int3 padding / the next function: ret
@@ -137,7 +138,51 @@ class TestScanStops:
         # je other / jmp other / int3 padding / other function: ret
         code = b"\x74\x06" + b"\xEB\x04" + b"\xCC" * 4 + b"\xC3"
         rets, _, end = funcinfo.analyze(_binary(tmp_path, code), TEXT, 0x100)
-        assert rets == [] and end == TEXT
+        assert rets == [] and end == TEXT + 4
+
+    def test_branch_past_an_int3_to_another_known_function_does_not_carry_the_scan_over_it(self, tmp_path):
+        # je over / jmp far (tail call) / over: call noreturn / int3 padding / the next function / far: ret
+        code = bytearray(b"\xCC" * 0x101)
+        code[0:2] = b"\x85\xC0"                                         # test eax, eax
+        code[2:4] = b"\x74\x05"                                         # je +9
+        code[4:9] = b"\xE9" + struct.pack("<i", 0x100 - 9)              # jmp +0x100
+        code[9:14] = _call(9, 0x40)
+        code[16:20] = b"\x55\x33\xC0\xC3"                               # push ebp / xor eax, eax / ret
+        code[0x100] = 0xC3
+        rets, calls, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x200)
+        assert rets == [] and calls == [(TEXT + 9, TEXT + 0x40)] and end == TEXT + 14
+
+    def test_x64_branch_past_an_int3_to_another_function_of_the_exception_table(self):
+        # je over / jmp far (tail call) / over: call far / int3 padding / next: xor eax, eax; ret / far: ret
+        text_rva, pdata_rva, xdata_rva = 0x1000, 0x2000, 0x3000
+        text = bytearray(b"\xCC" * 0x41)
+        text[0:2] = b"\x85\xC0"
+        text[2:4] = b"\x74\x05"
+        text[4:9] = b"\xE9" + struct.pack("<i", 0x40 - 9)
+        text[9:14] = _call(9, 0x40)
+        text[0x10:0x13] = b"\x33\xC0\xC3"
+        text[0x40] = 0xC3
+        xdata = bytes([0x01, 0, 0, 0])                                  # version 1, no flags, no unwind codes
+        pdata = b"".join(struct.pack("<III", text_rva + begin, text_rva + end, xdata_rva)
+                         for begin, end in [(0, 0x0E), (0x10, 0x13), (0x40, 0x41)])
+        sections = [fake_section(text_rva, len(text), 0, len(text), executable=True),
+                    fake_section(pdata_rva, len(pdata), len(text), len(pdata)),
+                    fake_section(xdata_rva, len(xdata), len(text) + len(pdata), len(xdata))]
+        b = binary_from_sections(bytes(text) + pdata + xdata, sections, is_64=True,
+                                 exception_table=(pdata_rva, len(pdata)))
+        rets, calls, end = funcinfo.analyze(b, TEXT, 0x100)
+        assert rets == [] and calls == [(TEXT + 9, TEXT + 0x40)] and end == TEXT + 14
+
+    def test_branch_to_a_later_label_of_the_same_function_carries_the_scan_over_an_int3(self, tmp_path):
+        # caller of the function at +0x10, whose je jumps over a noreturn call and its int3
+        code = bytearray(b"\xCC" * 0x40)
+        code[0:6] = _call(0, 0x10) + b"\xC3"
+        code[0x10:0x12] = b"\x74\x06"
+        code[0x12:0x17] = _call(0x12, 0x30)
+        code[0x18] = 0xC3
+        code[0x30] = 0xC3
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT + 0x10, 0x100)
+        assert rets == [(TEXT + 0x18, 0)] and end == TEXT + 0x19
 
 
 class TestMaxSize:
@@ -212,6 +257,16 @@ class TestCli:
         assert out[0] == f"Function: 0x{TEXT:08X} .. 0x{TEXT + 5:08X}  (5 bytes)"
         assert out[2:] == ["Returns (1):", f"  0x{TEXT + 4:08X}: ret 0x0     cdecl/thiscall  0 stack args",
                            "", "Callees (0):"]
+
+    def test_function_ending_in_a_tail_jump_contains_its_interior_addresses(self, tmp_path, monkeypatch, capsys):
+        code = bytearray(b"\xCC" * 0x61)
+        code[0:6] = _call(0, 0x20) + b"\xC3"
+        code[0x20:0x28] = MOV * 2
+        code[0x28:0x2D] = b"\xE9" + struct.pack("<i", 0x60 - 0x2D)       # jmp +0x60
+        code[0x60] = 0xC3
+        path = pe_image(tmp_path / "a.exe", bytes(code))
+        out = self._run(monkeypatch, capsys, str(path), f"0x{TEXT + 0x24:X}")
+        assert out[:3] == [f"Function: 0x{TEXT + 0x20:08X} .. 0x{TEXT + 0x2D:08X}  (13 bytes)", "", "Returns (0):"]
 
     @pytest.mark.parametrize("size, found", [("0x2C", False), ("0x2D", True), ("44", False), ("45", True), (None, True)])
     def test_max_size_bounds_the_scan(self, tmp_path, monkeypatch, capsys, size, found):

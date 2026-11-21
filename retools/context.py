@@ -348,7 +348,7 @@ def main(argv: list[str] | None = None) -> None:
         try:
             result = assemble(b, va, args.project, db_path=args.db,
                               no_dataflow=args.no_dataflow)
-        except FileNotFoundError as e:
+        except (FileNotFoundError, sqlite3.DatabaseError) as e:
             print(f"context: {e}", file=sys.stderr)
             sys.exit(1)
         print(result, end="")

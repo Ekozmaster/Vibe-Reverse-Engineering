@@ -465,8 +465,27 @@ class TestDetectCompiler:
         db.write_bytes(b"")
         fake = MagicMock()
         fake.fingerprint.return_value = {"compiler": "gcc"}
-        monkeypatch.setattr(sigdb, "SignatureDB", lambda path: fake)
+        monkeypatch.setattr(sigdb.SignatureDB, "open_existing", lambda path: fake)
         assert _detect_compiler(MagicMock(), str(db)) == {"compiler": "gcc", "confidence": 0.0}
+        fake.close.assert_called_once_with()
+
+    @pytest.mark.parametrize("reader", ["_detect_compiler", "_scan_signatures"])
+    def test_a_file_that_is_no_signature_database_is_left_as_it_is(self, tmp_path, reader):
+        import sqlite3
+        import bootstrap
+        index = tmp_path / "index.db"
+        with sqlite3.connect(index) as other:
+            other.execute("CREATE TABLE names (address INTEGER)")
+        other.close()
+        before = index.read_bytes()
+        empty = tmp_path / "empty.db"
+        empty.write_bytes(b"")
+
+        for path in (index, empty):
+            getattr(bootstrap, reader)(MagicMock(), str(path), *(["msvc"] if reader == "_scan_signatures" else []))
+
+        assert index.read_bytes() == before
+        assert empty.read_bytes() == b""
 
 
 class TestMain:
@@ -511,6 +530,19 @@ class TestScanRtti:
         assert count == 2
         assert _parsed(entries) == [(0x5000, "Derived_vtable"), (0x6000, "Lone_vtable")]
 
+    def test_vtable_entry_name_keeps_every_letter_of_the_class_name(self, monkeypatch):
+        import rtti
+        from bootstrap import _scan_rtti
+        classes = []
+        for vtable_va, name in [(0x5000, ".?AVVAArray@@"), (0x6000, ".?AUVertex@@"), (0x7000, ".?AVbad_alloc@std@@")]:
+            cls = MagicMock(hierarchy=[], vtable_va=vtable_va)
+            cls.name = name
+            classes.append(cls)
+        monkeypatch.setattr(rtti, "scan_all_rtti", lambda pe: classes)
+        _count, entries = _scan_rtti(None)
+        assert _parsed(entries) == [(0x5000, "VAArray_vtable"), (0x6000, "Vertex_vtable"),
+                                    (0x7000, "bad_alloc_std_vtable")]
+
     def test_unparseable_rtti_is_skipped(self, monkeypatch):
         import rtti
         from bootstrap import _scan_rtti
@@ -532,7 +564,7 @@ class TestScanSignatures:
         match.name = "_memcpy"
         fake = MagicMock()
         fake.scan.return_value = {0x401000: match}
-        monkeypatch.setattr(sigdb, "SignatureDB", lambda path: fake)
+        monkeypatch.setattr(sigdb.SignatureDB, "open_existing", lambda path: fake)
         results, entries = _scan_signatures(MagicMock(), str(db), "msvc")
         assert results == {0x401000: match}
         assert _parsed(entries) == [(0x401000, "_memcpy")]

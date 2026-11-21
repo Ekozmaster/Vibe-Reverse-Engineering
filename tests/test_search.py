@@ -4,6 +4,7 @@ import re
 import struct
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,6 +65,35 @@ class TestMatchInsn:
         assert not search._match_insn("mov", "eax, 0x20000", "mov *,0x10000")
         assert not search._match_insn("cmp", "eax, 0x10000", "mov *,0x10000")
         assert search._match_insn("jne", "0x401000", "j*")
+
+
+def _export(ordinal: int, rva: int, name: bytes, forwarder: bytes | None = None) -> SimpleNamespace:
+    return SimpleNamespace(ordinal=ordinal, address=rva, name=name, forwarder=forwarder)
+
+
+class TestExports:
+    def _exports(self, capsys, symbols, *, base=0x10000000, is_64=False, keyword=None) -> list[str]:
+        b = SimpleNamespace(pe=SimpleNamespace(DIRECTORY_ENTRY_EXPORT=SimpleNamespace(symbols=symbols)),
+                            base=base, is_64=is_64)
+        search.cmd_exports(b, SimpleNamespace(filter=keyword))
+        return capsys.readouterr().out.splitlines()
+
+    def test_address_is_the_virtual_address(self, capsys):
+        out = self._exports(capsys, [_export(1, 0x1234, b"Draw"), _export(2, 0x2000, b"Present")])
+        assert out == ["      1  0x10001234  Draw", "      2  0x10002000  Present"]
+
+    def test_64_bit_address_is_the_virtual_address(self, capsys):
+        out = self._exports(capsys, [_export(7, 0x1234, b"Draw")], base=IMAGE_BASE64, is_64=True)
+        assert out == [f"      7  0x{IMAGE_BASE64 + 0x1234:016X}  Draw"]
+
+    def test_forwarded_export_names_its_target(self, capsys):
+        out = self._exports(capsys, [_export(3, 0x5000, b"HeapAlloc", b"NTDLL.RtlAllocateHeap")])
+        assert out == ["      3  0x10005000  HeapAlloc  -> NTDLL.RtlAllocateHeap"]
+
+    def test_keyword_filter_and_unnamed_exports(self, capsys):
+        symbols = [_export(1, 0x1000, b"Draw"), _export(2, 0x2000, None)]
+        assert self._exports(capsys, symbols, keyword="dra") == ["      1  0x10001000  Draw"]
+        assert self._exports(capsys, symbols)[1] == "      2  0x10002000  "
 
 
 class TestInstructionScan:

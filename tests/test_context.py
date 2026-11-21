@@ -617,6 +617,22 @@ class TestCli:
         assert exc.value.code == 1
         assert f"context: no signature database at {missing}" in capsys.readouterr().err
 
+    def test_assemble_with_a_db_that_is_no_signature_database_exits_with_message(self, tmp_path, capsys):
+        import sqlite3
+        from context import main
+        index = tmp_path / "index.db"
+        with sqlite3.connect(index) as other:
+            other.execute("CREATE TABLE names (address INTEGER)")
+        other.close()
+        before = index.read_bytes()
+        from sigdb import SignatureDB
+        with patch("context.Binary"),              patch("context.assemble", side_effect=lambda *args, db_path, **rest: SignatureDB.open_existing(db_path)):
+            with pytest.raises(SystemExit) as exc:
+                main(["assemble", "game.exe", "401000", "--project", str(tmp_path), "--db", str(index)])
+        assert exc.value.code == 1
+        assert "context: " in capsys.readouterr().err
+        assert index.read_bytes() == before
+
     def test_assemble_prints_identity_and_named_callees_from_the_projects_kb(self, tmp_path, capsys):
         import struct
         from context import main

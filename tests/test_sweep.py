@@ -6,11 +6,14 @@ and a scanner then reports "0 references" for code it never looked at.
 """
 
 import struct
+from types import SimpleNamespace
 
 from pe_fakes import CODE_VA, binary_over
 
 import datarefs
 import search
+import structrefs
+import vtable
 import xrefs
 
 GLOBAL_VA = 0x402000
@@ -75,3 +78,24 @@ class TestScannersSeeCodeAfterEmbeddedData:
         b = binary_over(_CODE)
         refs = xrefs.scan_indirect_refs(b.raw, b.exec_ranges(), b.base)
         assert _VTABLE_CALL_VA in [ref.va for ref in refs]
+
+    def test_struct_offset_scan_finds_access_after_data(self):
+        b = binary_over(_CODE)
+        hits = [(va, base) for va, base, *_ in structrefs.scan(b, 0x10, None, None, 0)]
+        assert hits == [(_VTABLE_CALL_VA, "edx")]
+
+    def test_struct_offset_scan_of_a_function_finds_access_after_data(self):
+        b = binary_over(_CODE)
+        hits = [va for va, *_ in structrefs.scan(b, 0x10, None, CODE_VA, len(_CODE))]
+        assert hits == [_VTABLE_CALL_VA]
+
+    def test_struct_field_scan_of_a_function_finds_field_after_data(self):
+        b = binary_over(_CODE)
+        fields = [(disp, va) for disp, va, *_ in structrefs.scan_all_fields(b, None, CODE_VA, len(_CODE))]
+        assert fields == [(0x10, _VTABLE_CALL_VA)]
+
+    def test_vtable_call_scan_finds_call_after_data(self, capsys):
+        vtable.cmd_calls(binary_over(_CODE), SimpleNamespace(offset="10"))
+        assert capsys.readouterr().out.splitlines() == [
+            "1 indirect calls through [reg+0x10]", "",
+            f"  0x{_VTABLE_CALL_VA:08X}  edx    call dword ptr [edx + 0x10]"]
