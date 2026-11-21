@@ -28,6 +28,8 @@ jobs:
   # tools/ holds pointer files and the tests that need radare2 skip here as well.
   test-windows:
     runs-on: windows-latest
+    # A test that attaches to a live process can block for good; the suite takes about 5 minutes
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python 3.12
