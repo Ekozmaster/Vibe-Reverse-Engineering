@@ -79,12 +79,45 @@ namespace
 	//                    the other strips' draws, so a copy a proxy keeps per buffer range
 	//                    stays apart from its copies of those.
 	//   writeonly        the strip's buffer is D3DUSAGE_WRITEONLY
-	// One variant draws a quad in place of the strip:
+	//   writeonly-default  the strip's buffer is D3DUSAGE_WRITEONLY in the default pool, which
+	//                    Direct3D does not promise to read back
+	//   short-texcoord   the strip's texture coordinate is declared SHORT4
+	//   half-normal      the strip's normal is declared FLOAT16_4
+	//   junk-unused-index  every vertex stores weights that add up to 1 and, as the index of
+	//                    the weight left over, a bone the palette does not hold
+	//   negative-base    the strip lies behind other vertices and is drawn with a negative
+	//                    BaseVertexIndex, which its indices make up for
+	//   state-block-stream  the strip's buffer is bound, a state block captures the device,
+	//                    another buffer that holds the strip moved aside is bound, and applying
+	//                    the block brings the strip's buffer back for the draw
+	//   state-block-declaration  the strip's declaration is set, a state block captures the
+	//                    device, a declaration that places the blend elements elsewhere in the
+	//                    same vertex is set, and applying the block brings the strip's back
+	//   vs-constants-out-of-range, ps-constants-out-of-range
+	//                    after View and Projection are uploaded, a shader constant upload starts
+	//                    at a register near UINT_MAX. Direct3D refuses the call.
+	//   reset            two thirds into the run every resource is released, the device is
+	//                    Reset with the parameters it was created with, and the resources are
+	//                    created again
+	//   second-device    two thirds into the run every resource and the device are released,
+	//                    the device's last Release has to return 0, and a new device takes over
+	// Some variants draw a quad in place of the strip:
 	//   fvf-after-skinned  the strip's declaration is set, then the quad is drawn through SetFVF.
 	//                    Read with the strip's declaration, each of its vertices is a skinned
 	//                    vertex that follows bone 0.
+	//   up-after-converted, indexed-up-after-converted
+	//                    the quad is drawn from its vertex buffer and then, with no shader set
+	//                    in between, once more on top through DrawPrimitiveUP or
+	//                    DrawIndexedPrimitiveUP
 	const char* const VARIANTS[] = { "color-indices", "ushort-weights", "partial-palette", "fvf-zero",
-		"dynamic-rewritten", "writeonly", "fvf-after-skinned" };
+		"dynamic-rewritten", "writeonly", "writeonly-default", "short-texcoord", "half-normal",
+		"junk-unused-index", "negative-base", "state-block-stream", "state-block-declaration",
+		"vs-constants-out-of-range",
+		"ps-constants-out-of-range", "reset", "second-device", "fvf-after-skinned",
+		"up-after-converted", "indexed-up-after-converted" };
+
+	// The frame in which the reset and second-device variants replace what they draw with
+	constexpr int REPLACEMENT_FRAME = 60;
 
 	[[noreturn]] void fail(const char* what, HRESULT hr = E_FAIL)
 	{
@@ -95,6 +128,12 @@ namespace
 	void check(HRESULT hr, const char* what)
 	{
 		if (FAILED(hr)) fail(what, hr);
+	}
+
+	[[noreturn]] void fail_with_count(const char* what, unsigned long count)
+	{
+		std::fprintf(stderr, "toy: %s (%lu)\n", what, count);
+		std::exit(2);
 	}
 
 	options parse_options(int argc, char** argv)
@@ -164,6 +203,32 @@ namespace
 		{ 0, 36, D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
 		D3DDECL_END()
 	};
+	// As wide as SKIN3_DECL, with the weights where that keeps its indices and the indices
+	// in the last four bytes of its weights
+	const D3DVERTEXELEMENT9 SKIN3_MOVED_BLEND_DECL[] = {
+		{ 0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+		{ 0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 },
+		{ 0, 24, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+		{ 0, 32, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
+		{ 0, 44, D3DDECLTYPE_UBYTE4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0 },
+		D3DDECL_END()
+	};
+	const D3DVERTEXELEMENT9 SKIN3_SHORT_TEXCOORD_DECL[] = {
+		{ 0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+		{ 0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 },
+		{ 0, 24, D3DDECLTYPE_SHORT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+		{ 0, 32, D3DDECLTYPE_UBYTE4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0 },
+		{ 0, 36, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
+		D3DDECL_END()
+	};
+	const D3DVERTEXELEMENT9 SKIN3_HALF_NORMAL_DECL[] = {
+		{ 0,  0, D3DDECLTYPE_FLOAT3,    D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+		{ 0, 12, D3DDECLTYPE_FLOAT16_4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 },
+		{ 0, 24, D3DDECLTYPE_FLOAT2,    D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+		{ 0, 32, D3DDECLTYPE_UBYTE4,    D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0 },
+		{ 0, 36, D3DDECLTYPE_FLOAT3,    D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
+		D3DDECL_END()
+	};
 	const D3DVERTEXELEMENT9 SKIN_USHORT_DECL[] = {
 		{ 0,  0, D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
 		{ 0, 12, D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 },
@@ -223,6 +288,19 @@ namespace
 		{  0.25f,  0.4f, { 0.0f, 0.2f, 0.0f }, { 0, 1, 0, 2 } },
 	};
 	constexpr UINT STRIP_VERTICES = 6;
+
+	// The strip with weights that add up to exactly 1 in every vertex, so the weight left for
+	// the fourth index is 0. That index names a bone inside the shader's array and outside
+	// the three bones uploaded for the strip.
+	constexpr BYTE UNUSED_BONE = 50;
+	const strip_point FULLY_WEIGHTED_STRIP[] = {
+		{ -0.25f, -0.4f, { 1.0f, 0.0f,  0.0f  }, { 0, 1, 2, UNUSED_BONE } },
+		{  0.25f, -0.4f, { 1.0f, 0.0f,  0.0f  }, { 0, 1, 2, UNUSED_BONE } },
+		{ -0.25f,  0.0f, { 0.5f, 0.5f,  0.0f  }, { 0, 1, 2, UNUSED_BONE } },
+		{  0.25f,  0.0f, { 0.5f, 0.5f,  0.0f  }, { 0, 1, 2, UNUSED_BONE } },
+		{ -0.25f,  0.4f, { 0.0f, 0.25f, 0.75f }, { 0, 1, 2, UNUSED_BONE } },
+		{  0.25f,  0.4f, { 0.0f, 0.25f, 0.75f }, { 0, 1, 2, UNUSED_BONE } },
+	};
 	constexpr UINT STRIP_TRIANGLES = 4;
 
 	// The offset strip sits behind vertices no draw should read. Reaching it takes the stream
@@ -232,6 +310,12 @@ namespace
 	constexpr UINT OFFSET_MIN_INDEX = 5;
 	constexpr UINT OFFSET_FILLER = OFFSET_STREAM_VERTICES + OFFSET_BASE_VERTEX + OFFSET_MIN_INDEX;
 
+	// The same strip reached with a base vertex index below zero
+	constexpr INT NEGATIVE_BASE_VERTEX = -3;
+	constexpr UINT NEGATIVE_BASE_MIN_INDEX = 11;
+	static_assert(static_cast<INT>(OFFSET_STREAM_VERTICES + NEGATIVE_BASE_MIN_INDEX) + NEGATIVE_BASE_VERTEX == static_cast<INT>(OFFSET_FILLER),
+		"the negative base has to lead to the strip");
+
 	const WORD INDICES[] = {
 		// quad, from index 0
 		0, 1, 2, 2, 1, 3,
@@ -239,10 +323,13 @@ namespace
 		0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5,
 		// strip whose indices start at OFFSET_MIN_INDEX, from index 18
 		5, 6, 7, 7, 6, 8, 7, 8, 9, 9, 8, 10,
+		// strip whose indices start at NEGATIVE_BASE_MIN_INDEX, from index 30
+		11, 12, 13, 13, 12, 14, 13, 14, 15, 15, 14, 16,
 	};
 	constexpr UINT QUAD_FIRST_INDEX = 0;
 	constexpr UINT STRIP_FIRST_INDEX = 6;
 	constexpr UINT OFFSET_STRIP_FIRST_INDEX = 18;
+	constexpr UINT NEGATIVE_BASE_STRIP_FIRST_INDEX = 30;
 
 	skin3_vertex skin3_from(const strip_point& p)
 	{
@@ -348,6 +435,7 @@ float4 ps_red() : COLOR
 		IDirect3DVertexDeclaration9* skin3_decl = nullptr;
 		IDirect3DVertexDeclaration9* skin4_decl = nullptr;
 		IDirect3DVertexDeclaration9* variant_decl = nullptr;
+		IDirect3DVertexDeclaration9* moved_blend_decl = nullptr;
 
 		IDirect3DVertexBuffer9* rigid_vb = nullptr;
 		IDirect3DVertexBuffer9* flat_vb = nullptr;
@@ -356,9 +444,14 @@ float4 ps_red() : COLOR
 		IDirect3DVertexBuffer9* skin3_high_vb = nullptr;
 		IDirect3DVertexBuffer9* skin4_vb = nullptr;
 		IDirect3DVertexBuffer9* variant_vb = nullptr;
+		IDirect3DVertexBuffer9* aside_vb = nullptr;
 		IDirect3DVertexBuffer9* fvf_vb = nullptr;
 		UINT variant_stride = 0;
 		UINT variant_vertices = STRIP_VERTICES;
+		UINT variant_stream_offset = 0;
+		INT variant_base_vertex = 0;
+		UINT variant_min_index = 0;
+		UINT variant_first_index = STRIP_FIRST_INDEX;
 		IDirect3DIndexBuffer9* ib = nullptr;
 
 		IDirect3DTexture9* green = nullptr;
@@ -443,6 +536,13 @@ float4 ps_red() : COLOR
 		const XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(50), 1.0f, 0.5f, 50.0f);
 		set_view_and_projection(s, view, proj);
 
+		// Direct3D refuses both uploads, so their results are not checked
+		static const float zeros[32 * 4] = {};
+		if (s.opt.variant == "vs-constants-out-of-range")
+			dev->SetVertexShaderConstantF(0xFFFFFFF0u, zeros, 32);
+		if (s.opt.variant == "ps-constants-out-of-range")
+			dev->SetPixelShaderConstantF(0xFFFFFFF8u, zeros, 16);
+
 		check(dev->SetTexture(s.opt.albedo_stage, s.green), "SetTexture");
 		if (s.opt.albedo_stage != 0)
 			check(dev->SetTexture(0, s.blue), "SetTexture");
@@ -478,7 +578,8 @@ float4 ps_red() : COLOR
 		set_strip_bones(s, 0, -2, 35, LARGE_PALETTE);
 		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, strip_vertices, STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
 
-		bind(s, s.variant_decl, s.variant_vb, 0, s.variant_stride, s.opt.variant == "color-indices" ? s.vs_skinned_color : s.vs_skinned);
+		const XMMATRIX variant_quad_world = XMMatrixRotationZ(XMConvertToRadians(30)) * XMMatrixTranslation(2, -2, 0);
+		bind(s, s.variant_decl, s.variant_vb, s.variant_stream_offset, s.variant_stride, s.opt.variant == "color-indices" ? s.vs_skinned_color : s.vs_skinned);
 		const auto variant_bones = set_strip_bones(s, 2, -2, -20);
 		if (s.opt.variant == "partial-palette")
 			check(dev->SetVertexShaderConstantF(s.opt.bones, variant_bones.data(), REGISTERS_PER_BONE), "SetVertexShaderConstantF");
@@ -489,13 +590,36 @@ float4 ps_red() : COLOR
 			check(dev->SetFVF(FVF_VERTEX_FORMAT), "SetFVF");
 			check(dev->SetStreamSource(0, s.fvf_vb, 0, sizeof(fvf_vertex)), "SetStreamSource");
 			check(dev->SetVertexShader(s.vs_rigid), "SetVertexShader");
-			set_matrix(s, s.opt.world, XMMatrixRotationZ(XMConvertToRadians(30)) * XMMatrixTranslation(2, -2, 0));
+			set_matrix(s, s.opt.world, variant_quad_world);
 			check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");
+			set_matrix(s, s.opt.world, last_quad_world);
+		}
+		else if (s.opt.variant == "up-after-converted" || s.opt.variant == "indexed-up-after-converted")
+		{
+			bind(s, s.rigid_decl, s.rigid_vb, 0, sizeof(rigid_vertex), s.vs_rigid);
+			set_matrix(s, s.opt.world, variant_quad_world);
+			check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");
+			if (s.opt.variant == "up-after-converted")
+				check(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, RIGID_VERTICES, sizeof(rigid_vertex)), "DrawPrimitiveUP");
+			else
+				check(dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, 4, 2, INDICES, D3DFMT_INDEX16, RIGID_VERTICES, sizeof(rigid_vertex)), "DrawIndexedPrimitiveUP");
 			set_matrix(s, s.opt.world, last_quad_world);
 		}
 		else
 		{
-			check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, s.variant_vertices + s.opt.extra_vertices, STRIP_FIRST_INDEX, STRIP_TRIANGLES), "DrawIndexedPrimitive");
+			if (s.opt.variant == "state-block-stream" || s.opt.variant == "state-block-declaration")
+			{
+				IDirect3DStateBlock9* strip_bound = nullptr;
+				check(dev->CreateStateBlock(D3DSBT_ALL, &strip_bound), "CreateStateBlock");
+				if (s.opt.variant == "state-block-stream")
+					check(dev->SetStreamSource(0, s.aside_vb, 0, s.variant_stride), "SetStreamSource");
+				else
+					check(dev->SetVertexDeclaration(s.moved_blend_decl), "SetVertexDeclaration");
+				check(strip_bound->Apply(), "IDirect3DStateBlock9::Apply");
+				strip_bound->Release();
+			}
+			check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, s.variant_base_vertex, s.variant_min_index,
+				s.variant_vertices + s.opt.extra_vertices, s.variant_first_index, STRIP_TRIANGLES), "DrawIndexedPrimitive");
 		}
 
 		bind(s, s.rigid_decl, s.rigid_vb, 0, sizeof(rigid_vertex), s.vs_rigid);
@@ -520,10 +644,10 @@ float4 ps_red() : COLOR
 
 	// A dynamic buffer goes to the default pool: the managed pool takes none
 	template <typename T>
-	IDirect3DVertexBuffer9* make_vertex_buffer(const scene& s, const std::vector<T>& vertices, DWORD usage = 0)
+	IDirect3DVertexBuffer9* make_vertex_buffer(const scene& s, const std::vector<T>& vertices, DWORD usage = 0, bool default_pool = false)
 	{
 		const UINT bytes = static_cast<UINT>(vertices.size() * sizeof(T));
-		const D3DPOOL pool = (usage & D3DUSAGE_DYNAMIC) ? D3DPOOL_DEFAULT : buffer_pool(s);
+		const D3DPOOL pool = (default_pool || (usage & D3DUSAGE_DYNAMIC)) ? D3DPOOL_DEFAULT : buffer_pool(s);
 		IDirect3DVertexBuffer9* vb = nullptr;
 		check(s.dev->CreateVertexBuffer(bytes, usage, 0, pool, &vb, nullptr), "CreateVertexBuffer");
 		fill_vertex_buffer(vb, vertices);
@@ -595,8 +719,11 @@ float4 ps_red() : COLOR
 		check(dev->CreateVertexDeclaration(SKIN3_DECL, &s.skin3_decl), "CreateVertexDeclaration");
 		check(dev->CreateVertexDeclaration(SKIN4_DECL, &s.skin4_decl), "CreateVertexDeclaration");
 		const D3DVERTEXELEMENT9* variant_elements = s.opt.variant == "color-indices" ? SKIN3_COLOR_DECL
-			: s.opt.variant == "ushort-weights" ? SKIN_USHORT_DECL : SKIN3_DECL;
+			: s.opt.variant == "ushort-weights" ? SKIN_USHORT_DECL
+			: s.opt.variant == "short-texcoord" ? SKIN3_SHORT_TEXCOORD_DECL
+			: s.opt.variant == "half-normal" ? SKIN3_HALF_NORMAL_DECL : SKIN3_DECL;
 		check(dev->CreateVertexDeclaration(variant_elements, &s.variant_decl), "CreateVertexDeclaration");
+		check(dev->CreateVertexDeclaration(SKIN3_MOVED_BLEND_DECL, &s.moved_blend_decl), "CreateVertexDeclaration");
 
 		s.rigid_vb = make_vertex_buffer(s, std::vector<rigid_vertex>(std::begin(RIGID_VERTICES), std::end(RIGID_VERTICES)));
 		s.flat_vb = make_vertex_buffer(s, std::vector<flat_vertex>(std::begin(FLAT_VERTICES), std::end(FLAT_VERTICES)));
@@ -613,6 +740,17 @@ float4 ps_red() : COLOR
 			for (auto& index : vertex.indices)
 				index = static_cast<BYTE>(index + LARGE_PALETTE - BONES_PER_STRIP);
 		s.skin3_high_vb = make_vertex_buffer(s, skin3_high);
+
+		// Filler a correct draw never reads: one point far outside the cell, following bone 0.
+		const strip_point filler = { 9.0f, 9.0f, { 1.0f, 0.0f, 0.0f }, { 0, 0, 0, 0 } };
+		std::vector<skin3_vertex> skin3_offset(OFFSET_FILLER, skin3_from(filler));
+		skin3_offset.insert(skin3_offset.end(), skin3.begin(), skin3.end());
+		s.skin3_offset_vb = make_vertex_buffer(s, skin3_offset);
+
+		std::vector<skin3_vertex> aside = skin3;
+		for (auto& vertex : aside)
+			vertex.pos[0] += 0.3f;
+		s.aside_vb = make_vertex_buffer(s, aside);
 
 		// The D3DCOLOR variant keeps index i in byte i, as data for a shader that decodes its
 		// indices with D3DCOLORtoUBYTE4 does
@@ -631,18 +769,30 @@ float4 ps_red() : COLOR
 			s.variant_stride = sizeof(skin3_vertex);
 			s.variant_vertices = static_cast<UINT>(strip.size());
 		}
+		else if (s.opt.variant == "junk-unused-index")
+		{
+			std::vector<skin3_vertex> fully_weighted;
+			for (const auto& p : FULLY_WEIGHTED_STRIP)
+				fully_weighted.push_back(skin3_from(p));
+			s.variant_vb = make_vertex_buffer(s, fully_weighted);
+			s.variant_stride = sizeof(skin3_vertex);
+		}
+		else if (s.opt.variant == "negative-base")
+		{
+			s.variant_vb = make_vertex_buffer(s, skin3_offset);
+			s.variant_stride = sizeof(skin3_vertex);
+			s.variant_stream_offset = OFFSET_STREAM_VERTICES * sizeof(skin3_vertex);
+			s.variant_base_vertex = NEGATIVE_BASE_VERTEX;
+			s.variant_min_index = NEGATIVE_BASE_MIN_INDEX;
+			s.variant_first_index = NEGATIVE_BASE_STRIP_FIRST_INDEX;
+		}
 		else
 		{
-			s.variant_vb = make_vertex_buffer(s, skin3, s.opt.variant == "writeonly" ? D3DUSAGE_WRITEONLY : 0);
+			const bool write_only = s.opt.variant == "writeonly" || s.opt.variant == "writeonly-default";
+			s.variant_vb = make_vertex_buffer(s, skin3, write_only ? D3DUSAGE_WRITEONLY : 0, s.opt.variant == "writeonly-default");
 			s.variant_stride = sizeof(skin3_vertex);
 		}
 		s.fvf_vb = make_vertex_buffer(s, std::vector<fvf_vertex>(std::begin(FVF_VERTICES), std::end(FVF_VERTICES)));
-
-		// Filler a correct draw never reads: one point far outside the cell, following bone 0.
-		const strip_point filler = { 9.0f, 9.0f, { 1.0f, 0.0f, 0.0f }, { 0, 0, 0, 0 } };
-		std::vector<skin3_vertex> skin3_offset(OFFSET_FILLER, skin3_from(filler));
-		skin3_offset.insert(skin3_offset.end(), skin3.begin(), skin3.end());
-		s.skin3_offset_vb = make_vertex_buffer(s, skin3_offset);
 
 		check(dev->CreateIndexBuffer(sizeof(INDICES), 0, D3DFMT_INDEX16, buffer_pool(s), &s.ib, nullptr), "CreateIndexBuffer");
 		void* data = nullptr;
@@ -652,6 +802,41 @@ float4 ps_red() : COLOR
 
 		s.green = make_texture(dev, D3DCOLOR_XRGB(0, 255, 0));
 		s.blue = make_texture(dev, D3DCOLOR_XRGB(0, 0, 255));
+	}
+
+	template <typename T>
+	void release(T*& object)
+	{
+		object->Release();
+		object = nullptr;
+	}
+
+	void release_resources(scene& s)
+	{
+		for (DWORD stage = 0; stage < 2; stage++)
+			check(s.dev->SetTexture(stage, nullptr), "SetTexture");
+
+		release(s.vs_rigid); release(s.vs_skinned); release(s.vs_skinned_color); release(s.ps_red);
+		release(s.rigid_decl); release(s.flat_decl); release(s.skin3_decl); release(s.skin4_decl); release(s.variant_decl);
+		release(s.moved_blend_decl);
+		release(s.rigid_vb); release(s.flat_vb); release(s.skin3_vb); release(s.skin3_offset_vb); release(s.skin3_high_vb);
+		release(s.skin4_vb); release(s.variant_vb); release(s.aside_vb); release(s.fvf_vb);
+		release(s.ib);
+		release(s.green); release(s.blue);
+	}
+
+	// Software vertex processing: fixed-function indexed vertex blending then takes 256
+	// matrices on every adapter, where a hardware device may offer none.
+	void create_device(scene& s, IDirect3D9* d3d, D3DPRESENT_PARAMETERS pp)
+	{
+		check(d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, pp.hDeviceWindow, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &s.dev), "CreateDevice");
+	}
+
+	void start_drawing(scene& s)
+	{
+		create_resources(s);
+		s.dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+		s.dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
 	}
 
 	void save_back_buffer(IDirect3DDevice9* dev, const std::string& path)
@@ -737,19 +922,28 @@ int main(int argc, char** argv)
 	pp.hDeviceWindow = hwnd;
 	pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
 
-	// Software vertex processing: fixed-function indexed vertex blending then takes 256
-	// matrices on every adapter, where a hardware device may offer none.
-	check(d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &s.dev), "CreateDevice");
-
-	create_resources(s);
-
-	const auto dev = s.dev;
-	dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-	dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+	create_device(s, d3d, pp);
+	start_drawing(s);
 
 	for (int frame = 0; frame < FRAMES; frame++)
 	{
 		pump_messages();
+		if (frame == REPLACEMENT_FRAME && s.opt.variant == "reset")
+		{
+			release_resources(s);
+			D3DPRESENT_PARAMETERS same = pp;
+			check(s.dev->Reset(&same), "Reset");
+			start_drawing(s);
+		}
+		if (frame == REPLACEMENT_FRAME && s.opt.variant == "second-device")
+		{
+			release_resources(s);
+			if (const ULONG left = s.dev->Release())
+				fail_with_count("the device's last Release left references", left);
+			create_device(s, d3d, pp);
+			start_drawing(s);
+		}
+		const auto dev = s.dev;
 		if (s.opt.variant == "dynamic-rewritten")
 			fill_vertex_buffer(s.variant_vb, dynamic_strip(frame == FRAMES - 1), D3DLOCK_DISCARD);
 		check(dev->BeginScene(), "BeginScene");

@@ -237,14 +237,34 @@ class TestOverlayIcon:
         assert "Failed to load rtx_comp" in frame.log
 
 
+TRIGGER = "dxtrace_capture.trigger"
+TRIGGER_ID = "0123456789abcdef"
+
+
+def trigger(frames, trigger_id=TRIGGER_ID):
+    return {TRIGGER: f"frames={frames}\nid={trigger_id}\n".encode()}
+
+
+def progress_of(frame):
+    return (frame.folder / "dxtrace_progress.txt").read_text()
+
+
+def captures_of(frame):
+    return list((frame.folder / "captures").glob("dxtrace_*.jsonl"))
+
+
 class TestBuiltInTracer:
     """A capture of two frames, started by the trigger file the proxy's tracer looks for."""
 
     @pytest.fixture(scope="class")
     @classmethod
-    def capture(cls, toy):
-        frame = toy.frame("tracer", SHIPPED_LAYOUT, files={"dxtrace_capture.trigger": b"frames=2"})
-        captures = list((frame.folder / "captures").glob("dxtrace_*.jsonl"))
+    def frame(cls, toy):
+        return toy.frame("tracer", SHIPPED_LAYOUT, files=trigger(2))
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def capture(cls, frame):
+        captures = captures_of(frame)
         assert len(captures) == 1, frame.log
         return captures[0].read_text(encoding="utf-8").splitlines()
 
@@ -264,17 +284,45 @@ class TestBuiltInTracer:
         for record in creations:
             assert re.fullmatch("0x[0-9A-F]{8}", record.get("created_handle", "")), record
 
+    def test_the_finished_capture_is_reported_under_the_id_of_its_trigger(self, frame):
+        assert re.fullmatch(rf"2 \d+ {TRIGGER_ID} done\n", progress_of(frame)), frame.log
+
+    def test_the_trigger_is_taken(self, frame):
+        assert not (frame.folder / TRIGGER).exists()
+
+
+class TestBuiltInTracerTrigger:
+    def test_a_trigger_without_an_id_is_reported_under_a_dash(self, toy):
+        frame = toy.frame("tracer_no_id", SHIPPED_LAYOUT, files={TRIGGER: b"frames=2"})
+        assert re.fullmatch(r"2 \d+ - done\n", progress_of(frame)), frame.log
+
+    @pytest.mark.parametrize("name, frames", [("word", "two"), ("trailing", "2x"), ("zero", "0"), ("negative", "-3"), ("empty", "")])
+    def test_a_frame_count_that_is_no_number_from_1_up_starts_no_capture(self, toy, name, frames):
+        frame = toy.frame(f"tracer_frames_{name}", SHIPPED_LAYOUT, files=trigger(frames))
+        assert progress_of(frame).startswith(f"0 0 {TRIGGER_ID} failed "), frame.log
+        assert progress_of(frame).count("\n") == 1
+        assert not captures_of(frame)
+        assert not (frame.folder / TRIGGER).exists()
+
+    def test_a_frame_count_above_the_limit_is_cut_to_it(self, toy):
+        frame = toy.frame("tracer_frames_huge", SHIPPED_LAYOUT, files=trigger(99999999999))
+        assert "External trigger: 100000 frames" in frame.log
+        assert re.fullmatch(rf"\d+ \d+ {TRIGGER_ID}\n", progress_of(frame))
+
+    def test_an_id_that_is_not_16_hex_digits_counts_as_none(self, toy):
+        frame = toy.frame("tracer_bad_id", SHIPPED_LAYOUT, files=trigger(2, "two words"))
+        assert re.fullmatch(r"2 \d+ - done\n", progress_of(frame)), frame.log
+
 
 class TestBuiltInTracerCannotStart:
     """A trigger taken while the capture file cannot be created."""
 
     def test_the_reason_is_in_the_progress_file(self, toy):
         frame = toy.frame("tracer_cannot_start", SHIPPED_LAYOUT,
-                          files={"dxtrace_capture.trigger": b"frames=2", "captures": b"a file where the folder goes"})
+                          files={**trigger(2), "captures": b"a file where the folder goes"})
 
-        progress = (frame.folder / "dxtrace_progress.txt").read_text()
-        assert progress.startswith("0 0 failed cannot create "), frame.log
-        assert not (frame.folder / "dxtrace_capture.trigger").exists()
+        assert progress_of(frame).startswith(f"0 0 {TRIGGER_ID} failed cannot create "), frame.log
+        assert not (frame.folder / TRIGGER).exists()
 
 
 class TestAlbedoStage:
@@ -306,6 +354,15 @@ class TestSkinnedVertexFormats:
         frame, reference = variant_frames(toy, "partial-palette")
         assert_drawn_by(frame, reference, "skinned strip variant", "red")
 
+    def test_blend_index_past_the_palette_whose_weight_is_zero_is_converted(self, toy):
+        frame, reference = variant_frames(toy, "junk-unused-index")
+        assert_drawn_by(frame, reference, "skinned strip variant", "green")
+
+    @pytest.mark.parametrize("variant", ["short-texcoord", "half-normal"])
+    def test_an_element_in_a_format_the_expansion_cannot_read_keeps_the_draw_on_its_shaders(self, toy, variant):
+        frame, reference = variant_frames(toy, variant)
+        assert_drawn_by(frame, reference, "skinned strip variant", "red")
+
 
 class TestSkinnedSourceBuffer:
     """The strip in the last cell, in a vertex buffer created with a usage of its own."""
@@ -316,6 +373,22 @@ class TestSkinnedSourceBuffer:
 
     def test_a_write_only_buffer_in_the_managed_pool_is_converted(self, toy):
         frame, reference = variant_frames(toy, "writeonly")
+        assert_drawn_by(frame, reference, "skinned strip variant", "green")
+
+    def test_a_write_only_buffer_in_the_default_pool_keeps_its_shaders(self, toy):
+        frame, reference = variant_frames(toy, "writeonly-default")
+        assert_drawn_by(frame, reference, "skinned strip variant", "red")
+
+    def test_the_buffer_a_state_block_bound_is_the_one_converted(self, toy):
+        frame, reference = variant_frames(toy, "state-block-stream")
+        assert_drawn_by(frame, reference, "skinned strip variant", "green")
+
+    def test_a_draw_whose_declaration_a_state_block_changed_keeps_its_shaders(self, toy):
+        frame, reference = variant_frames(toy, "state-block-declaration")
+        assert_drawn_by(frame, reference, "skinned strip variant", "red")
+
+    def test_a_negative_base_vertex_index_is_followed(self, toy):
+        frame, reference = variant_frames(toy, "negative-base")
         assert_drawn_by(frame, reference, "skinned strip variant", "green")
 
 
@@ -329,6 +402,50 @@ class TestFvf:
     def test_an_fvf_of_zero_leaves_the_declaration_in_use(self, toy):
         frame, reference = variant_frames(toy, "fvf-zero")
         assert_drawn_by(frame, reference, "skinned strip variant", "green")
+
+
+class TestConstantUploadOutOfRange:
+    """A shader constant upload that starts at a register near UINT_MAX, which Direct3D refuses."""
+
+    def test_a_vertex_shader_upload_changes_nothing(self, toy):
+        frame, reference = variant_frames(toy, "vs-constants-out-of-range")
+        for shape in RIGID + SKINNED:
+            assert_drawn_by(frame, reference, shape, "green")
+
+    def test_a_pixel_shader_upload_changes_nothing(self, toy):
+        # View and Projection in the last vertex shader registers, which the pixel shader
+        # registers follow in the proxy's memory
+        layout = Layout(view=248, proj=252, world=24, bones=40)
+        variant = "ps-constants-out-of-range"
+        reference = toy.frame(f"reference_{variant}", layout, proxy=False, variant=variant)
+        frame = toy.frame(variant, layout, ini=layout.ini, variant=variant)
+        for shape in RIGID:
+            assert_drawn_by(frame, reference, shape, "green")
+
+
+class TestUserPointerDrawAfterConvertedDraw:
+    """A quad drawn converted, then drawn again from user memory with the shaders set before both."""
+
+    @pytest.mark.parametrize("variant", ["up-after-converted", "indexed-up-after-converted"])
+    def test_the_user_pointer_draw_keeps_its_shaders(self, toy, variant):
+        frame, reference = variant_frames(toy, variant)
+        assert_drawn_by(frame, reference, "skinned strip variant", "red")
+
+
+class TestDeviceReplaced:
+    """Two thirds into the run the toy resets its device, or releases it and creates another."""
+
+    @pytest.mark.parametrize("variant", ["reset", "second-device"])
+    def test_draws_are_converted_on_the_device_that_follows(self, toy, variant):
+        reference = toy.frame(f"reference_{variant}", MOVED_LAYOUT, proxy=False, variant=variant)
+        frame = toy.frame(variant, MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON), variant=variant,
+                          files={ICON: _png(4, 4, (255, 128, 0, 255))})
+
+        # The proxy had its modules loaded, and with them objects on the device, when the toy let go of it
+        assert frame.log.index("Skinning] Module initialized.") < frame.log.rindex("FFP] State reset"), frame.log
+        assert "Failed to load" not in frame.log
+        for shape in RIGID + SKINNED:
+            assert_drawn_by(frame, reference, shape, "green")
 
 
 class TestD3D9Ex:

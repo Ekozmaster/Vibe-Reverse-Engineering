@@ -26,7 +26,6 @@ namespace shared::common
 		void on_set_pixel_shader(IDirect3DPixelShader9* shader);
 
 		void on_set_texture(UINT stage, IDirect3DBaseTexture9* texture);
-		void on_set_stream_source(UINT stream, IDirect3DVertexBuffer9* vb, UINT offset, UINT stride);
 		void on_set_vertex_declaration(IDirect3DVertexDeclaration9* decl);
 		void on_set_fvf(DWORD fvf);
 		void on_present();
@@ -77,11 +76,6 @@ namespace shared::common
 
 		// Texture tracking (stages 0-7)
 		IDirect3DBaseTexture9* cur_texture(UINT stage) const { return stage < 8 ? cur_texture_[stage] : nullptr; }
-
-		// Stream source tracking
-		IDirect3DVertexBuffer9* stream_vb(UINT stream) const { return stream < 4 ? stream_vb_[stream] : nullptr; }
-		UINT stream_offset(UINT stream) const { return stream < 4 ? stream_offset_[stream] : 0; }
-		UINT stream_stride(UINT stream) const { return stream < 4 ? stream_stride_[stream] : 0; }
 
 		// VS constant register layout: [FFP.Registers] and [Skinning] in remix-comp-proxy.ini
 		int reg_view_start() const { return config::get().ffp.registers.view_start; }
@@ -136,7 +130,9 @@ namespace shared::common
 		IDirect3DPixelShader9* last_ps_ = nullptr;
 
 		// Vertex declaration tracking. last_decl_ is the declaration last set through the wrapper,
-		// nullptr after a SetFVF. It is not referenced here: the device holds the declaration it has in use.
+		// nullptr after a SetFVF, and the one the cur_decl_ members describe. A reference is held,
+		// so the pointer names that declaration for as long as it is kept. A state block can give
+		// the device another declaration without the wrapper seeing it.
 		IDirect3DVertexDeclaration9* last_decl_ = nullptr;
 		bool cur_decl_is_skinned_ = false;
 		bool cur_decl_has_texcoord_ = false;
@@ -162,11 +158,6 @@ namespace shared::common
 
 		// Texture tracking
 		IDirect3DBaseTexture9* cur_texture_[8] = {};
-
-		// Stream source tracking
-		IDirect3DVertexBuffer9* stream_vb_[4] = {};
-		UINT stream_offset_[4] = {};
-		UINT stream_stride_[4] = {};
 
 		// Frame/draw counters
 		UINT frame_count_ = 0;

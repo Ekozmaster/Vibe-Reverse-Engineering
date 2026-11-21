@@ -4,6 +4,8 @@
 #include "shared/common/config.hpp"
 #include "shared/common/ffp_state.hpp"
 
+#include <wrl/client.h>
+
 namespace comp
 {
 	diagnostics::diagnostics()
@@ -146,12 +148,17 @@ namespace comp
 
 	// ---- Hook callbacks ----
 
-	void diagnostics::on_draw_indexed_prim(UINT draw_count, IDirect3DDevice9* /*dev*/,
+	void diagnostics::on_draw_indexed_prim(UINT draw_count, IDirect3DDevice9* dev,
 		D3DPRIMITIVETYPE pt, INT base_vtx, UINT num_verts, UINT prim_count)
 	{
 		if (!is_active() || draw_count > 200) return;
 
 		auto& ffp = shared::common::ffp_state::get();
+
+		Microsoft::WRL::ComPtr<IDirect3DVertexBuffer9> stream_vb;
+		UINT stream_offset = 0;
+		UINT stream_stride = 0;
+		dev->GetStreamSource(0, &stream_vb, &stream_offset, &stream_stride);
 
 		if (cat_draw_calls)
 		{
@@ -161,7 +168,7 @@ namespace comp
 			log_int("    baseVtx=", base_vtx);
 			log_int("    numVerts=", static_cast<int>(num_verts));
 			log_int("    primCount=", static_cast<int>(prim_count));
-			log_int("    stride0=", static_cast<int>(ffp.stream_stride(0)));
+			log_int("    stride0=", static_cast<int>(stream_stride));
 
 			if (ffp.cur_decl_is_skinned())
 			{
@@ -189,11 +196,11 @@ namespace comp
 		}
 
 		// Log raw vertex bytes for early calls
-		if (cat_vertex_data && draw_count <= 10 && ffp.stream_vb(0) && ffp.stream_stride(0) > 0)
+		if (cat_vertex_data && draw_count <= 10 && stream_vb && stream_stride > 0)
 		{
-			auto* vb = ffp.stream_vb(0);
-			UINT stride = ffp.stream_stride(0);
-			UINT read_off = ffp.stream_offset(0) + static_cast<UINT>(base_vtx) * stride;
+			auto* vb = stream_vb.Get();
+			UINT stride = stream_stride;
+			UINT read_off = stream_offset + static_cast<UINT>(base_vtx) * stride;
 			unsigned char* data = nullptr;
 
 			if (SUCCEEDED(vb->Lock(read_off, stride * 2, reinterpret_cast<void**>(&data), D3DLOCK_READONLY)))

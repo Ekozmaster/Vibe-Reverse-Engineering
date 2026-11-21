@@ -35,8 +35,9 @@ namespace comp
 			D3DPRIMITIVETYPE pt, INT base_vtx, UINT min_vtx, UINT num_verts,
 			UINT start_idx, UINT prim_count);
 
-		// Called on device reset
-		void on_reset();
+		// Lets go of everything created on the device or kept from it. Called before the device
+		// is Reset and when the game releases it.
+		void release_device_objects();
 
 	private:
 		static constexpr int SKIN_VTX_SIZE = 48;
@@ -44,7 +45,7 @@ namespace comp
 
 		IDirect3DVertexDeclaration9* skin_exp_decl_ = nullptr;
 
-		// Vertices of a source buffer: num_verts of them from first_byte on
+		// Vertices of a source buffer: num_verts of them from first_byte on. No vertices when num_verts is 0.
 		struct vertex_range
 		{
 			UINT first_byte = 0;
@@ -55,7 +56,8 @@ namespace comp
 		// the same range of the same source buffer is drawn with the same declaration, so the
 		// game is taken not to rewrite a skinned mesh's vertices; a D3DUSAGE_DYNAMIC source,
 		// made to be rewritten, is not expanded. The entry holds a reference to its source
-		// buffer and declaration until it is evicted.
+		// buffer and declaration until it is evicted. The expanded buffer has first_slot
+		// zeroed vertices in front, so that the draw's indices address it unchanged.
 		struct expanded_range
 		{
 			IDirect3DVertexBuffer9* source = nullptr;
@@ -63,28 +65,30 @@ namespace comp
 			UINT first_byte = 0;
 			UINT num_verts = 0;
 			UINT stride = 0;
+			UINT first_slot = 0;
 			IDirect3DVertexBuffer9* expanded = nullptr;
 			BYTE max_blend_index = 0;	// highest bone index the blend reads in these vertices
 		};
 
 		// Memory cost: up to SKIN_CACHE_SIZE default-pool buffers of SKIN_VTX_SIZE bytes per
-		// converted vertex, and each entry keeps a game vertex buffer and declaration alive after
-		// the game releases them. An entry is replaced when another range hashes to its slot;
-		// all are released on Reset and when the module is destroyed.
+		// index from 0 to the highest one a draw names (MinVertexIndex + NumVertices), and each
+		// entry keeps a game vertex buffer and declaration alive after the game releases them.
+		// An entry is replaced when another range hashes to its slot; all are released by
+		// release_device_objects.
 		expanded_range skin_exp_cache_[SKIN_CACHE_SIZE] = {};
 
-		bool initialized_ = false;
-
 		void create_expanded_decl(IDirect3DDevice9* dev);
-		void release_cache();
 		static void evict(expanded_range& entry);
 
-		// Vertex expansion. vertices_in_buffer gives the part of num_verts vertices from
-		// first_byte on that src_vb holds, num_verts 0 when none or when src_vb is dynamic.
-		static vertex_range vertices_in_buffer(IDirect3DVertexBuffer9* src_vb, UINT64 first_byte, UINT num_verts, UINT stride);
-		// The cache entry for the range, expanded now if it was not cached; nullptr on failure
+		// Vertex expansion. vertices_in_buffer gives the part of the num_verts vertices from
+		// vertex first_vertex of the stream on that src_vb holds; none when first_vertex lies
+		// outside the buffer or when the buffer is dynamic or cannot be read back.
+		static vertex_range vertices_in_buffer(IDirect3DVertexBuffer9* src_vb, UINT stream_offset, INT64 first_vertex, UINT num_verts, UINT stride);
+		// The cache entry for the range read with src_decl, expanded now if it was not cached, its
+		// vertices in the slots from first_slot on; nullptr on failure
 		const expanded_range* get_expanded_vb(IDirect3DDevice9* dev,
-			IDirect3DVertexBuffer9* src_vb, const vertex_range& range, UINT stride);
+			IDirect3DVertexBuffer9* src_vb, IDirect3DVertexDeclaration9* src_decl,
+			const vertex_range& range, UINT stride, UINT first_slot);
 		// Writes one vertex in the expanded layout; returns the highest bone index its blend reads
 		BYTE expand_skin_vertex(unsigned char* dst, const unsigned char* src);
 
@@ -94,6 +98,7 @@ namespace comp
 
 		// Format decoders
 		static float half_to_float(unsigned short h);
+		// type is FLOAT3, DEC3N or UBYTE4N, the formats ffp_state takes as expandable
 		static void decode_normal(const unsigned char* src, int type, float* out);
 	};
 }

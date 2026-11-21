@@ -6,7 +6,8 @@ namespace comp
 	{
 		extern bool initialized;
 		extern LPDIRECT3DTEXTURE9 icon;
-		extern void init_texture_addons(bool release = false);
+		extern void init_texture_addons();
+		extern void release_texture_addons();
 	}
 
 	/*

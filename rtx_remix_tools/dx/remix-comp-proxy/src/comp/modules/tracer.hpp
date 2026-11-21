@@ -48,8 +48,11 @@ namespace comp
 		bool is_waiting() const { return waiting_; }
 		float delay_remaining() const;
 
-		// Capture control
-		void start_capture(int num_frames, const std::string& filename);
+		// Id the progress file gives a capture that no trigger file asked for
+		static constexpr char NO_TRIGGER_ID[] = "-";
+
+		// Capture control. trigger_id names the capture in dxtrace_progress.txt.
+		void start_capture(int num_frames, const std::string& filename, const std::string& trigger_id = NO_TRIGGER_ID);
 		void stop_capture();
 		bool is_capturing() const { return capturing_; }
 
@@ -140,8 +143,10 @@ namespace comp
 		int pending_frames_ = 0;
 		std::string pending_filename_;
 
-		// Trigger file watching
+		// Trigger file watching. dxtrace_capture.trigger holds "frames=<N>" and, from a writer
+		// that follows the progress file, "id=<16 lowercase hex digits>" on a line of its own.
 		void check_trigger_file();
+		std::string capture_trigger_id_ = NO_TRIGGER_ID;
 
 		// Helpers
 		void flush_buffer();

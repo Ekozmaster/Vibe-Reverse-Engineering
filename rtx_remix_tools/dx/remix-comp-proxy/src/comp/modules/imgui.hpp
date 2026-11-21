@@ -13,11 +13,16 @@ namespace comp
 
 		static void on_present();
 
+		// Shuts the Direct3D 9 backend down if it was started on dev, which is still there.
+		// on_present starts it again on the device in use then.
+		void release_device(IDirect3DDevice9* dev);
+
 		void devgui();
 		void theme();
 		bool input_message(UINT message_type, WPARAM wparam, LPARAM lparam);
 
-		bool m_initialized_device = false;
+		// The device the Direct3D 9 backend was started on; nullptr while it is not started
+		IDirect3DDevice9* m_backend_device = nullptr;
 
 		Vector m_debug_vector = { 0.0f, 0.0f, 0.0f };
 		Vector m_debug_vector2 = { 0.0f, 0.0f, 0.0f };

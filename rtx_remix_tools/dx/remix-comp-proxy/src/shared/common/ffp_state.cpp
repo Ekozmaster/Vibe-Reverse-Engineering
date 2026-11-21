@@ -22,6 +22,24 @@ namespace shared::common
 			default:                    return 4;	// D3DCOLOR, UBYTE4(N), SHORT2(N), USHORT2N, UDEC3, DEC3N, FLOAT16_2
 			}
 		}
+
+		// Whether [start_reg, start_reg + count) lies inside a register file of register_count registers
+		bool registers_in_range(UINT start_reg, UINT count, UINT register_count)
+		{
+			return start_reg <= register_count && count <= register_count - start_reg;
+		}
+
+		// Element formats the skinning module can copy into its expanded vertex
+		bool skinning_reads_texcoord(int type)
+		{
+			return type == D3DDECLTYPE_FLOAT2 || type == D3DDECLTYPE_FLOAT3 || type == D3DDECLTYPE_FLOAT4 ||
+				type == D3DDECLTYPE_FLOAT16_2;
+		}
+
+		bool skinning_reads_normal(int type)
+		{
+			return type == D3DDECLTYPE_FLOAT3 || type == D3DDECLTYPE_DEC3N || type == D3DDECLTYPE_UBYTE4N;
+		}
 	}
 
 	ffp_state& ffp_state::get()
@@ -48,7 +66,7 @@ namespace shared::common
 
 	void ffp_state::on_set_vs_const_f(UINT start_reg, const float* data, UINT count)
 	{
-		if (!data || start_reg + count > 256) return;
+		if (!data || !registers_in_range(start_reg, count, 256)) return;
 
 		std::memcpy(&vs_const_[start_reg * 4], data, count * 4 * sizeof(float));
 
@@ -99,7 +117,7 @@ namespace shared::common
 
 	void ffp_state::on_set_ps_const_f(UINT start_reg, const float* data, UINT count)
 	{
-		if (!data || start_reg + count > 32) return;
+		if (!data || !registers_in_range(start_reg, count, 32)) return;
 
 		std::memcpy(&ps_const_[start_reg * 4], data, count * 4 * sizeof(float));
 	}
@@ -125,18 +143,10 @@ namespace shared::common
 			cur_texture_[stage] = texture;
 	}
 
-	void ffp_state::on_set_stream_source(UINT stream, IDirect3DVertexBuffer9* vb, UINT offset, UINT stride)
-	{
-		if (stream < 4)
-		{
-			stream_vb_[stream] = vb;
-			stream_offset_[stream] = offset;
-			stream_stride_[stream] = stride;
-		}
-	}
-
 	void ffp_state::on_set_vertex_declaration(IDirect3DVertexDeclaration9* decl)
 	{
+		if (decl) decl->AddRef();
+		if (last_decl_) last_decl_->Release();
 		last_decl_ = decl;
 		cur_decl_is_skinned_ = false;
 		cur_decl_has_texcoord_ = false;
@@ -258,12 +268,15 @@ namespace shared::common
 			default:                  cur_decl_num_weights_ = 0; break;
 			}
 
-			// The skinning module reads a FLOAT3 position, weights it can decode and four index
-			// bytes. D3DCOLOR indices are taken in memory order, the order D3DCOLORtoUBYTE4 gives
-			// a shader.
+			// The skinning module reads a FLOAT3 position, weights it can decode, four index bytes
+			// and, where the declaration has them, a normal and a texture coordinate in a format
+			// it can decode. D3DCOLOR indices are taken in memory order, the order
+			// D3DCOLORtoUBYTE4 gives a shader.
 			const bool readable_indices = blend_indices_type == D3DDECLTYPE_UBYTE4 || blend_indices_type == D3DDECLTYPE_D3DCOLOR;
 			const bool expandable = blend_on_stream_0 && readable_indices && cur_decl_num_weights_ > 0 &&
-				(pos_type == D3DDECLTYPE_FLOAT3 || pos_type == D3DDECLTYPE_FLOAT4);
+				(pos_type == D3DDECLTYPE_FLOAT3 || pos_type == D3DDECLTYPE_FLOAT4) &&
+				(!cur_decl_has_normal_ || skinning_reads_normal(cur_decl_normal_type_)) &&
+				(!cur_decl_has_texcoord_ || skinning_reads_texcoord(cur_decl_texcoord_type_));
 			cur_decl_skin_vertex_bytes_ = expandable ? skin_vertex_bytes : 0;
 		}
 	}
@@ -298,13 +311,10 @@ namespace shared::common
 	{
 		if (last_vs_) { last_vs_->Release(); last_vs_ = nullptr; }
 		if (last_ps_) { last_ps_->Release(); last_ps_ = nullptr; }
-		last_decl_ = nullptr;
+		if (last_decl_) { last_decl_->Release(); last_decl_ = nullptr; }
 
-		// Default-pool resources (textures, VBs) are released by the game before Reset
+		// Default-pool textures are released by the game before Reset
 		std::memset(cur_texture_, 0, sizeof(cur_texture_));
-		std::memset(stream_vb_, 0, sizeof(stream_vb_));
-		std::memset(stream_offset_, 0, sizeof(stream_offset_));
-		std::memset(stream_stride_, 0, sizeof(stream_stride_));
 
 		view_proj_valid_ = false;
 		ffp_setup_ = false;

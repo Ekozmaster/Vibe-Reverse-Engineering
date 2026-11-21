@@ -8,10 +8,6 @@
 #include "shared/common/remix_api.hpp"
 #include "shared/common/config.hpp"
 
-// see comment in main()
-//#include "shared/common/dinput_hook_v1.hpp"
-//#include "shared/common/dinput_hook_v2.hpp"
-
 namespace comp
 {
 	void on_begin_scene_cb()
@@ -49,12 +45,8 @@ namespace comp
 			shared::globals::d3d_device->SetTransform(D3DTS_PROJECTION, &proj_matrix);
 		}
 
-		// Example: if you found a game struct with view/proj matrices, apply them here
-		//if (const auto viewport = game::vp; viewport)
-		//{
-		//	shared::globals::d3d_device->SetTransform(D3DTS_VIEW, &viewport->view);
-		//	shared::globals::d3d_device->SetTransform(D3DTS_PROJECTION, &viewport->proj);
-		//}
+		// GAME-SPECIFIC: a game that keeps its view and projection matrices in a struct of its
+		// own can have them applied here with SetTransform
 	}
 
 
@@ -79,9 +71,10 @@ namespace comp
 		if (cfg.skinning.enabled)
 			shared::common::loader::module_loader::register_module(std::make_unique<skinning>());
 
-		// #Step 3: hook dinput if your game uses direct input (for ImGui) - ONLY USE ONE
-		//shared::common::loader::module_loader::register_module(std::make_unique<shared::common::dinput_v1>()); // v1: might cause issues with the Alt+X menu
-		//shared::common::loader::module_loader::register_module(std::make_unique<shared::common::dinput_v2>()); // v2: better but might need further tweaks
+		// #Step 3: a game that reads its input through DirectInput needs one of the two hooks in
+		// shared/common/dinput_hook_v1.hpp and dinput_hook_v2.hpp registered here for the ImGui
+		// overlay to get input: shared::common::dinput_v1 can interfere with Remix's Alt+X menu,
+		// shared::common::dinput_v2 avoids that and may need tuning for the game
 
 		MH_EnableHook(MH_ALL_HOOKS);
 	}

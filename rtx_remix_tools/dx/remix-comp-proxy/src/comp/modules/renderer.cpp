@@ -13,15 +13,16 @@ namespace comp
 		bool initialized = false;
 		LPDIRECT3DTEXTURE9 icon = nullptr;
 
-		void init_texture_addons(bool release)
+		// The textures are loaded again at the next BeginScene
+		void release_texture_addons()
 		{
-			if (release)
-			{
-				if (tex_addons::icon) tex_addons::icon->Release();
-				tex_addons::icon = nullptr;
-				return;
-			}
+			if (tex_addons::icon) tex_addons::icon->Release();
+			tex_addons::icon = nullptr;
+			tex_addons::initialized = false;
+		}
 
+		void init_texture_addons()
+		{
 			const auto dev = shared::globals::d3d_device;
 			const char* icon_path = "rtx_comp\\textures\\icon.png";
 
@@ -271,7 +272,7 @@ namespace comp
 
 	renderer::~renderer()
 	{
-		tex_addons::init_texture_addons(true);
+		tex_addons::release_texture_addons();
 		p_this = nullptr;
 	}
 }
