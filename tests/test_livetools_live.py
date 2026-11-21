@@ -71,7 +71,7 @@ class TestFunctionHook:
             reply = target.run({"cmd": "trace", "addr": target.addr("callee"), "count": 3,
                                 "timeout": 5, "read": _READ_ARGS_AT_ENTRY[target.arch]})
 
-        assert reply["ok"] and reply["count"] == 3
+        assert reply["ok"] and reply["count"] == 3, reply
         for record in reply["samples"]:
             assert _arguments(record, target.arch) == ARGS
             assert int(record["caller"], 16) == int(target.addr("after_call"), 16)
@@ -132,6 +132,7 @@ class TestProbe:
         reply = target.run({"cmd": "trace", "addr": target.addr("call_site"), "count": 1,
                             "timeout": 5, "probe": True})
 
+        assert reply["ok"], reply
         (record,) = reply["samples"]
         assert "caller" not in record
         assert "leave" not in record
