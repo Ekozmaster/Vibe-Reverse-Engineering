@@ -148,6 +148,10 @@ namespace comp
 		void check_trigger_file();
 		std::string capture_trigger_id_ = NO_TRIGGER_ID;
 
+		// Id of a trigger file that was answered and could not be deleted, which is answered
+		// no second time; empty once that file is gone
+		std::string undeleted_trigger_id_;
+
 		// Helpers
 		void flush_buffer();
 		void buf_append(const char* str, size_t len);

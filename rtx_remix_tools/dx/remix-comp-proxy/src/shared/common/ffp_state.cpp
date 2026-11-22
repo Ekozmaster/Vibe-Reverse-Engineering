@@ -127,7 +127,6 @@ namespace shared::common
 		if (shader) shader->AddRef();
 		if (last_vs_) last_vs_->Release();
 		last_vs_ = shader;
-		ffp_active_ = false;
 	}
 
 	void ffp_state::on_set_pixel_shader(IDirect3DPixelShader9* shader)
@@ -175,15 +174,16 @@ namespace shared::common
 
 		bool has_blend_weight = false;
 		bool has_blend_indices = false;
-		bool blend_on_stream_0 = true;
 		int pos_type = -1;
 		int blend_indices_type = -1;
 
-		// Bytes from the start of a stream-0 vertex to the end of the last element the
-		// skinning module reads
+		// The skinning module reads stream 0 alone. skin_vertex_bytes runs from the start of a
+		// stream-0 vertex to the end of the last element it reads.
+		bool skinning_reads_stream_0_alone = true;
 		UINT skin_vertex_bytes = 0;
 		const auto read_by_skinning = [&](const D3DVERTEXELEMENT9& el)
 		{
+			skinning_reads_stream_0_alone &= el.Stream == 0;
 			skin_vertex_bytes = (std::max)(skin_vertex_bytes, static_cast<UINT>(el.Offset) + decl_type_size(el.Type));
 		};
 
@@ -198,11 +198,10 @@ namespace shared::common
 				cur_decl_has_pos_t_ = true;
 				break;
 
-			// Blend elements on any stream mark the declaration as skinned; the skinning
-			// module only rebuilds vertices whose blend elements are on stream 0
+			// Blend elements on any stream mark the declaration as skinned, and a normal or a
+			// first texture coordinate on any stream is one the declaration has
 			case D3DDECLUSAGE_BLENDWEIGHT:
 				has_blend_weight = true;
-				blend_on_stream_0 &= el.Stream == 0;
 				cur_decl_blend_weight_off_ = el.Offset;
 				cur_decl_blend_weight_type_ = el.Type;
 				read_by_skinning(el);
@@ -210,7 +209,6 @@ namespace shared::common
 
 			case D3DDECLUSAGE_BLENDINDICES:
 				has_blend_indices = true;
-				blend_on_stream_0 &= el.Stream == 0;
 				cur_decl_blend_indices_off_ = el.Offset;
 				blend_indices_type = el.Type;
 				read_by_skinning(el);
@@ -226,7 +224,7 @@ namespace shared::common
 				break;
 
 			case D3DDECLUSAGE_NORMAL:
-				if (el.Stream == 0 && el.UsageIndex == 0)
+				if (el.UsageIndex == 0)
 				{
 					cur_decl_has_normal_ = true;
 					cur_decl_normal_off_ = el.Offset;
@@ -236,7 +234,7 @@ namespace shared::common
 				break;
 
 			case D3DDECLUSAGE_TEXCOORD:
-				if (el.UsageIndex == 0 && el.Stream == 0)
+				if (el.UsageIndex == 0)
 				{
 					cur_decl_has_texcoord_ = true;
 					cur_decl_texcoord_type_ = el.Type;
@@ -270,10 +268,10 @@ namespace shared::common
 
 			// The skinning module reads a FLOAT3 position, weights it can decode, four index bytes
 			// and, where the declaration has them, a normal and a texture coordinate in a format
-			// it can decode. D3DCOLOR indices are taken in memory order, the order
-			// D3DCOLORtoUBYTE4 gives a shader.
+			// it can decode, all of them from stream 0. D3DCOLOR indices are taken in memory
+			// order, the order D3DCOLORtoUBYTE4 gives a shader.
 			const bool readable_indices = blend_indices_type == D3DDECLTYPE_UBYTE4 || blend_indices_type == D3DDECLTYPE_D3DCOLOR;
-			const bool expandable = blend_on_stream_0 && readable_indices && cur_decl_num_weights_ > 0 &&
+			const bool expandable = skinning_reads_stream_0_alone && readable_indices && cur_decl_num_weights_ > 0 &&
 				(pos_type == D3DDECLTYPE_FLOAT3 || pos_type == D3DDECLTYPE_FLOAT4) &&
 				(!cur_decl_has_normal_ || skinning_reads_normal(cur_decl_normal_type_)) &&
 				(!cur_decl_has_texcoord_ || skinning_reads_texcoord(cur_decl_texcoord_type_));
@@ -289,15 +287,14 @@ namespace shared::common
 			on_set_vertex_declaration(nullptr);
 	}
 
-	void ffp_state::on_present()
+	void ffp_state::on_present(IDirect3DDevice9* dev)
 	{
 		frame_count_++;
 		ffp_setup_ = false;
 		draw_call_count_ = 0;
 		scene_count_ = 0;
-		// Safety net: restore shaders if a draw path exited without calling disengage.
-		// No-op when already disengaged (the normal case).
-		disengage(shared::globals::d3d_device);
+		// A frame whose last draw was converted ends engaged
+		disengage(dev);
 		std::memset(vs_const_write_log_, 0, sizeof(vs_const_write_log_));
 	}
 
@@ -309,6 +306,9 @@ namespace shared::common
 
 	void ffp_state::on_reset()
 	{
+		// The device may stay in use, so it gets the game's shaders back before they are let go of
+		disengage(ffp_device_);
+
 		if (last_vs_) { last_vs_->Release(); last_vs_ = nullptr; }
 		if (last_ps_) { last_ps_->Release(); last_ps_ = nullptr; }
 		if (last_decl_) { last_decl_->Release(); last_decl_ = nullptr; }
@@ -321,7 +321,6 @@ namespace shared::common
 		world_dirty_ = false;
 		world_written_ = false;
 		view_proj_dirty_ = false;
-		ffp_active_ = false;
 		bone_start_reg_ = 0;
 		num_bones_ = 0;
 
@@ -352,11 +351,11 @@ namespace shared::common
 	{
 		if (!enabled_ || !dev) return;
 
-		if (!ffp_active_)
+		if (!ffp_device_)
 		{
 			dev->SetVertexShader(nullptr);
 			dev->SetPixelShader(nullptr);
-			ffp_active_ = true;
+			ffp_device_ = dev;
 		}
 
 		apply_transforms(dev);
@@ -371,11 +370,11 @@ namespace shared::common
 
 	void ffp_state::disengage(IDirect3DDevice9* dev)
 	{
-		if (!ffp_active_ || !dev) return;
+		if (!dev || dev != ffp_device_) return;
 
 		dev->SetVertexShader(last_vs_);
 		dev->SetPixelShader(last_ps_);
-		ffp_active_ = false;
+		ffp_device_ = nullptr;
 	}
 
 	void ffp_state::setup_albedo_texture(IDirect3DDevice9* dev)

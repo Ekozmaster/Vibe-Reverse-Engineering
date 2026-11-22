@@ -1,10 +1,10 @@
 """Build the proxy template and the toy Direct3D 9 program, run the toy, and read its picture.
 
-``proxy_toy/toy.cpp`` draws one shape per cell of a 3x3 grid, each through a vertex
-shader and a pixel shader that paints it red, with a green texture bound that only
-a fixed-function draw samples. Run against the system d3d9.dll it gives the
-reference picture; run with the proxy beside it, a shape the proxy converted is
-green and has to cover the same pixels.
+``proxy_toy/toy.cpp`` draws one shape per cell of a 3x3 grid, each through shaders
+that paint it red (blue, for the one vertex shader some variants draw their last
+cell with), with a green texture bound that only a fixed-function draw samples.
+Run against the system d3d9.dll it gives the reference picture; run with the proxy
+beside it, a shape the proxy converted is green and has to cover the same pixels.
 """
 
 import os
@@ -141,7 +141,8 @@ def _with_settings(ini_text: str, settings: dict[str, dict[str, object]]) -> str
     return "\r\n".join(lines) + "\r\n"
 
 
-def _read_frame(path: Path) -> dict[str, Shape]:
+def read_frame(path: Path) -> dict[str, Shape]:
+    """The shapes in a frame the toy saved."""
     data = path.read_bytes()
     width, height = struct.unpack_from("<II", data)
     shapes = {}
@@ -232,4 +233,4 @@ class ProxyToy:
         log = (folder / "rtx_comp" / "console.log").read_text(encoding="utf-8", errors="replace") if proxy else ""
         if proxy and "[Renderer] Module initialized." not in log:
             raise RuntimeError(f"{name}: the proxy had not loaded its modules when the toy saved its frame. Its log: {log!r}")
-        return Frame(_read_frame(folder / "frame.raw"), log, folder)
+        return Frame(read_frame(folder / "frame.raw"), log, folder)

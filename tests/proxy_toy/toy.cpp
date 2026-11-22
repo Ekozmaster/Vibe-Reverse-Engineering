@@ -1,9 +1,10 @@
 // A Direct3D 9 program that draws a fixed scene through vertex shaders and saves the last frame.
 //
 // It stands in for a game when checking a d3d9.dll proxy: run it once against the system
-// d3d9.dll and once with the proxy beside it, then compare the two pictures. Every shape is
-// drawn red by the pixel shader, and a green texture is bound that only a fixed-function draw
-// samples, so the colour of a shape says which pipeline drew it.
+// d3d9.dll and once with the proxy beside it, then compare the two pictures. Every vertex
+// shader hands the pixel shader the colour to draw: red, or blue from the one shader some
+// variants draw their last cell with. A green texture is bound that only a fixed-function
+// draw samples, so the colour of a shape says which pipeline drew it, and with which shader.
 //
 // The scene is a 3x3 grid of cells with one shape per cell (see draw_scene).
 //
@@ -23,6 +24,7 @@
 // Other arguments are ignored: the proxy reads its own from the same command line.
 //
 // FILE receives the width and height as two little-endian uint32 values, then the BGRX rows.
+// A variant that draws with two devices saves the frame of the second to FILE.second-device.
 
 #include <windows.h>
 #include <d3d9.h>
@@ -101,6 +103,13 @@ namespace
 	//                    created again
 	//   second-device    two thirds into the run every resource and the device are released,
 	//                    the device's last Release has to return 0, and a new device takes over
+	//   overlapping-devices  two thirds into the run every resource is released and a new device
+	//                    takes over while the first is still there. The first is released some
+	//                    frames later and the new one at the end of the run; the last Release
+	//                    of each has to return 0.
+	//   normal-on-stream-1, texcoord-on-stream-1
+	//                    the strip's declaration reads its normal, or its texture coordinate,
+	//                    from a second vertex buffer on stream 1
 	// Some variants draw a quad in place of the strip:
 	//   fvf-after-skinned  the strip's declaration is set, then the quad is drawn through SetFVF.
 	//                    Read with the strip's declaration, each of its vertices is a skinned
@@ -109,15 +118,67 @@ namespace
 	//                    the quad is drawn from its vertex buffer and then, with no shader set
 	//                    in between, once more on top through DrawPrimitiveUP or
 	//                    DrawIndexedPrimitiveUP
+	//   rigid-normal-on-stream-1  the quad's declaration reads its normal from a second vertex
+	//                    buffer on stream 1
+	// The rest draw the quad from its vertex buffer, set the blue vertex shader, and draw the quad
+	// once more on top, in blue:
+	//   new-vs-after-converted, new-vs-up-after-converted
+	//                    no pixel shader is set with the blue vertex shader, and the second draw
+	//                    is from a vertex buffer without normals, or through DrawPrimitiveUP
+	//   get-shaders-after-converted  the pixel shader is set again too, both shaders are read
+	//                    back with GetVertexShader and GetPixelShader, the device's shaders are
+	//                    cleared, and the ones read back are set for the second draw
+	//   state-block-created-after-converted  a state block captures the device, the red vertex
+	//                    shader is set, and applying the block brings the blue one back
+	//   state-block-recorded-after-converted  the blue vertex shader is set between
+	//                    BeginStateBlock and EndStateBlock instead, the red one after them, and
+	//                    applying the recorded block sets the blue one
+	//   process-vertices-after-converted  ProcessVertices runs the quad through the blue shader
+	//                    into a buffer of transformed vertices, which the second draw draws
+	//   rect-patch-after-converted, tri-patch-after-converted
+	//                    DrawRectPatch or DrawTriPatch is called, which few devices draw, and the
+	//                    second draw goes straight to the device the vertex buffer names as its
+	//                    own, past any wrapper the toy was handed, without setting a shader
+	// Two variants create a second device while the first is in use. The second device draws the
+	// scene too in every frame from then on. At the end the first device is released, then the
+	// second, and the last Release of each has to return 0:
+	//   first-device-drawn-on  the second device is created two thirds into the run, between two
+	//                    frames, and the first goes on drawing to the end
+	//   second-device-mid-frame  the second device is created in the last frame, after the first
+	//                    drew its scene. The first then repeats its last draw, the quad after the
+	//                    strips, with no call in between.
 	const char* const VARIANTS[] = { "color-indices", "ushort-weights", "partial-palette", "fvf-zero",
 		"dynamic-rewritten", "writeonly", "writeonly-default", "short-texcoord", "half-normal",
 		"junk-unused-index", "negative-base", "state-block-stream", "state-block-declaration",
 		"vs-constants-out-of-range",
-		"ps-constants-out-of-range", "reset", "second-device", "fvf-after-skinned",
-		"up-after-converted", "indexed-up-after-converted" };
+		"ps-constants-out-of-range", "reset", "second-device", "overlapping-devices",
+		"normal-on-stream-1", "texcoord-on-stream-1", "fvf-after-skinned",
+		"up-after-converted", "indexed-up-after-converted",
+		"new-vs-after-converted", "new-vs-up-after-converted", "rigid-normal-on-stream-1",
+		"get-shaders-after-converted", "state-block-created-after-converted", "state-block-recorded-after-converted",
+		"process-vertices-after-converted", "rect-patch-after-converted", "tri-patch-after-converted",
+		"first-device-drawn-on", "second-device-mid-frame",
+		"read-only-trigger", "read-only-trigger-until-replacement" };
 
-	// The frame in which the reset and second-device variants replace what they draw with
+	// The variants that draw what the plain toy draws, with the trigger file of the proxy's
+	// tracer made read-only before the device is created: the tracer can read it and not delete it
+	const char* const READ_ONLY_TRIGGER_VARIANTS[] = { "read-only-trigger", "read-only-trigger-until-replacement" };
+	const char* const TRACER_TRIGGER_FILE = "dxtrace_capture.trigger";
+
+	// The variants that draw a quad, set the blue vertex shader and draw the quad again
+	const char* const BLUE_SECOND_DRAW_VARIANTS[] = { "new-vs-after-converted", "new-vs-up-after-converted",
+		"get-shaders-after-converted", "state-block-created-after-converted", "state-block-recorded-after-converted",
+		"process-vertices-after-converted", "rect-patch-after-converted", "tri-patch-after-converted" };
+
+	// The variants that release every device they created before the toy ends
+	const char* const RELEASING_VARIANTS[] = { "overlapping-devices", "first-device-drawn-on", "second-device-mid-frame" };
+
+	// The frame in which the reset, second-device and overlapping-devices variants replace
+	// what they draw with
 	constexpr int REPLACEMENT_FRAME = 60;
+
+	// The frame in which the overlapping-devices variant releases its first device
+	constexpr int FIRST_DEVICE_RELEASE_FRAME = 75;
 
 	[[noreturn]] void fail(const char* what, HRESULT hr = E_FAIL)
 	{
@@ -134,6 +195,12 @@ namespace
 	{
 		std::fprintf(stderr, "toy: %s (%lu)\n", what, count);
 		std::exit(2);
+	}
+
+	template <size_t N>
+	bool is_one_of(const std::string& variant, const char* const (&names)[N])
+	{
+		return std::find(std::begin(names), std::end(names), variant) != std::end(names);
 	}
 
 	options parse_options(int argc, char** argv)
@@ -155,7 +222,7 @@ namespace
 			else if (arg == "--d3d9ex") opt.d3d9ex = true;
 		}
 		if (opt.out.empty()) fail("reading --out");
-		if (!opt.variant.empty() && std::find(std::begin(VARIANTS), std::end(VARIANTS), opt.variant) == std::end(VARIANTS))
+		if (!opt.variant.empty() && !is_one_of(opt.variant, VARIANTS))
 			fail("reading --variant");
 		return opt;
 	}
@@ -170,11 +237,18 @@ namespace
 	struct skin4_vertex { float pos[3]; float weights[4]; BYTE indices[4]; float normal[3]; float uv[2]; };
 	struct skin_ushort_vertex { float pos[3]; float normal[3]; float uv[2]; BYTE indices[4]; USHORT weights[4]; };
 
+	// What stream 1 holds per vertex: a normal, whose first two floats also pass for a texture coordinate
+	struct second_stream_vertex { float normal[3]; };
+
 	// As wide as skin3_vertex. Its second and third texture coordinates lie where skin3_vertex
 	// keeps its blend indices and weights.
 	struct fvf_vertex { float pos[3]; float normal[3]; float uv[3][2]; };
 	constexpr DWORD FVF_VERTEX_FORMAT = D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX3;
 	static_assert(sizeof(fvf_vertex) == sizeof(skin3_vertex), "the FVF quad has to pass for skinned vertices");
+
+	// What ProcessVertices writes: a position on the screen and the colour the vertex shader gave
+	struct processed_vertex { float pos[4]; D3DCOLOR colour; };
+	constexpr DWORD PROCESSED_VERTEX_FORMAT = D3DFVF_XYZRHW | D3DFVF_DIFFUSE;
 
 	const D3DVERTEXELEMENT9 RIGID_DECL[] = {
 		{ 0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
@@ -227,6 +301,29 @@ namespace
 		{ 0, 24, D3DDECLTYPE_FLOAT2,    D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
 		{ 0, 32, D3DDECLTYPE_UBYTE4,    D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0 },
 		{ 0, 36, D3DDECLTYPE_FLOAT3,    D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
+		D3DDECL_END()
+	};
+	const D3DVERTEXELEMENT9 SKIN3_NORMAL_ON_STREAM_1_DECL[] = {
+		{ 0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+		{ 0, 24, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+		{ 0, 32, D3DDECLTYPE_UBYTE4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0 },
+		{ 0, 36, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
+		{ 1,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 },
+		D3DDECL_END()
+	};
+	const D3DVERTEXELEMENT9 SKIN3_TEXCOORD_ON_STREAM_1_DECL[] = {
+		{ 0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+		{ 0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 },
+		{ 0, 32, D3DDECLTYPE_UBYTE4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDINDICES, 0 },
+		{ 0, 36, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_BLENDWEIGHT, 0 },
+		{ 1,  0, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+		D3DDECL_END()
+	};
+	// FLAT_DECL with a normal from stream 1
+	const D3DVERTEXELEMENT9 RIGID_NORMAL_ON_STREAM_1_DECL[] = {
+		{ 0,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+		{ 0, 12, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+		{ 1,  0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0 },
 		D3DDECL_END()
 	};
 	const D3DVERTEXELEMENT9 SKIN_USHORT_DECL[] = {
@@ -372,10 +469,34 @@ float4 to_clip(float4 world)
 	return float4(dot(proj_rows[0], view), dot(proj_rows[1], view), dot(proj_rows[2], view), dot(proj_rows[3], view));
 }
 
-float4 vs_rigid(float3 pos : POSITION) : POSITION
+struct coloured
+{
+	float4 pos : POSITION;
+	float4 colour : COLOR0;
+};
+
+coloured in_colour(float4 pos, float4 colour)
+{
+	coloured vertex;
+	vertex.pos = pos;
+	vertex.colour = colour;
+	return vertex;
+}
+
+float4 rigid_to_clip(float3 pos)
 {
 	float4 p = float4(pos, 1);
 	return to_clip(float4(dot(world_rows[0], p), dot(world_rows[1], p), dot(world_rows[2], p), dot(world_rows[3], p)));
+}
+
+coloured vs_rigid(float3 pos : POSITION)
+{
+	return in_colour(rigid_to_clip(pos), float4(1, 0, 0, 1));
+}
+
+coloured vs_rigid_blue(float3 pos : POSITION)
+{
+	return in_colour(rigid_to_clip(pos), float4(0, 0, 1, 1));
 }
 
 float3 by_bone(float4 p, float bone)
@@ -384,23 +505,23 @@ float3 by_bone(float4 p, float bone)
 	return float3(dot(bone_rows[first], p), dot(bone_rows[first + 1], p), dot(bone_rows[first + 2], p));
 }
 
-float4 vs_skinned(float3 pos : POSITION, float4 weights : BLENDWEIGHT, float4 indices : BLENDINDICES) : POSITION
+coloured vs_skinned(float3 pos : POSITION, float4 weights : BLENDWEIGHT, float4 indices : BLENDINDICES)
 {
 	float4 p = float4(pos, 1);
 	float last = 1 - weights.x - weights.y - weights.z;
 	float3 world = weights.x * by_bone(p, indices.x) + weights.y * by_bone(p, indices.y)
 		+ weights.z * by_bone(p, indices.z) + last * by_bone(p, indices.w);
-	return to_clip(float4(world, 1));
+	return in_colour(to_clip(float4(world, 1)), float4(1, 0, 0, 1));
 }
 
-float4 vs_skinned_color(float3 pos : POSITION, float4 weights : BLENDWEIGHT, float4 indices : BLENDINDICES) : POSITION
+coloured vs_skinned_color(float3 pos : POSITION, float4 weights : BLENDWEIGHT, float4 indices : BLENDINDICES)
 {
 	return vs_skinned(pos, weights, D3DCOLORtoUBYTE4(indices));
 }
 
-float4 ps_red() : COLOR
+float4 ps_vertex_colour(float4 colour : COLOR0) : COLOR
 {
-	return float4(1, 0, 0, 1);
+	return colour;
 }
 )";
 
@@ -426,9 +547,10 @@ float4 ps_red() : COLOR
 		IDirect3DDevice9* dev = nullptr;
 
 		IDirect3DVertexShader9* vs_rigid = nullptr;
+		IDirect3DVertexShader9* vs_rigid_blue = nullptr;
 		IDirect3DVertexShader9* vs_skinned = nullptr;
 		IDirect3DVertexShader9* vs_skinned_color = nullptr;
-		IDirect3DPixelShader9* ps_red = nullptr;
+		IDirect3DPixelShader9* ps_vertex_colour = nullptr;
 
 		IDirect3DVertexDeclaration9* rigid_decl = nullptr;
 		IDirect3DVertexDeclaration9* flat_decl = nullptr;
@@ -436,6 +558,7 @@ float4 ps_red() : COLOR
 		IDirect3DVertexDeclaration9* skin4_decl = nullptr;
 		IDirect3DVertexDeclaration9* variant_decl = nullptr;
 		IDirect3DVertexDeclaration9* moved_blend_decl = nullptr;
+		IDirect3DVertexDeclaration9* rigid_normal_on_stream_1_decl = nullptr;
 
 		IDirect3DVertexBuffer9* rigid_vb = nullptr;
 		IDirect3DVertexBuffer9* flat_vb = nullptr;
@@ -446,6 +569,8 @@ float4 ps_red() : COLOR
 		IDirect3DVertexBuffer9* variant_vb = nullptr;
 		IDirect3DVertexBuffer9* aside_vb = nullptr;
 		IDirect3DVertexBuffer9* fvf_vb = nullptr;
+		IDirect3DVertexBuffer9* second_stream_vb = nullptr;
+		IDirect3DVertexBuffer9* processed_vb = nullptr;
 		UINT variant_stride = 0;
 		UINT variant_vertices = STRIP_VERTICES;
 		UINT variant_stream_offset = 0;
@@ -520,7 +645,90 @@ float4 ps_red() : COLOR
 		check(s.dev->SetStreamSource(0, vb, offset, stride), "SetStreamSource");
 		check(s.dev->SetIndices(s.ib), "SetIndices");
 		check(s.dev->SetVertexShader(vs), "SetVertexShader");
-		check(s.dev->SetPixelShader(s.ps_red), "SetPixelShader");
+		check(s.dev->SetPixelShader(s.ps_vertex_colour), "SetPixelShader");
+	}
+
+	void draw_flat_quad(const scene& s, IDirect3DDevice9* dev)
+	{
+		check(dev->SetVertexDeclaration(s.flat_decl), "SetVertexDeclaration");
+		check(dev->SetStreamSource(0, s.flat_vb, 0, sizeof(flat_vertex)), "SetStreamSource");
+		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");
+	}
+
+	// The second draw of a BLUE_SECOND_DRAW_VARIANTS variant, and what the variant does ahead of
+	// it. The quad was drawn from its vertex buffer just before, and no shader was set since.
+	void draw_quad_again_in_blue(const scene& s)
+	{
+		const auto dev = s.dev;
+		const std::string& variant = s.opt.variant;
+
+		if (variant == "state-block-recorded-after-converted")
+			check(dev->BeginStateBlock(), "BeginStateBlock");
+		check(dev->SetVertexShader(s.vs_rigid_blue), "SetVertexShader");
+		if (variant != "new-vs-after-converted" && variant != "new-vs-up-after-converted")
+			check(dev->SetPixelShader(s.ps_vertex_colour), "SetPixelShader");
+
+		if (variant == "new-vs-up-after-converted")
+		{
+			check(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, RIGID_VERTICES, sizeof(rigid_vertex)), "DrawPrimitiveUP");
+		}
+		else if (variant == "new-vs-after-converted")
+		{
+			draw_flat_quad(s, dev);
+		}
+		else if (variant == "get-shaders-after-converted")
+		{
+			IDirect3DVertexShader9* vs = nullptr;
+			IDirect3DPixelShader9* ps = nullptr;
+			check(dev->GetVertexShader(&vs), "GetVertexShader");
+			check(dev->GetPixelShader(&ps), "GetPixelShader");
+			check(dev->SetVertexShader(nullptr), "SetVertexShader");
+			check(dev->SetPixelShader(nullptr), "SetPixelShader");
+			check(dev->SetVertexShader(vs), "SetVertexShader");
+			check(dev->SetPixelShader(ps), "SetPixelShader");
+			if (vs) vs->Release();
+			if (ps) ps->Release();
+			draw_flat_quad(s, dev);
+		}
+		else if (variant == "state-block-created-after-converted" || variant == "state-block-recorded-after-converted")
+		{
+			IDirect3DStateBlock9* blue_bound = nullptr;
+			if (variant == "state-block-created-after-converted")
+				check(dev->CreateStateBlock(D3DSBT_ALL, &blue_bound), "CreateStateBlock");
+			else
+				check(dev->EndStateBlock(&blue_bound), "EndStateBlock");
+			check(dev->SetVertexShader(s.vs_rigid), "SetVertexShader");
+			check(blue_bound->Apply(), "IDirect3DStateBlock9::Apply");
+			blue_bound->Release();
+			draw_flat_quad(s, dev);
+		}
+		else if (variant == "process-vertices-after-converted")
+		{
+			check(dev->ProcessVertices(0, 0, 4, s.processed_vb, nullptr, 0), "ProcessVertices");
+			check(dev->SetFVF(PROCESSED_VERTEX_FORMAT), "SetFVF");
+			check(dev->SetStreamSource(0, s.processed_vb, 0, sizeof(processed_vertex)), "SetStreamSource");
+			check(dev->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2), "DrawPrimitive");
+		}
+		else
+		{
+			// A device that does not draw patches refuses the call, so its result is not checked
+			const float segments[4] = { 1, 1, 1, 1 };
+			if (variant == "rect-patch-after-converted")
+			{
+				const D3DRECTPATCH_INFO quad = { 0, 0, 2, 2, 2, D3DBASIS_BEZIER, D3DDEGREE_LINEAR };
+				dev->DrawRectPatch(0, segments, &quad);
+			}
+			else
+			{
+				const D3DTRIPATCH_INFO triangle = { 0, 3, D3DBASIS_BEZIER, D3DDEGREE_LINEAR };
+				dev->DrawTriPatch(0, segments, &triangle);
+			}
+
+			IDirect3DDevice9* owner = nullptr;
+			check(s.flat_vb->GetDevice(&owner), "IDirect3DVertexBuffer9::GetDevice");
+			draw_flat_quad(s, owner);
+			owner->Release();
+		}
 	}
 
 	// Cells, left to right and top to bottom:
@@ -581,6 +789,8 @@ float4 ps_red() : COLOR
 		const XMMATRIX variant_quad_world = XMMatrixRotationZ(XMConvertToRadians(30)) * XMMatrixTranslation(2, -2, 0);
 		bind(s, s.variant_decl, s.variant_vb, s.variant_stream_offset, s.variant_stride, s.opt.variant == "color-indices" ? s.vs_skinned_color : s.vs_skinned);
 		const auto variant_bones = set_strip_bones(s, 2, -2, -20);
+		const bool reads_stream_1 = s.opt.variant == "normal-on-stream-1" || s.opt.variant == "texcoord-on-stream-1" ||
+			s.opt.variant == "rigid-normal-on-stream-1";
 		if (s.opt.variant == "partial-palette")
 			check(dev->SetVertexShaderConstantF(s.opt.bones, variant_bones.data(), REGISTERS_PER_BONE), "SetVertexShaderConstantF");
 		if (s.opt.variant == "fvf-zero")
@@ -594,19 +804,33 @@ float4 ps_red() : COLOR
 			check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");
 			set_matrix(s, s.opt.world, last_quad_world);
 		}
-		else if (s.opt.variant == "up-after-converted" || s.opt.variant == "indexed-up-after-converted")
+		else if (s.opt.variant == "up-after-converted" || s.opt.variant == "indexed-up-after-converted" ||
+			is_one_of(s.opt.variant, BLUE_SECOND_DRAW_VARIANTS))
 		{
 			bind(s, s.rigid_decl, s.rigid_vb, 0, sizeof(rigid_vertex), s.vs_rigid);
 			set_matrix(s, s.opt.world, variant_quad_world);
 			check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");
+
 			if (s.opt.variant == "up-after-converted")
 				check(dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, RIGID_VERTICES, sizeof(rigid_vertex)), "DrawPrimitiveUP");
-			else
+			else if (s.opt.variant == "indexed-up-after-converted")
 				check(dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, 4, 2, INDICES, D3DFMT_INDEX16, RIGID_VERTICES, sizeof(rigid_vertex)), "DrawIndexedPrimitiveUP");
+			else
+				draw_quad_again_in_blue(s);
+			set_matrix(s, s.opt.world, last_quad_world);
+		}
+		else if (s.opt.variant == "rigid-normal-on-stream-1")
+		{
+			bind(s, s.rigid_normal_on_stream_1_decl, s.flat_vb, 0, sizeof(flat_vertex), s.vs_rigid);
+			check(dev->SetStreamSource(1, s.second_stream_vb, 0, sizeof(second_stream_vertex)), "SetStreamSource");
+			set_matrix(s, s.opt.world, variant_quad_world);
+			check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");
 			set_matrix(s, s.opt.world, last_quad_world);
 		}
 		else
 		{
+			if (reads_stream_1)
+				check(dev->SetStreamSource(1, s.second_stream_vb, 0, sizeof(second_stream_vertex)), "SetStreamSource");
 			if (s.opt.variant == "state-block-stream" || s.opt.variant == "state-block-declaration")
 			{
 				IDirect3DStateBlock9* strip_bound = nullptr;
@@ -621,6 +845,8 @@ float4 ps_red() : COLOR
 			check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, s.variant_base_vertex, s.variant_min_index,
 				s.variant_vertices + s.opt.extra_vertices, s.variant_first_index, STRIP_TRIANGLES), "DrawIndexedPrimitive");
 		}
+		if (reads_stream_1)
+			check(dev->SetStreamSource(1, nullptr, 0, 0), "SetStreamSource");
 
 		bind(s, s.rigid_decl, s.rigid_vb, 0, sizeof(rigid_vertex), s.vs_rigid);
 		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");
@@ -704,14 +930,17 @@ float4 ps_red() : COLOR
 		auto* code = compile(source, "vs_rigid", "vs_2_0");
 		check(dev->CreateVertexShader(static_cast<const DWORD*>(code->GetBufferPointer()), &s.vs_rigid), "CreateVertexShader");
 		code->Release();
+		code = compile(source, "vs_rigid_blue", "vs_2_0");
+		check(dev->CreateVertexShader(static_cast<const DWORD*>(code->GetBufferPointer()), &s.vs_rigid_blue), "CreateVertexShader");
+		code->Release();
 		code = compile(source, "vs_skinned", "vs_2_0");
 		check(dev->CreateVertexShader(static_cast<const DWORD*>(code->GetBufferPointer()), &s.vs_skinned), "CreateVertexShader");
 		code->Release();
 		code = compile(source, "vs_skinned_color", "vs_2_0");
 		check(dev->CreateVertexShader(static_cast<const DWORD*>(code->GetBufferPointer()), &s.vs_skinned_color), "CreateVertexShader");
 		code->Release();
-		code = compile(source, "ps_red", "ps_2_0");
-		check(dev->CreatePixelShader(static_cast<const DWORD*>(code->GetBufferPointer()), &s.ps_red), "CreatePixelShader");
+		code = compile(source, "ps_vertex_colour", "ps_2_0");
+		check(dev->CreatePixelShader(static_cast<const DWORD*>(code->GetBufferPointer()), &s.ps_vertex_colour), "CreatePixelShader");
 		code->Release();
 
 		check(dev->CreateVertexDeclaration(RIGID_DECL, &s.rigid_decl), "CreateVertexDeclaration");
@@ -721,9 +950,12 @@ float4 ps_red() : COLOR
 		const D3DVERTEXELEMENT9* variant_elements = s.opt.variant == "color-indices" ? SKIN3_COLOR_DECL
 			: s.opt.variant == "ushort-weights" ? SKIN_USHORT_DECL
 			: s.opt.variant == "short-texcoord" ? SKIN3_SHORT_TEXCOORD_DECL
-			: s.opt.variant == "half-normal" ? SKIN3_HALF_NORMAL_DECL : SKIN3_DECL;
+			: s.opt.variant == "half-normal" ? SKIN3_HALF_NORMAL_DECL
+			: s.opt.variant == "normal-on-stream-1" ? SKIN3_NORMAL_ON_STREAM_1_DECL
+			: s.opt.variant == "texcoord-on-stream-1" ? SKIN3_TEXCOORD_ON_STREAM_1_DECL : SKIN3_DECL;
 		check(dev->CreateVertexDeclaration(variant_elements, &s.variant_decl), "CreateVertexDeclaration");
 		check(dev->CreateVertexDeclaration(SKIN3_MOVED_BLEND_DECL, &s.moved_blend_decl), "CreateVertexDeclaration");
+		check(dev->CreateVertexDeclaration(RIGID_NORMAL_ON_STREAM_1_DECL, &s.rigid_normal_on_stream_1_decl), "CreateVertexDeclaration");
 
 		s.rigid_vb = make_vertex_buffer(s, std::vector<rigid_vertex>(std::begin(RIGID_VERTICES), std::end(RIGID_VERTICES)));
 		s.flat_vb = make_vertex_buffer(s, std::vector<flat_vertex>(std::begin(FLAT_VERTICES), std::end(FLAT_VERTICES)));
@@ -793,6 +1025,8 @@ float4 ps_red() : COLOR
 			s.variant_stride = sizeof(skin3_vertex);
 		}
 		s.fvf_vb = make_vertex_buffer(s, std::vector<fvf_vertex>(std::begin(FVF_VERTICES), std::end(FVF_VERTICES)));
+		s.second_stream_vb = make_vertex_buffer(s, std::vector<second_stream_vertex>(STRIP_VERTICES, second_stream_vertex{ { 0, 0, -1 } }));
+		check(dev->CreateVertexBuffer(4 * sizeof(processed_vertex), 0, PROCESSED_VERTEX_FORMAT, D3DPOOL_SYSTEMMEM, &s.processed_vb, nullptr), "CreateVertexBuffer");
 
 		check(dev->CreateIndexBuffer(sizeof(INDICES), 0, D3DFMT_INDEX16, buffer_pool(s), &s.ib, nullptr), "CreateIndexBuffer");
 		void* data = nullptr;
@@ -816,11 +1050,12 @@ float4 ps_red() : COLOR
 		for (DWORD stage = 0; stage < 2; stage++)
 			check(s.dev->SetTexture(stage, nullptr), "SetTexture");
 
-		release(s.vs_rigid); release(s.vs_skinned); release(s.vs_skinned_color); release(s.ps_red);
+		release(s.vs_rigid); release(s.vs_rigid_blue); release(s.vs_skinned); release(s.vs_skinned_color); release(s.ps_vertex_colour);
 		release(s.rigid_decl); release(s.flat_decl); release(s.skin3_decl); release(s.skin4_decl); release(s.variant_decl);
-		release(s.moved_blend_decl);
+		release(s.moved_blend_decl); release(s.rigid_normal_on_stream_1_decl);
 		release(s.rigid_vb); release(s.flat_vb); release(s.skin3_vb); release(s.skin3_offset_vb); release(s.skin3_high_vb);
-		release(s.skin4_vb); release(s.variant_vb); release(s.aside_vb); release(s.fvf_vb);
+		release(s.skin4_vb); release(s.variant_vb); release(s.aside_vb); release(s.fvf_vb); release(s.second_stream_vb);
+		release(s.processed_vb);
 		release(s.ib);
 		release(s.green); release(s.blue);
 	}
@@ -830,6 +1065,13 @@ float4 ps_red() : COLOR
 	void create_device(scene& s, IDirect3D9* d3d, D3DPRESENT_PARAMETERS pp)
 	{
 		check(d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, pp.hDeviceWindow, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &s.dev), "CreateDevice");
+	}
+
+	void release_last_reference(IDirect3DDevice9*& dev)
+	{
+		if (const ULONG left = dev->Release())
+			fail_with_count("the device's last Release left references", left);
+		dev = nullptr;
 	}
 
 	void start_drawing(scene& s)
@@ -900,6 +1142,9 @@ int main(int argc, char** argv)
 
 	const HWND hwnd = create_window();
 
+	if (is_one_of(s.opt.variant, READ_ONLY_TRIGGER_VARIANTS) && !SetFileAttributesA(TRACER_TRIGGER_FILE, FILE_ATTRIBUTE_READONLY))
+		fail("making the trigger file read-only");
+
 	IDirect3D9* d3d = nullptr;
 	if (s.opt.d3d9ex)
 	{
@@ -925,6 +1170,18 @@ int main(int argc, char** argv)
 	create_device(s, d3d, pp);
 	start_drawing(s);
 
+	// The device the overlapping-devices variant drew with first, until it releases it
+	IDirect3DDevice9* first_device = nullptr;
+
+	// What the first-device-drawn-on and second-device-mid-frame variants draw with their second device
+	scene second;
+	second.opt = s.opt;
+	const auto create_second_device = [&]
+	{
+		create_device(second, d3d, pp);
+		start_drawing(second);
+	};
+
 	for (int frame = 0; frame < FRAMES; frame++)
 	{
 		pump_messages();
@@ -938,17 +1195,35 @@ int main(int argc, char** argv)
 		if (frame == REPLACEMENT_FRAME && s.opt.variant == "second-device")
 		{
 			release_resources(s);
-			if (const ULONG left = s.dev->Release())
-				fail_with_count("the device's last Release left references", left);
+			release_last_reference(s.dev);
 			create_device(s, d3d, pp);
 			start_drawing(s);
 		}
+		if (frame == REPLACEMENT_FRAME && s.opt.variant == "overlapping-devices")
+		{
+			release_resources(s);
+			first_device = s.dev;
+			create_device(s, d3d, pp);
+			start_drawing(s);
+		}
+		if (frame == FIRST_DEVICE_RELEASE_FRAME && first_device)
+			release_last_reference(first_device);
+		if (frame == REPLACEMENT_FRAME && s.opt.variant == "first-device-drawn-on")
+			create_second_device();
+		if (frame == REPLACEMENT_FRAME && s.opt.variant == "read-only-trigger-until-replacement"
+			&& !SetFileAttributesA(TRACER_TRIGGER_FILE, FILE_ATTRIBUTE_NORMAL))
+			fail("making the trigger file writable");
 		const auto dev = s.dev;
 		if (s.opt.variant == "dynamic-rewritten")
 			fill_vertex_buffer(s.variant_vb, dynamic_strip(frame == FRAMES - 1), D3DLOCK_DISCARD);
 		check(dev->BeginScene(), "BeginScene");
 		check(dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 64), 1.0f, 0), "Clear");
 		draw_scene(s);
+		if (frame == FRAMES - 1 && s.opt.variant == "second-device-mid-frame")
+		{
+			create_second_device();
+			check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");
+		}
 
 		// One object is created in every frame, so that a call trace of any frame holds a Create call
 		IDirect3DVertexDeclaration9* created = nullptr;
@@ -961,7 +1236,29 @@ int main(int argc, char** argv)
 			save_back_buffer(dev, s.opt.out);
 
 		dev->Present(nullptr, nullptr, nullptr, nullptr);
+
+		if (second.dev)
+		{
+			check(second.dev->BeginScene(), "BeginScene");
+			check(second.dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 64), 1.0f, 0), "Clear");
+			draw_scene(second);
+			check(second.dev->EndScene(), "EndScene");
+			if (frame == FRAMES - 1)
+				save_back_buffer(second.dev, s.opt.out + ".second-device");
+			second.dev->Present(nullptr, nullptr, nullptr, nullptr);
+		}
 		Sleep(FRAME_PAUSE_MS);
+	}
+
+	if (is_one_of(s.opt.variant, RELEASING_VARIANTS))
+	{
+		release_resources(s);
+		release_last_reference(s.dev);
+	}
+	if (second.dev)
+	{
+		release_resources(second);
+		release_last_reference(second.dev);
 	}
 
 	return 0;

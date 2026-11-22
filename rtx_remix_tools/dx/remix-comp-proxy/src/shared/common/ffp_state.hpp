@@ -28,12 +28,15 @@ namespace shared::common
 		void on_set_texture(UINT stage, IDirect3DBaseTexture9* texture);
 		void on_set_vertex_declaration(IDirect3DVertexDeclaration9* decl);
 		void on_set_fvf(DWORD fvf);
-		void on_present();
+		void on_present(IDirect3DDevice9* dev);
 		void on_begin_scene();
 		void on_reset();
 
 		// --- State consumers (called from renderer draw routing) ---
 
+		// engage clears the shaders of dev. disengage puts the ones the game set last back on dev
+		// if dev is the device engaged, and does nothing otherwise. In between is_ffp_active()
+		// holds, and a shader the game sets is kept for disengage instead of reaching the device.
 		void engage(IDirect3DDevice9* dev);
 		void disengage(IDirect3DDevice9* dev);
 
@@ -52,7 +55,7 @@ namespace shared::common
 		void set_enabled(bool e) { enabled_ = e; }
 
 		bool view_proj_valid() const { return view_proj_valid_; }
-		bool is_ffp_active() const { return ffp_active_; }
+		bool is_ffp_active() const { return ffp_device_ != nullptr; }
 		bool cur_decl_is_skinned() const { return cur_decl_is_skinned_; }
 		bool cur_decl_has_normal() const { return cur_decl_has_normal_; }
 		bool cur_decl_has_pos_t() const { return cur_decl_has_pos_t_; }
@@ -122,8 +125,11 @@ namespace shared::common
 		bool world_written_ = false;
 		bool view_proj_dirty_ = false;
 		bool view_proj_valid_ = false;
-		bool ffp_active_ = false;
 		bool ffp_setup_ = false;
+
+		// The device engage cleared the shaders of, until disengage. No reference is held: the
+		// wrapper resets this state before the device goes.
+		IDirect3DDevice9* ffp_device_ = nullptr;
 
 		// Shader tracking
 		IDirect3DVertexShader9* last_vs_ = nullptr;

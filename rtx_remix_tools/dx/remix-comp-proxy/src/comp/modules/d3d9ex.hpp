@@ -136,6 +136,14 @@ namespace comp
 			HRESULT __stdcall CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9** ppQuery) override;
 
 		private:
+			// Whether the modules serve this device: the one created last. Any other device is
+			// passed through, its calls forwarded without the modules seeing them.
+			bool is_current() const { return shared::globals::d3d_device == this; }
+
+			// The device with the shaders the game set last on it, for a call that reads or
+			// uses them. Converted draws leave it without shaders until then.
+			IDirect3DDevice9* with_game_shaders();
+
 			IDirect3DDevice9 *m_pIDirect3DDevice9;
 
 			// References to this wrapper. All are the game's: the proxy keeps none of its own.

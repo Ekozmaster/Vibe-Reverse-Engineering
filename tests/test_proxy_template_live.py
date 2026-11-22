@@ -20,6 +20,9 @@ SKINNED = [name for name in CELLS if name.startswith("skinned strip")]
 SKINNING_ON = {"Skinning": {"Enabled": 1}}
 ICON = "rtx_comp/textures/icon.png"
 
+# Where the toy saves the frame of a second device, beside the frame of the first
+SECOND_DEVICE_FRAME = "frame.raw.second-device"
+
 
 def _png(width: int, height: int, rgba: tuple[int, int, int, int]) -> bytes:
     """A PNG file of one colour."""
@@ -325,6 +328,59 @@ class TestBuiltInTracerCannotStart:
         assert not (frame.folder / TRIGGER).exists()
 
 
+class TestBuiltInTracerTriggerWithBlanks:
+    def test_a_frame_count_followed_by_blanks_is_taken(self, toy):
+        frame = toy.frame("tracer_frames_blanks", SHIPPED_LAYOUT,
+                          files={TRIGGER: f"frames=2 \t\r\nid={TRIGGER_ID}\r\n".encode()})
+        assert re.fullmatch(rf"2 \d+ {TRIGGER_ID} done\n", progress_of(frame)), frame.log
+
+
+class TestBuiltInTracerCannotReport:
+    """A capture whose progress file cannot be written."""
+
+    def test_the_log_says_so_once(self, toy):
+        frame = toy.frame("tracer_cannot_report", SHIPPED_LAYOUT,
+                          files={**trigger(2), "dxtrace_progress.txt/a folder where the file goes": b""})
+        assert frame.log.count("dxtrace_progress.txt") == 1, frame.log
+        assert len(captures_of(frame)) == 1
+
+
+class TestBuiltInTracerTriggerSpelling:
+    """What both tracers take for a frame count and for an id."""
+
+    def test_a_frame_count_behind_a_blank_starts_no_capture(self, toy):
+        frame = toy.frame("tracer_frames_behind_blank", SHIPPED_LAYOUT,
+                          files={TRIGGER: f"frames= 2\nid={TRIGGER_ID}\n".encode()})
+        assert progress_of(frame).startswith(f"0 0 {TRIGGER_ID} failed "), frame.log
+        assert not captures_of(frame)
+
+    def test_an_id_followed_by_blanks_is_taken(self, toy):
+        frame = toy.frame("tracer_id_blanks", SHIPPED_LAYOUT,
+                          files={TRIGGER: f"frames=2\r\nid={TRIGGER_ID} \t\r\n".encode()})
+        assert re.fullmatch(rf"2 \d+ {TRIGGER_ID} done\n", progress_of(frame)), frame.log
+
+
+class TestBuiltInTracerUndeletableTrigger:
+    """A trigger file the toy has made read-only: the tracer can read it and not delete it."""
+
+    def test_it_starts_one_capture(self, toy):
+        frame = toy.frame("tracer_read_only", SHIPPED_LAYOUT, files=trigger(1), variant="read-only-trigger")
+        assert frame.log.count("Capture started") == 1, frame.log
+        assert frame.log.count("Trigger file not deleted") == 1
+        assert re.fullmatch(rf"1 \d+ {TRIGGER_ID} done\n", progress_of(frame))
+
+    def test_one_that_names_no_frame_count_is_answered_once(self, toy):
+        frame = toy.frame("tracer_read_only_no_count", SHIPPED_LAYOUT, files=trigger("two"), variant="read-only-trigger")
+        assert frame.log.count("Trigger file not deleted") == 1, frame.log
+        assert progress_of(frame).startswith(f"0 0 {TRIGGER_ID} failed ")
+
+    def test_it_is_deleted_once_it_can_be(self, toy):
+        frame = toy.frame("tracer_read_only_for_a_while", SHIPPED_LAYOUT, files=trigger(1),
+                          variant="read-only-trigger-until-replacement")
+        assert frame.log.count("Capture started") == 1, frame.log
+        assert not (frame.folder / TRIGGER).exists()
+
+
 class TestAlbedoStage:
     """The albedo texture on stage 1, a different texture on stage 0."""
 
@@ -360,6 +416,11 @@ class TestSkinnedVertexFormats:
 
     @pytest.mark.parametrize("variant", ["short-texcoord", "half-normal"])
     def test_an_element_in_a_format_the_expansion_cannot_read_keeps_the_draw_on_its_shaders(self, toy, variant):
+        frame, reference = variant_frames(toy, variant)
+        assert_drawn_by(frame, reference, "skinned strip variant", "red")
+
+    @pytest.mark.parametrize("variant", ["normal-on-stream-1", "texcoord-on-stream-1"])
+    def test_an_element_the_expansion_reads_on_another_stream_keeps_the_draw_on_its_shaders(self, toy, variant):
         frame, reference = variant_frames(toy, variant)
         assert_drawn_by(frame, reference, "skinned strip variant", "red")
 
@@ -432,19 +493,96 @@ class TestUserPointerDrawAfterConvertedDraw:
         assert_drawn_by(frame, reference, "skinned strip variant", "red")
 
 
-class TestDeviceReplaced:
-    """Two thirds into the run the toy resets its device, or releases it and creates another."""
+class TestRigidNormalOnAnotherStream:
+    """A rigid quad whose only normal is on stream 1.
 
-    @pytest.mark.parametrize("variant", ["reset", "second-device"])
+    Converted draws are unlit, so the picture shows that the declaration counts as one with
+    a normal and not whether Direct3D or Remix reads that normal.
+    """
+
+    def test_the_declaration_counts_as_having_a_normal_and_the_draw_is_converted(self, toy):
+        frame, reference = variant_frames(toy, "rigid-normal-on-stream-1")
+        assert_drawn_by(frame, reference, "skinned strip variant", "green")
+
+
+class TestShadersSetAfterConvertedDraw:
+    """A quad drawn converted, the blue vertex shader set, and the quad drawn again on its shaders.
+
+    The proxy holds back a shader set after a converted draw. Blue says the second draw
+    used the shader set last, red the one from before the converted draw.
+    """
+
+    @pytest.mark.parametrize("variant", ["new-vs-after-converted", "new-vs-up-after-converted"])
+    def test_a_vertex_shader_set_alone_draws_with_the_pixel_shader_from_before(self, toy, variant):
+        frame, reference = variant_frames(toy, variant)
+        assert_drawn_by(frame, reference, "skinned strip variant", "blue")
+
+    def test_get_vertex_shader_and_get_pixel_shader_return_them(self, toy):
+        frame, reference = variant_frames(toy, "get-shaders-after-converted")
+        assert_drawn_by(frame, reference, "skinned strip variant", "blue")
+
+    @pytest.mark.parametrize("variant", ["state-block-created-after-converted", "state-block-recorded-after-converted"])
+    def test_a_state_block_holds_them(self, toy, variant):
+        frame, reference = variant_frames(toy, variant)
+        assert_drawn_by(frame, reference, "skinned strip variant", "blue")
+
+    def test_process_vertices_runs_them(self, toy):
+        frame, reference = variant_frames(toy, "process-vertices-after-converted")
+        assert_drawn_by(frame, reference, "skinned strip variant", "blue")
+
+    @pytest.mark.parametrize("variant", ["rect-patch-after-converted", "tri-patch-after-converted"])
+    def test_the_device_has_them_after_a_patch_draw(self, toy, variant):
+        frame, reference = variant_frames(toy, variant)
+        assert_drawn_by(frame, reference, "skinned strip variant", "blue")
+
+
+class TestDeviceReplaced:
+    """Two thirds into the run the toy resets its device, or creates another before or after releasing it.
+
+    The toy itself fails when the last Release of a device it lets go of does not return 0.
+    """
+
+    @pytest.mark.parametrize("variant", ["reset", "second-device", "overlapping-devices"])
     def test_draws_are_converted_on_the_device_that_follows(self, toy, variant):
         reference = toy.frame(f"reference_{variant}", MOVED_LAYOUT, proxy=False, variant=variant)
         frame = toy.frame(variant, MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON), variant=variant,
                           files={ICON: _png(4, 4, (255, 128, 0, 255))})
 
-        # The proxy had its modules loaded, and with them objects on the device, when the toy let go of it
-        assert frame.log.index("Skinning] Module initialized.") < frame.log.rindex("FFP] State reset"), frame.log
+        # The proxy logs the line each time it lets go of what it has on a device. The first
+        # time is the replacement, and by then its modules were loaded and had objects there.
+        # The toy releases a device at its end only where devices overlap.
+        assert frame.log.index("Skinning] Module initialized.") < frame.log.index("FFP] State reset"), frame.log
+        assert frame.log.count("FFP] State reset") == (2 if variant == "overlapping-devices" else 1), frame.log
         assert "Failed to load" not in frame.log
         for shape in RIGID + SKINNED:
+            assert_drawn_by(frame, reference, shape, "green")
+
+
+class TestFirstDeviceInUseBesideASecond:
+    """The toy creates a second device and goes on using the first.
+
+    The proxy converts the draws of the device created last. The toy itself fails when
+    the last Release of either device does not return 0.
+    """
+
+    def test_the_first_device_draws_on_its_shaders_and_the_second_is_converted(self, toy):
+        variant = "first-device-drawn-on"
+        reference = toy.frame(f"reference_{variant}", MOVED_LAYOUT, proxy=False, variant=variant)
+        frame = toy.frame(variant, MOVED_LAYOUT, ini=_merged(MOVED_LAYOUT.ini, SKINNING_ON), variant=variant)
+
+        for shape in CELLS:
+            assert_drawn_by(frame, reference, shape, "red")
+        second = proxy_live.read_frame(frame.folder / SECOND_DEVICE_FRAME)
+        second_reference = proxy_live.read_frame(reference.folder / SECOND_DEVICE_FRAME)
+        for shape in RIGID + SKINNED:
+            drawn, expected = second[shape], second_reference[shape]
+            assert drawn.colours == {"green"} and drawn.pixels == expected.pixels, shape
+        assert frame.log.count("FFP] State reset") == 2, frame.log
+
+    def test_the_first_device_has_its_shaders_back_when_the_second_is_created_after_a_converted_draw(self, toy):
+        frame, reference = variant_frames(toy, "second-device-mid-frame")
+        assert_drawn_by(frame, reference, "rigid quad after the strips", "red")
+        for shape in set(RIGID + SKINNED) - {"rigid quad after the strips"}:
             assert_drawn_by(frame, reference, shape, "green")
 
 
