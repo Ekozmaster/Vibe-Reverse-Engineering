@@ -839,20 +839,7 @@ def _rich_stub(entries):
 class TestSchemaMigration:
     def test_a_version_1_db_is_read_as_it_is_and_migrated_on_the_first_write(self, tmp_path):
         from sigdb import SignatureDB, SCHEMA_VERSION
-        path = str(tmp_path / "v1.db")
-        conn = sqlite3.connect(path)
-        conn.executescript("""
-            CREATE TABLE schema_version (version INTEGER NOT NULL);
-            INSERT INTO schema_version VALUES (1);
-            CREATE TABLE byte_sigs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-                pattern BLOB NOT NULL, mask BLOB NOT NULL, func_size INTEGER NOT NULL,
-                tail_crc INTEGER NOT NULL DEFAULT 0, compiler TEXT NOT NULL DEFAULT '',
-                source TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '');
-        """)
-        conn.execute("INSERT INTO byte_sigs (name, pattern, mask, func_size) VALUES ('old', ?, ?, 40)",
-                     (b"\x55" * 32, b"\xff" * 32))
-        conn.commit()
-        conn.close()
+        path = _v1_db(str(tmp_path / "v1.db"))
         db = SignatureDB(path)
         assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0)] == ["old"]
         assert db._conn.execute("SELECT version FROM schema_version").fetchone()[0] == 1
@@ -893,11 +880,11 @@ class TestPrefixIndex:
     def test_wildcarded_start_and_fixed_start_both_match(self):
         from sigdb import SignatureDB
         db = SignatureDB(":memory:")
-        db.add_byte_sig(name="fixed", pattern=b"\x55" * 32, mask=b"\xff" * 32, func_size=0, tail_crc=0)
-        db.add_byte_sig(name="wild", pattern=b"\x00" + b"\x55" * 31, mask=b"\x00" + b"\xff" * 31,
+        db.add_byte_sig(name="f", source="fixed", pattern=b"\x55" * 32, mask=b"\xff" * 32, func_size=0, tail_crc=0)
+        db.add_byte_sig(name="f", source="wild", pattern=b"\x00" + b"\x55" * 31, mask=b"\x00" + b"\xff" * 31,
                         func_size=0, tail_crc=0)
         db.add_byte_sig(name="other", pattern=b"\x56" * 32, mask=b"\xff" * 32, func_size=0, tail_crc=0)
-        assert sorted(m.name for m in db.match_bytes(b"\x55" * 32, 0, "", 0)) == ["fixed", "wild"]
+        assert sorted(m.source for m in db.match_bytes(b"\x55" * 32, 0, "", 0)) == ["fixed", "wild"]
 
     def test_a_sig_added_after_a_lookup_is_found(self):
         from sigdb import SignatureDB
@@ -1191,6 +1178,9 @@ def _v1_db(path, with_crc_len=False):
             mnemonic_hash INTEGER NOT NULL, constants TEXT NOT NULL DEFAULT '',
             compiler TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '',
             category TEXT NOT NULL DEFAULT '');
+        CREATE TABLE compiler_fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,
+            pattern BLOB NOT NULL, mask BLOB NOT NULL DEFAULT x'', compiler TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '');
     """)
     if with_crc_len:
         conn.execute("ALTER TABLE byte_sigs ADD COLUMN crc_len INTEGER NOT NULL DEFAULT 0")
@@ -1988,7 +1978,7 @@ class TestPullSourcePaths:
     ])
     def test_a_path_that_is_absolute_or_leads_out_of_the_destination_is_refused(self, tmp_path, rel_path):
         from sigdb import RefusedInput, _source_dest
-        with pytest.raises(RefusedInput, match="leads outside"):
+        with pytest.raises(RefusedInput, match="names no file inside"):
             _source_dest(tmp_path / "sources", rel_path)
 
     @pytest.mark.parametrize("outside", ["../x", "sources/../../x", "{tmp}/elsewhere/x"])
@@ -2152,3 +2142,311 @@ class TestBuildNeedsItsBinaries:
         with pytest.raises(SystemExit):
             _cli_build(tmp_path, manifest, db)
         assert _held_rows(db) == ([("solo", "msvc2008")], [("solo", "msvc2008")])
+
+
+_PADDING = b"\xcc" * 48
+_NEXT_FUNCTION = bytes.fromhex("8bff558bec33c05dc3") + _PADDING
+
+# Library functions under 32 bytes, each ending in a return or a tail jump.
+_ADD_MUL = bytes.fromhex("8b4424048b4c240803c10fafc1c20800")
+_AULLSHR = bytes.fromhex("80f940731580f92073060fadd0d3eac38bc233d280e11fd3e8c333c033d2c3")
+_INITTERM = bytes.fromhex("8bff558bec568bf0eb0b8b0685c07402ffd083c6043b750872f05e5dc3")
+_ALLOCA_PROBE_16 = bytes.fromhex("518d4c24082bc883e10f03c11bc90bc159e94a050000")
+# Sixteen bytes that end in a call, which a longer function can start with too.
+_ENDS_IN_A_CALL = bytes.fromhex("6a016a026a036a046a0550e8") + b"\x10\x00\x00\x00"
+
+
+def _db_with_sig_of(function, size, name="lib"):
+    """A database holding the signature a build takes from *function*, padded after; *size* None has it estimated."""
+    from sigdb import SignatureDB, extract_byte_sig
+    pattern, mask, tail_crc, func_size = extract_byte_sig(binary_over(function + _PADDING), CODE_VA, size)
+    db = SignatureDB(":memory:")
+    db.add_byte_sig(name=name, pattern=pattern, mask=mask, func_size=func_size, tail_crc=tail_crc)
+    return db
+
+
+class TestSignaturesShorterThanThePrefix:
+    """A signature that pins nothing after its function's end matches only a function ending there."""
+
+    @pytest.mark.parametrize("function", [_ADD_MUL, _AULLSHR, _INITTERM, _ALLOCA_PROBE_16],
+                             ids=["one_return", "returns_jumped_over", "jump_inside", "tail_jump"])
+    @pytest.mark.parametrize("following", [_PADDING, _NEXT_FUNCTION], ids=["padded", "unpadded"])
+    def test_a_function_ending_where_the_signature_does_matches(self, function, following):
+        db = _db_with_sig_of(function, len(function))
+        assert db.identify(binary_over(function + following), CODE_VA).name == "lib"
+
+    def test_a_function_that_runs_on_after_the_last_call_of_the_signature_does_not_match(self):
+        db = _db_with_sig_of(_ENDS_IN_A_CALL, 16)
+        longer = _ENDS_IN_A_CALL + bytes.fromhex("83c41433c0") + b"\x90" * 180 + b"\xc3" + _PADDING
+        assert db.identify(binary_over(longer), CODE_VA) is None
+
+    def test_a_function_that_jumps_over_the_return_the_signature_ends_at_does_not_match(self):
+        db = _db_with_sig_of(_AULLSHR, 16)
+        assert db.identify(binary_over(_AULLSHR + _PADDING), CODE_VA) is None
+
+    def test_a_function_leaving_the_prefix_by_a_conditional_jump_does_not_match(self):
+        guard = bytes.fromhex("85c90f8420000000")          # test ecx, ecx; jz +0x20, past the prefix
+        short = guard + bytes.fromhex("8b4424040fafc1c3")  # 16 bytes
+        db = _db_with_sig_of(short, 16)
+        longer = short + b"\x40" * 24 + bytes.fromhex("33c0c3") + _PADDING
+        assert db.identify(binary_over(longer), CODE_VA) is None
+
+    def test_a_function_jumping_on_to_its_own_code_past_the_prefix_does_not_match(self):
+        short = bytes.fromhex("8b4424048b4c240803c190e920000000")  # 16 bytes ending in jmp +0x20, a tail call
+        db = _db_with_sig_of(short, 16)
+        longer = short + b"\x40" * 32 + bytes.fromhex("33c0c3") + _PADDING
+        assert db.identify(binary_over(longer), CODE_VA) is None
+
+    def test_a_function_tail_jumping_to_the_function_placed_next_matches(self):
+        short = bytes.fromhex("8b4424048b4c240803c190e910000000")  # jmp +0x10: the start after 16 bytes of padding
+        db = _db_with_sig_of(short, 16)
+        b = binary_over(short + b"\xcc" * 16 + _NEXT_FUNCTION)
+        assert CODE_VA + 32 in b.func_table
+        assert db.identify(b, CODE_VA).name == "lib"
+
+    def test_a_function_ending_in_a_call_that_does_not_return_matches(self):
+        db = _db_with_sig_of(_ENDS_IN_A_CALL, 16)
+        assert db.identify(binary_over(_ENDS_IN_A_CALL + _PADDING), CODE_VA).name == "lib"
+
+    def test_a_call_followed_by_a_breakpoint_a_branch_jumps_over_is_not_the_end(self):
+        guarded = bytes.fromhex("85c9740b6a016a0250e810000000")  # test ecx, ecx; jz past the int3; pushes; call
+        db = _db_with_sig_of(guarded, len(guarded))
+        longer = guarded + b"\xcc" + bytes.fromhex("33c0c3") + _PADDING
+        assert db.identify(binary_over(longer), CODE_VA) is None
+
+    def test_a_signature_sized_by_the_estimate_matches_a_function_the_estimate_sizes_alike(self):
+        # A tail jump, padding, then another function: 22 bytes to the estimate, which ends a function at a return.
+        thunk = bytes.fromhex("e91d800b00") + b"\xcc" * 11 + bytes.fromhex("b8d80d7c00c3")
+        db = _db_with_sig_of(thunk, None)
+        assert db._conn.execute("SELECT func_size FROM byte_sigs").fetchall() == [(22,)]
+        assert db.identify(binary_over(thunk + _PADDING), CODE_VA).name == "lib"
+
+    def test_a_signature_pinning_bytes_after_its_function_matches_by_those_bytes(self):
+        from sigdb import SignatureDB
+        thunk = bytes.fromhex("ff250ce57b00") + b"\xcc" * 10 + bytes.fromhex("441e82000000000003ffff0000000000")
+        db = SignatureDB(":memory:")
+        db.add_byte_sig(name="j_thunk", pattern=thunk, mask=b"\xff" * 32, func_size=20, tail_crc=0)
+        assert db.identify(binary_over(thunk + _PADDING), CODE_VA).name == "j_thunk"
+
+
+class TestSeveralNamesForOneFunction:
+    """Signatures under different keys that match one function equally well cannot name it."""
+
+    _CODE = b"\x55" * 32
+
+    def _db(self, *rows):
+        from sigdb import SignatureDB
+        db = SignatureDB(":memory:")
+        for row in rows:
+            db.add_byte_sig(**{"pattern": self._CODE, "func_size": 40, "tail_crc": 0, **row})
+        return db
+
+    def _masks(self):
+        return [b"\xff" * fixed + b"\x00" * (32 - fixed) for fixed in (32, 31, 30)]
+
+    def test_equally_scored_names_match_nothing(self):
+        db = self._db(*({"name": name, "mask": mask} for name, mask in zip("abc", self._masks())))
+        assert db.match_bytes(self._CODE, 40, "", 0) == []
+
+    def test_one_name_under_several_keys_matches(self):
+        db = self._db(*({"name": "a", "mask": mask} for mask in self._masks()))
+        assert {m.name for m in db.match_bytes(self._CODE, 40, "", 0)} == {"a"}
+
+    def test_the_name_that_scores_higher_matches(self):
+        wide, narrow, _ = self._masks()
+        db = self._db({"name": "other_size", "mask": wide, "func_size": 80}, {"name": "same_size", "mask": narrow})
+        assert [m.name for m in db.match_bytes(self._CODE, 40, "", 0)] == ["same_size", "other_size"]
+
+    def test_scores_reached_by_different_boosts_tie(self):
+        wide, narrow, _ = self._masks()
+        db = self._db({"name": "by_size", "mask": wide},
+                      {"name": "by_tail", "mask": narrow, "func_size": 80, "tail_crc": 0xBEEF, "compiler": "msvc"})
+        assert db.match_bytes(self._CODE, 40, "msvc", 0xBEEF) == []
+
+
+class TestByteSignaturesThatCannotNameAFunction:
+    """A function whose bytes signatures match under several names is not named by its shape either."""
+
+    def _db(self, byte_rows):
+        """The byte rows over _BRANCHY's own prefix, and a structural signature of _BRANCHY called "a"."""
+        from sigdb import SignatureDB, extract_byte_sig, extract_structural_sig
+        b = binary_over(_BRANCHY + _PADDING)
+        pattern, _, tail_crc, func_size = extract_byte_sig(b, CODE_VA, len(_BRANCHY))
+        db = SignatureDB(":memory:")
+        for row in byte_rows:
+            db.add_byte_sig(**{"pattern": pattern, "func_size": func_size, "tail_crc": tail_crc, **row})
+        shape = extract_structural_sig(b, CODE_VA)
+        del shape["shape_version"]
+        db.add_structural_sig(name="a", **shape)
+        return db, b
+
+    def test_the_shape_names_a_function_no_byte_signature_matches(self):
+        db, b = self._db([{"name": "elsewhere", "pattern": b"\x55" * 32, "mask": b"\xff" * 32}])
+        match = db.identify(b, CODE_VA)
+        assert (match.name, match.tier) == ("a", "structural")
+
+    @pytest.mark.parametrize("masks", [(b"\xff" * 32, b"\xff" * 32), (b"\xff" * 32, b"\xff" * 31 + b"\x00")],
+                             ids=["one_key", "equally_scored_keys"])
+    def test_names_tied_on_the_bytes_are_not_settled_by_the_shape(self, masks):
+        db, b = self._db([{"name": name, "mask": mask} for name, mask in zip("ab", masks)])
+        assert db.identify(b, CODE_VA) is None
+        assert db.scan(b) == {}
+
+
+def _db_without(path, table):
+    """A current-schema database file with *table* dropped."""
+    from sigdb import SignatureDB
+    SignatureDB(str(path)).close()
+    conn = sqlite3.connect(path)
+    conn.execute(f"DROP TABLE {table}")
+    conn.commit()
+    conn.close()
+    return path
+
+
+class TestEverySchemaTableIsRequired:
+    @pytest.mark.parametrize("table", ["byte_sigs", "structural_sigs", "compiler_fingerprints"])
+    def test_a_database_missing_a_table_is_refused_for_reading_and_for_writing(self, tmp_path, table):
+        from sigdb import NotASignatureDB, SignatureDB
+        path = _db_without(tmp_path / "partial.db", table)
+        before = _dir_bytes(tmp_path)
+        for open_db in (SignatureDB, SignatureDB.open_existing):
+            with pytest.raises(NotASignatureDB, match=table):
+                open_db(str(path))
+        assert _dir_bytes(tmp_path) == before
+
+    def test_scan_reports_a_database_without_structural_signatures_and_prints_no_results(self, tmp_path, capsys):
+        from sigdb import main
+        (tmp_path / "db").mkdir()
+        path = _db_without(tmp_path / "db" / "partial.db", "structural_sigs")
+        with pytest.raises(SystemExit) as exc:
+            main(["scan", str(_sig_image(tmp_path)), "--db", str(path)])
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "not a signature database" in captured.err and "structural_sigs" in captured.err
+
+    def test_open_existing_is_the_one_way_to_open_for_reading(self, tmp_path):
+        from sigdb import SignatureDB
+        path = tmp_path / "s.db"
+        SignatureDB(str(path)).close()
+        with pytest.raises(TypeError):
+            SignatureDB(str(path), read_only=True)
+
+class TestPullOverALeftoverWriteAheadLog:
+    def _killed_writer_leftovers(self, tmp_path, held):
+        """Leave *held* with the -wal and -shm files of a writer that never closed its connection."""
+        from sigdb import SignatureDB
+        live = tmp_path / "live" / held.name
+        live.parent.mkdir()
+        db = SignatureDB(str(live))
+        db._conn.execute("PRAGMA wal_autocheckpoint=0")
+        db.add_byte_sig(name="old", pattern=b"\x55" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0)
+        for suffix in ("", "-wal", "-shm"):
+            (held.parent / (held.name + suffix)).write_bytes((live.parent / (live.name + suffix)).read_bytes())
+        db.close()
+
+    def test_the_downloaded_rows_are_the_ones_served(self, tmp_path, monkeypatch):
+        import sigdb
+        held = tmp_path / "data" / "signatures.db"
+        held.parent.mkdir()
+        monkeypatch.setattr(sigdb, "DEFAULT_DB_PATH", held)
+        self._killed_writer_leftovers(tmp_path, held)
+        assert (held.parent / "signatures.db-wal").stat().st_size > 0
+        _served(monkeypatch, {"signatures.db": _db_bytes(tmp_path, "new")})
+        sigdb.main(["pull"])
+        db = sigdb.SignatureDB.open_existing(str(held))
+        names = [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0)]
+        db.close()
+        assert names == ["new"]
+        assert [p.name for p in held.parent.iterdir()] == ["signatures.db"]
+
+    def test_a_log_that_cannot_be_removed_leaves_the_held_database_and_its_log(self, tmp_path, monkeypatch, capsys):
+        import sigdb
+        held = tmp_path / "data" / "signatures.db"
+        held.parent.mkdir()
+        monkeypatch.setattr(sigdb, "DEFAULT_DB_PATH", held)
+        self._killed_writer_leftovers(tmp_path, held)
+        _served(monkeypatch, {"signatures.db": _db_bytes(tmp_path, "new")})
+        unlink = Path.unlink
+
+        def refuse_the_log(path, missing_ok=False):
+            if path.name.endswith("-wal"):
+                raise PermissionError(13, "Access is denied", str(path))
+            unlink(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", refuse_the_log)
+        before = _dir_bytes(held.parent)
+        with pytest.raises(SystemExit) as exc:
+            sigdb.main(["pull"])
+        assert exc.value.code == 1
+        (line,) = capsys.readouterr().err.splitlines()
+        assert "cannot replace" in line and "signatures.db" in line and "open in another program" in line
+        assert _dir_bytes(held.parent) == before
+
+
+class TestPullCannotReplaceTheDatabase:
+    def test_the_held_database_is_left_and_the_download_removed(self, tmp_path, monkeypatch, capsys):
+        import sigdb
+        held = tmp_path / "data" / "signatures.db"
+        held.parent.mkdir()
+        held.write_bytes(_db_bytes(tmp_path, "old"))
+        monkeypatch.setattr(sigdb, "DEFAULT_DB_PATH", held)
+        _served(monkeypatch, {"signatures.db": _db_bytes(tmp_path, "new")})
+
+        def refuse(src, dst):
+            raise PermissionError(13, "Access is denied", str(dst))
+
+        monkeypatch.setattr(sigdb.os, "replace", refuse)
+        before = _dir_bytes(held.parent)
+        with pytest.raises(SystemExit) as exc:
+            sigdb.main(["pull"])
+        assert exc.value.code == 1
+        (line,) = capsys.readouterr().err.splitlines()
+        assert "cannot replace" in line and "signatures.db" in line and "open in another program" in line
+        assert _dir_bytes(held.parent) == before
+
+
+class TestPullSourcePathsNamingTheDestination:
+    @pytest.mark.parametrize("rel_path", [
+        "", ".", "sources/", "sources/.", "sources/a/..", "...", "sources/. .", "sources/sub/...",
+    ])
+    def test_a_path_that_is_the_destination_folder_itself_is_refused(self, tmp_path, rel_path):
+        from sigdb import RefusedInput, _source_dest
+        with pytest.raises(RefusedInput, match="names no file inside"):
+            _source_dest(tmp_path / "sources", rel_path)
+
+    def test_pull_fetches_no_source_when_the_manifest_lists_the_destination_folder(
+            self, tmp_path, monkeypatch, capsys):
+        import sigdb
+        monkeypatch.setattr(sigdb, "DEFAULT_DB_PATH", tmp_path / "data" / "signatures.db")
+        asked = _served(monkeypatch, {
+            "signatures.db": _db_bytes(tmp_path),
+            "manifest.json": json.dumps({"sources": ["sources/ok.csv", "sources/"]}).encode(),
+            "ok.csv": b"address,name\n", "": b"planted",
+        })
+        with pytest.raises(SystemExit) as exc:
+            sigdb.main(["pull", "--sources"])
+        assert exc.value.code == 1
+        (line,) = capsys.readouterr().err.splitlines()
+        assert "'sources/'" in line and "names no file inside" in line
+        assert [url.rsplit("/", 1)[1] for url in asked] == ["signatures.db", "manifest.json"]
+
+
+class TestVersionLabelsWithTrailingZeros:
+    @pytest.mark.parametrize("label, versions", [
+        ("msvc7.10", {"7.1"}), ("msvc8.00", {"8.0"}), ("msvc4.20", {"4.2"}), ("msvc07.1", {"7.1"}),
+        ("msvc7.10_8.0", {"7.1", "8.0"}),
+    ])
+    def test_a_version_is_read_as_the_rich_header_table_writes_it(self, label, versions):
+        from sigdb import label_toolchains
+        assert label_toolchains(label) == versions
+
+    def test_a_vs2003_signature_labelled_7_10_matches_a_vs2003_image(self):
+        from sigdb import SignatureDB, msvc_toolchains
+        toolchains = msvc_toolchains(binary_from_sections(_rich_stub([(0x60 << 16 | 3077, 5)]), []))
+        db = SignatureDB(":memory:")
+        db.add_byte_sig(name="crt", pattern=b"\x55" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0,
+                        compiler="msvc7.10")
+        assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0, toolchains)] == ["crt"]
+        assert db.match_bytes(b"\x55" * 32, 40, "", 0, frozenset({"9.0"})) == []

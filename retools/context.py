@@ -25,7 +25,7 @@ from kb import parse_kb, Kb
 from funcinfo import find_start, analyze
 from structrefs import aggregate_struct
 from search import find_strings
-from sigdb import SignatureDB, extract_structural_sig
+from sigdb import SignatureDB, extract_structural_sig, msvc_toolchains
 from dataflow import propagate_cfg, Const
 from index import GameIndex
 
@@ -174,7 +174,11 @@ def _strings_section(b: Binary, func_insns: list) -> list[str]:
 
 
 def _similar_section(b: Binary, start: int, db_path: str) -> list[str]:
-    """The best structural match for the function at *start* in the signature DB."""
+    """The best structural match for the function at *start* in the signature DB.
+
+    Signatures of MSVC versions that *b*'s Rich header does not list are
+    skipped, as a signature scan skips them.
+    """
     db = SignatureDB.open_existing(db_path)
     try:
         sig = extract_structural_sig(b, start)
@@ -182,7 +186,7 @@ def _similar_section(b: Binary, start: int, db_path: str) -> list[str]:
             return []
         matches = db.match_structural(
             sig["block_count"], sig["edge_count"], sig["call_count"],
-            sig["mnemonic_hash"], sig["constants"],
+            sig["mnemonic_hash"], sig["constants"], msvc_toolchains(b),
         )
     finally:
         db.close()

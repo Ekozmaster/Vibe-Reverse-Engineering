@@ -476,6 +476,7 @@ def _assemble(b, proj, calls=(), end=0x401100, start=0x401000, **kwargs):
 def _bare_binary():
     b = MagicMock()
     b.is_64 = False
+    b.raw = b""
     b.disasm.return_value = []
     b.abs_mem_refs.return_value = []
     b.abs_imm_refs.return_value = []
@@ -715,3 +716,41 @@ class TestCli:
         out = self._postprocess(str(tmp_path / "elsewhere" / "Game"), "call fcn.00401200;",
                                 [], capsys, monkeypatch)
         assert out == "call Foo;"
+
+
+def _rich_image_with_code(code: bytes, compiler_product_id: int):
+    """A Binary whose Rich header names one compiler and whose code section holds *code* at CODE_VA."""
+    import struct
+    from pe_fakes import CODE_VA, IMAGE_BASE, binary_from_sections, fake_section
+    key = 0x1234ABCD
+    entry = struct.pack("<II", (compiler_product_id << 16 | 1) ^ key, 5 ^ key)
+    header = (b"MZ" + b"\0" * 0x7E + struct.pack("<IIII", 0x536E6144 ^ key, key, key, key) + entry
+              + b"Rich" + struct.pack("<I", key) + b"\0" * 16)
+    section = fake_section(CODE_VA - IMAGE_BASE, len(code), len(header), len(code), executable=True)
+    return binary_from_sections(header + code, [section])
+
+
+class TestSimilarHonoursTheToolchain:
+    """``[similar]`` skips signatures of MSVC versions the binary's Rich header does not list, as scan does."""
+
+    _VS6_CPP, _VS2008_CPP = 0x0B, 0x84
+    _BRANCHY = bytes.fromhex("85c0740340eb0148c3") + b"\xcc" * 32
+
+    def _similar(self, tmp_path, product_id):
+        from context import _similar_section
+        from pe_fakes import CODE_VA
+        from sigdb import SignatureDB, extract_structural_sig
+        b = _rich_image_with_code(self._BRANCHY, product_id)
+        sig = extract_structural_sig(b, CODE_VA)
+        db = SignatureDB(str(tmp_path / "sigs.db"))
+        db.add_structural_sig(name="vs2008_func", compiler="msvc2008", source="lib", **{
+            key: sig[key] for key in ("block_count", "edge_count", "call_count", "mnemonic_hash", "constants")})
+        db.close()
+        return _similar_section(b, CODE_VA, str(tmp_path / "sigs.db"))
+
+    def test_a_signature_of_a_toolchain_the_binary_lists_is_reported(self, tmp_path):
+        (line,) = self._similar(tmp_path, self._VS2008_CPP)
+        assert line.startswith("[similar] lib: vs2008_func ")
+
+    def test_a_signature_of_a_toolchain_the_binary_lacks_is_not_reported(self, tmp_path):
+        assert self._similar(tmp_path, self._VS6_CPP) == []

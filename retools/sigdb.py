@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import bisect
 import collections
 import csv
 import itertools
@@ -110,6 +111,8 @@ CREATE TABLE IF NOT EXISTS compiler_fingerprints (
     label    TEXT NOT NULL DEFAULT ''
 );
 """
+
+_TABLES = tuple(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", _SCHEMA_SQL))
 
 # CRT DLLs that identify the compiler / runtime version
 _CRT_DLLS: dict[str, str] = {
@@ -315,6 +318,62 @@ def _estimate_func_size(b: Binary, va: int) -> int:
     return last_ret_end if last_ret_end > 0 else decoded_end
 
 
+def _end_in_prefix(b: Binary, va: int, func_size: int) -> int | None:
+    """Size of the function at *va* when it ends inside its 32-byte prefix.
+
+    The end is the first return, unconditional jump, or call with a
+    breakpoint after it (one that does not return) that no branch before it
+    lands past, so it is found whether or not padding follows. An
+    unconditional jump is a branch, not an end, when it stays in the
+    function (_stays_in_function).
+
+    Args:
+        func_size: Estimated size of the function (_estimate_func_size).
+
+    Returns:
+        None for a function that runs past the prefix.
+    """
+    furthest_target = 0
+    after_call = False
+    for insn in b.iter_disasm(va, max_bytes=32):
+        start = insn.address - va
+        end = start + insn.size
+        if after_call and insn.id == x86.X86_INS_INT3 and furthest_target < start:
+            return start
+        after_call = insn.group(x86.X86_GRP_CALL)
+        is_jmp = insn.id == x86.X86_INS_JMP
+        if insn.group(x86.X86_GRP_JUMP) and insn.operands[0].type == x86.X86_OP_IMM:
+            target = insn.operands[0].imm - va
+            if not is_jmp or _stays_in_function(b, va, target, func_size):
+                furthest_target = max(furthest_target, target)
+        if (is_jmp or insn.group(x86.X86_GRP_RET)) and furthest_target < end:
+            return end
+    return None
+
+
+def _stays_in_function(b: Binary, va: int, target: int, func_size: int) -> bool:
+    """Whether a jump to offset *target* of the function at *va* lands in that function.
+
+    It does when the target lies in the 32-byte prefix or the *func_size*
+    estimate and no known function starts between *va* and it. The estimate
+    runs on into the next function after a tail jump, so a tail call to a
+    function placed that near which *b*'s function table does not hold counts
+    as staying; where the estimate stops short at an early return, a jump to
+    the function's own code past it counts as leaving, as does a jump over a
+    label the function table takes for a function start.
+    """
+    if target not in range(max(func_size, 32)):
+        return False
+    starts = b.func_table
+    following = bisect.bisect_right(starts, va)
+    return following == len(starts) or va + target < starts[following]
+
+
+def _stops_at_function_end(mask: bytes, func_size: int) -> bool:
+    """Whether a signature pins no byte after the end of its *func_size*-byte function."""
+    return func_size < 32 and not any(mask[func_size:])
+
+
 def extract_structural_sig(b: Binary, va: int) -> dict | None:
     """Extract structural (CFG-based) signature for the function at *va*.
 
@@ -467,8 +526,9 @@ def label_toolchains(compiler: str) -> frozenset[str]:
     """MSVC versions named by a signature's compiler label.
 
     Understands ``msvc2008``, ``msvc6.0`` and ``_``-joined lists such as
-    ``msvc2003_2005``. Every version from 14.0 up is ``14+``, the one name
-    msvc_toolchains has for VS2015 and later.
+    ``msvc2003_2005``. A version is written as msvc_toolchains writes it:
+    ``msvc7.10`` names 7.1, and every version from 14.0 up is ``14+``, the
+    one name for VS2015 and later.
 
     Returns:
         The named versions, or an empty set when the label names no specific
@@ -481,7 +541,8 @@ def label_toolchains(compiler: str) -> frozenset[str]:
         if part in _LABEL_YEAR_TOOLCHAIN:
             found.add(_LABEL_YEAR_TOOLCHAIN[part])
         elif _LABEL_VERSION_RE.match(part):
-            found.add("14+" if int(part.split(".")[0]) >= 14 else part)
+            major, minor = part.split(".")
+            found.add("14+" if int(major) >= 14 else f"{int(major)}.{minor.rstrip('0') or '0'}")
         else:
             return frozenset()
     return frozenset(found)
@@ -605,6 +666,26 @@ def _byte_row_key(row: tuple) -> _SigKey:
     return row[1], row[2], row[5], row[6]
 
 
+# A byte signature that fits a function: its match, score in percent points, and key.
+_ScoredSig = tuple[Match, int, _SigKey]
+
+
+def _agreed_matches(candidates: Collection[_ScoredSig]) -> list[Match]:
+    """The matches among *candidates* that name the function, best first.
+
+    Returns:
+        An empty list when the candidates of every key carry several names,
+        or the best-scored of the others do.
+    """
+    names_by_key: dict[_SigKey, set[str]] = collections.defaultdict(set)
+    for match, _, key in candidates:
+        names_by_key[key].add(match.name)
+    ranked = sorted((c for c in candidates if len(names_by_key[c[2]]) == 1), key=lambda c: c[1], reverse=True)
+    if len({match.name for match, score, _ in ranked if score == ranked[0][1]}) > 1:
+        return []
+    return [match for match, _, _ in ranked]
+
+
 def _names_meet(holders: Collection[tuple[str, str]]) -> bool:
     """Whether two of the (name, compiler) *holders* differ in name and their labels share a version.
 
@@ -683,8 +764,10 @@ class SignatureDB:
                 raise SchemaTooNew(
                     f"{path} has schema version {row[0]}, newer than the version {SCHEMA_VERSION} "
                     "this code reads: update the tools")
-            if "byte_sigs" in tables:
-                return
+            missing = [table for table in _TABLES if table not in tables]
+            if missing:
+                raise NotASignatureDB(f"{path} is not a signature database: it has no {', '.join(missing)} table")
+            return
         if tables or self._read_only:
             raise NotASignatureDB(f"{path} is not a signature database")
 
@@ -707,12 +790,8 @@ class SignatureDB:
     def _byte_columns(self) -> set[str]:
         return {row[1] for row in self._conn.execute("PRAGMA table_info(byte_sigs)")}
 
-    def _structural_columns(self) -> set[str]:
-        """Column names of structural_sigs; empty for a database without that table."""
-        return {row[1] for row in self._conn.execute("PRAGMA table_info(structural_sigs)")}
-
     def _has_shape_versions(self) -> bool:
-        return _V2_STRUCTURAL_COLUMN in self._structural_columns()
+        return any(row[1] == _V2_STRUCTURAL_COLUMN for row in self._conn.execute("PRAGMA table_info(structural_sigs)"))
 
     def _ensure_writable_schema(self) -> None:
         """Before the first write: switch to WAL and migrate to the current schema.
@@ -738,7 +817,7 @@ class SignatureDB:
             self._conn.execute("BEGIN")
             for col in missing:
                 self._conn.execute(f"ALTER TABLE byte_sigs ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
-            if self._structural_columns() and not self._has_shape_versions():
+            if not self._has_shape_versions():
                 self._conn.execute(f"ALTER TABLE structural_sigs ADD COLUMN {_V2_STRUCTURAL_COLUMN} "
                                    f"INTEGER NOT NULL DEFAULT {_FIRST_SHAPE_VERSION}")
             self._conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
@@ -839,11 +918,7 @@ class SignatureDB:
         self, byte_rows: Collection[tuple] = (),
         structural_rows: Collection[tuple] = (),
     ) -> None:
-        """Insert one batch of rows into both tables: all of it, or none on an error.
-
-        A table the batch has no rows for is not touched, so a database
-        without it still takes the rest.
-        """
+        """Insert one batch of rows into both tables: all of it, or none on an error."""
         self._ensure_writable_schema()
         with self._conn:
             if byte_rows:
@@ -868,7 +943,7 @@ class SignatureDB:
     def match_bytes(
         self, code: bytes, func_size: int,
         preferred_compiler: str, func_tail_crc: int,
-        toolchains: frozenset[str] = frozenset(),
+        toolchains: frozenset[str] = frozenset(), prefix_end: int | None = None,
     ) -> list[Match]:
         """Find byte-pattern matches for the function starting with *code*.
 
@@ -880,18 +955,43 @@ class SignatureDB:
             func_tail_crc: CRC32 of the function's last 32 bytes.
             toolchains: MSVC versions in the binary (msvc_toolchains); a
                 signature labelled with only other versions is skipped.
+            prefix_end: The function's size when it ends inside the prefix
+                (_end_in_prefix); None when it runs past it.
 
         Matching tiers:
           1. Masked comparison of the 32-byte prefix.
-          2. FLIRT CRC16 over the following bytes, when the signature has
+          2. End of a short function: a signature that pins no byte after
+             its function's end is rejected unless the function measures
+             that size too. *func_size* is the measure a build without map
+             sizes stored, *prefix_end* the one a map or a .pat file gives.
+          3. FLIRT CRC16 over the following bytes, when the signature has
              one: a mismatch rejects, a match scores higher.
-          3. Size disambiguation: exact size match scores higher.
-          4. Tail CRC disambiguation: matching tail_crc scores higher.
-          5. Preferred compiler boost.
+          4. Size disambiguation: exact size match scores higher.
+          5. Tail CRC disambiguation: matching tail_crc scores higher.
+          6. Preferred compiler boost.
 
         A key (prefix, mask and CRC16) that the signatures passing tiers 1
-        and 2 hold under more than one name cannot tell those functions
-        apart, so it matches nothing. Size and tail CRC only order matches.
+        to 3 hold under more than one name cannot tell those functions
+        apart, so it matches nothing: size and tail CRC only order the
+        matches of a key. When the best-scored of the remaining signatures
+        carry more than one name, the function matches nothing either.
+
+        Returns:
+            Matches, best first. Scores are whole percent points, so equal
+            sums reached by different boosts tie exactly.
+        """
+        return _agreed_matches(self._byte_candidates(
+            code, func_size, preferred_compiler, func_tail_crc, toolchains, prefix_end))
+
+    def _byte_candidates(
+        self, code: bytes, func_size: int,
+        preferred_compiler: str, func_tail_crc: int,
+        toolchains: frozenset[str], prefix_end: int | None,
+    ) -> list[_ScoredSig]:
+        """Every signature that passes tiers 1 to 3 of match_bytes, scored by tiers 3 to 6.
+
+        An empty list means no signature fits the function's bytes; a list
+        _agreed_matches empties means signatures fit and disagree on its name.
         """
         if len(code) < 32:
             return []
@@ -904,8 +1004,7 @@ class SignatureDB:
                 f"SELECT name, pattern, mask, func_size, tail_crc, {crc_columns}, "
                 "compiler, source, category FROM byte_sigs"
             ))
-        candidates: list[tuple[Match, float, _SigKey]] = []
-        names_by_key: dict[_SigKey, set[str]] = collections.defaultdict(set)
+        candidates: list[_ScoredSig] = []
 
         for (name, pattern, mask, db_size, db_tail_crc, crc_len, crc16,
              compiler, source, category) in self._byte_index.candidates(code32):
@@ -913,33 +1012,31 @@ class SignatureDB:
                 continue
             if not _masked_eq(code32, pattern, mask):
                 continue
-            score = 0.7  # base confidence for byte match
+            if _stops_at_function_end(mask, db_size) and db_size not in (func_size, prefix_end):
+                continue
+            score = 70  # base confidence for byte match
             if crc_len:
                 following = code[32:32 + crc_len]
                 if len(following) < crc_len or flirt_crc16(following) != crc16:
                     continue
-                score += 0.15
+                score += 15
             if db_size == func_size:
-                score += 0.15
+                score += 15
             elif db_size > 0 and abs(db_size - func_size) / max(db_size, func_size) < 0.1:
-                score += 0.05
+                score += 5
             if db_tail_crc != 0 and func_tail_crc != 0 and db_tail_crc == func_tail_crc:
-                score += 0.10
+                score += 10
             if preferred_compiler and compiler == preferred_compiler:
-                score += 0.05
-            key = (pattern, mask, crc_len, crc16)
-            names_by_key[key].add(name)
+                score += 5
             candidates.append((
                 Match(
-                    name=name, confidence=min(score, 1.0), tier="byte",
+                    name=name, confidence=min(score, 100) / 100, tier="byte",
                     compiler=compiler, source=source, category=category,
                 ),
                 score,
-                key,
+                (pattern, mask, crc_len, crc16),
             ))
-
-        candidates.sort(key=lambda c: c[1], reverse=True)
-        return [m for m, _, key in candidates if len(names_by_key[key]) == 1]
+        return candidates
 
     # -- Structural matching -----------------------------------------------
 
@@ -1003,7 +1100,11 @@ class SignatureDB:
         self, b: Binary, va: int, preferred_compiler: str = "",
         toolchains: frozenset[str] | None = None,
     ) -> Match | None:
-        """Identify a function by trying byte-exact, then structural fallback.
+        """Identify a function by its bytes, or by its structure when no byte signature fits it.
+
+        Byte signatures that fit the function and disagree on its name
+        (match_bytes) leave it unnamed: a structural signature is coarser
+        than the bytes, so it cannot settle which of them is right.
 
         Args:
             toolchains: MSVC versions in *b*; read from its Rich header
@@ -1021,9 +1122,10 @@ class SignatureDB:
             tail_offset = max(0, func_size - 32)
             tail_bytes = b.read_va(va + tail_offset, 32)
             tail_crc = zlib.crc32(tail_bytes) & 0xFFFFFFFF if tail_bytes else 0
-            matches = self.match_bytes(code, func_size, preferred_compiler, tail_crc, toolchains)
-            if matches:
-                return matches[0]
+            candidates = self._byte_candidates(
+                code, func_size, preferred_compiler, tail_crc, toolchains, _end_in_prefix(b, va, func_size))
+            if candidates:
+                return next(iter(_agreed_matches(candidates)), None)
 
         # Tier 2: structural signature
         sig = extract_structural_sig(b, va)
@@ -1374,13 +1476,16 @@ def download_signature_db(url: str, dest: str) -> None:
 
     The download lands beside *dest* and takes its place only once it opens
     as a signature database this code reads, so a refused download leaves
-    *dest* as it was.
+    *dest* as it was. A write-ahead log left beside *dest* by a writer that
+    never closed it is removed before the download takes the database's
+    place: SQLite would replay it over the download.
 
     Raises:
         sqlite3.DatabaseError: The download is not a signature database, or
             its schema is newer than this code.
-        PermissionError: *dest* cannot be replaced; on Windows, because a
-            program holds it open.
+        PermissionError: *dest* or its log cannot be replaced; on Windows,
+            because a program holds it open. The database file is as it was;
+            a log that could be removed before the refusal is gone.
     """
     dest_path = Path(dest)
     part = dest_path.with_name(dest_path.name + ".part")
@@ -1393,6 +1498,8 @@ def download_signature_db(url: str, dest: str) -> None:
         except sqlite3.DatabaseError as e:
             raise sqlite3.DatabaseError(f"download from {url} refused, {dest} left as it was: {e}") from e
         try:
+            for suffix in ("-wal", "-shm"):
+                dest_path.with_name(dest_path.name + suffix).unlink(missing_ok=True)
             os.replace(part, dest_path)
         except PermissionError as e:
             raise PermissionError(
@@ -1407,12 +1514,16 @@ def _source_dest(dest_dir: Path, rel_path: str) -> Path:
 
     Raises:
         RefusedInput: The path is absolute on Windows or POSIX, carries a
-            drive, or leads out of *dest_dir*.
+            drive, leads out of *dest_dir*, or names a folder that is there
+            already: *dest_dir* itself, or the folder before a part of only
+            dots and spaces, which Windows drops.
     """
     below_sources = rel_path.removeprefix("sources/")
     dest = (dest_dir / below_sources).resolve()
-    if PureWindowsPath(below_sources).anchor or not dest.is_relative_to(dest_dir.resolve()):
-        raise RefusedInput(f"manifest source path {rel_path!r} leads outside {dest_dir}")
+    as_windows = PureWindowsPath(below_sources)
+    dropped_by_windows = any(part != ".." and not part.rstrip(". ") for part in as_windows.parts)
+    if as_windows.anchor or dropped_by_windows or dest_dir.resolve() not in dest.parents:
+        raise RefusedInput(f"manifest source path {rel_path!r} names no file inside {dest_dir}")
     return dest
 
 
@@ -1420,8 +1531,8 @@ def _pull_sources(repo: str, dest_dir: str, revision: str = _HF_REVISION_DEFAULT
     """Download source files listed in the HF repo's manifest.json at *revision*.
 
     Raises:
-        RefusedInput: A listed path leads outside *dest_dir*; nothing is
-            downloaded then.
+        RefusedInput: A listed path names no file inside *dest_dir*; nothing
+            is downloaded then.
     """
     manifest = json.loads(_fetch(_hf_url(repo, revision, "manifest.json")))
     dests = {rel_path: _source_dest(Path(dest_dir), rel_path) for rel_path in manifest.get("sources", [])}
