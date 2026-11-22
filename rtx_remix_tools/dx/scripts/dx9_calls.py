@@ -9,6 +9,7 @@ import enum
 import re
 import struct
 import sys
+from bisect import bisect_right
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
@@ -261,14 +262,24 @@ def _trusted_start(text_data, text_va, site_va):
     decodings from the stretch more than _TRUSTED bytes before it step over
     it and none of them ends at it. A decoding that starts nearer can begin
     inside the instruction that holds the site and still arrive, so it
-    speaks for the site only when it starts where a function does (data in
-    front of a function decodes into instructions that run over its first
-    bytes), or when no decoding from the far stretch gets anywhere near the
-    site: the section, or a function that follows data, starts too close to
-    it.
+    speaks for the site only when it starts where a function does, or when
+    no decoding from the far stretch gets anywhere near the site: the
+    section, or a function that follows data, starts too close to it.
+
+    Data in front of a function decodes into instructions that run over the
+    function's first bytes, and every decoding from the far stretch can make
+    that one mistake. So no decoding starts before the end of a jump table
+    (see _jump_tables), and the target of a direct call that the far
+    decodings do not all pass through is decoded from as well: an
+    instruction is certain only when that decoding passes through it too.
+    A padding byte in front of an aligned address is no such sign: 90 and CC
+    are common bytes of a displacement or an immediate.
     """
     site_off = site_va - text_va
-    first = max(0, site_off - _LOOKBACK)
+    code_start = _code_start_before(text_data, text_va, site_va)
+    if code_start is None:
+        return None
+    first = max(code_start - text_va, site_off - _LOOKBACK)
     trusted_from = site_off - _TRUSTED
 
     # following[o]: where the instruction at offset o ends, kept only for
@@ -298,23 +309,43 @@ def _trusted_start(text_data, text_va, site_va):
                 return None
         else:
             voters = arriving[:1]
-    passing = dict.fromkeys(arriving, 0)
-    for off in voters:
-        passing[off] = 1
-    for off in arriving:
-        if following[off] != site_off:
-            passing[following[off]] += passing[off]
+    passing = _decodings_passing(following, voters, site_off)
+    call_targets = _call_targets(text_data, text_va)
+    stepped_over = [off for off in arriving
+                    if off >= trusted_from and passing[off] < len(voters) and text_va + off in call_targets]
+    if stepped_over:
+        voters = sorted({*voters, *stepped_over})
+        passing = _decodings_passing(following, voters, site_off)
 
     certain = [off for off in arriving
                if off >= trusted_from and passing[off] == len(voters)]
     return text_va + (certain[0] if certain else site_off)
 
 
+def _decodings_passing(following, voters, site_off):
+    """Offset -> how many of the decodings that start at *voters* have an instruction there.
+
+    Args:
+        following: Offset -> where the instruction there ends, for each
+            offset decoding arrives at *site_off* from.
+    """
+    passing = dict.fromkeys(following, 0)
+    for off in voters:
+        passing[off] = 1
+    for off in sorted(following):
+        if following[off] != site_off:
+            passing[following[off]] += passing[off]
+    return passing
+
+
 def _starts_function(text_data, text_va, off):
-    """Whether a function is seen to start at offset *off*: a direct call goes there, or alignment padding ends there."""
+    """Whether a function is seen to start at offset *off*: a direct call goes there, or alignment padding ends there.
+
+    No padding ends at the start of the section.
+    """
     va = text_va + off
     return va in _call_targets(text_data, text_va) or (
-        va % _FUNCTION_ALIGNMENT == 0
+        va % _FUNCTION_ALIGNMENT == 0 and off > 0
         and text_data[off - 1] in _PADDING_BYTES and text_data[off] not in _PADDING_BYTES)
 
 
@@ -470,20 +501,26 @@ class _Landmarks(NamedTuple):
             section decodes into jumps that do not exist; their targets only
             make the argument walk stop early.
         case_labels: Every address a jump table holds.
+        table_ends: Every address a stretch of jump tables ends at (see
+            _JumpTables). The code there is entered by a jump or a call:
+            nothing falls through a table.
         guard_check_pointer: Address of the pointer the Control Flow Guard
             check is called through (see _is_guard_check), None when the
             image has none or the code came without its image.
     """
     jump_targets: frozenset
     case_labels: frozenset
+    table_ends: frozenset
     guard_check_pointer: int | None
 
 
 @lru_cache(maxsize=2)
 def _landmarks(text_data, text_va):
     """The _Landmarks of a code section, found once per section."""
+    tables = _jump_tables(text_data, text_va)
     return _Landmarks(_branch_targets(text_data, text_va)[0],
-                      frozenset(_dispatches_by_case(text_data, text_va)),
+                      frozenset(tables.dispatches_by_case),
+                      frozenset(tables.ends),
                       getattr(text_data, "guard_check_pointer", None))
 
 
@@ -540,19 +577,38 @@ def _branch_targets(text_data, text_va):
     return frozenset(jumps), frozenset(calls), dispatches
 
 
+class _JumpTables(NamedTuple):
+    """The jump tables in a code section: data among its instructions.
+
+    Attributes:
+        dispatches_by_case: Address of a case -> the addresses of the
+            dispatches whose table holds it.
+        starts: Where each stretch of table bytes starts, in address order.
+            Tables that touch are one stretch.
+        ends: Where each of those stretches ends, in the same order.
+    """
+    dispatches_by_case: dict
+    starts: tuple
+    ends: tuple
+
+
 @lru_cache(maxsize=2)
-def _dispatches_by_case(text_data, text_va):
-    """Address of a jump-table case -> the addresses of the dispatches whose table holds it.
+def _jump_tables(text_data, text_va):
+    """The _JumpTables of a code section, found once per section.
 
     Only a table in the code section is read. It has no stored length: it
     ends at the first dword that is no address in the section, or where the
-    next table starts.
+    next table starts. The byte table a dispatch takes its index from (see
+    _index_table) is table bytes too, up to the first byte that is no index
+    into the jump table.
     """
     table_of = _branch_targets(text_data, text_va)[2]
     table_starts = frozenset(table_of.values())
     text_end = text_va + len(text_data)
     by_case = {}
+    extents = set()
     for dispatch, table in table_of.items():
+        end = table
         for entry in range(table, table + 4 * _MAX_JUMP_TABLE_ENTRIES, 4):
             if not text_va <= entry <= text_end - 4 or (entry != table and entry in table_starts):
                 break
@@ -560,7 +616,66 @@ def _dispatches_by_case(text_data, text_va):
             if not text_va <= case < text_end:
                 break
             by_case.setdefault(case, set()).add(dispatch)
-    return by_case
+            end = entry + 4
+        if end == table:
+            continue
+        extents.add((table, end))
+        index_table = _index_table(text_data, text_va, dispatch)
+        if index_table is not None:
+            entry_count = (end - table) // 4
+            index_end = index_table
+            while index_end < text_end and text_data[index_end - text_va] < entry_count:
+                index_end += 1
+            extents.add((index_table, index_end))
+    starts, ends = [], []
+    for start, end in sorted(extents):
+        if ends and start <= ends[-1]:
+            ends[-1] = max(ends[-1], end)
+        else:
+            starts.append(start)
+            ends.append(end)
+    return _JumpTables(by_case, tuple(starts), tuple(ends))
+
+
+_INDEX_LOAD_SIZE = 7    # movzx reg, byte ptr [reg + disp32]
+
+
+def _index_table(text_data, text_va, dispatch):
+    """Address of the byte table the dispatch at *dispatch* takes its jump-table index from.
+
+    A switch whose values share cases has one byte per value, read right
+    before the jump: movzx eax, byte ptr [eax + index table] /
+    jmp [eax*4 + jump table]. None for a dispatch without one, or with one
+    outside the code section.
+    """
+    load_off = dispatch - text_va - _INDEX_LOAD_SIZE
+    if load_off < 0:
+        return None
+    load = next(_decoder.disasm(text_data[load_off:load_off + _INDEX_LOAD_SIZE], text_va + load_off, 1), None)
+    if load is None or load.id != x86.X86_INS_MOVZX or load.size != _INDEX_LOAD_SIZE:
+        return None
+    source = load.operands[1]
+    if source.type != x86.X86_OP_MEM or source.size != 1 or source.mem.index != x86.X86_REG_INVALID:
+        return None
+    index_table = source.mem.disp & 0xFFFFFFFF
+    return index_table if text_va <= index_table < text_va + len(text_data) else None
+
+
+def _dispatches_by_case(text_data, text_va):
+    """Address of a jump-table case -> the addresses of the dispatches whose table holds it."""
+    return _jump_tables(text_data, text_va).dispatches_by_case
+
+
+def _code_start_before(text_data, text_va, va):
+    """The lowest address the code that holds *va* can start at: the end of the last jump table before it.
+
+    *text_va* when no table lies before *va*. None when *va* is in a table.
+    """
+    tables = _jump_tables(text_data, text_va)
+    stretch = bisect_right(tables.starts, va) - 1
+    if stretch < 0:
+        return text_va
+    return None if va < tables.ends[stretch] else tables.ends[stretch]
 
 
 class _WalkEnd(enum.Enum):
@@ -609,10 +724,12 @@ def _walk_stack(insns, count, landmarks):
     callee then left the stack as it found it. Any other callee may have
     taken its arguments off the stack or left them, so the slots older
     writes land in are not known and the walk ends there.
-    It also ends at any other change of esp, at a store whose address
-    depends on a register, and before an instruction another path joins
-    after (see _joined_after): what that path put on the stack is not in
-    front of us.
+    It also ends at any other change of esp (a push or a pop of less than
+    a dword among them), at a store whose address depends on a register,
+    and before an instruction another path joins after (see _joined_after):
+    what that path put on the stack is not in front of us. Instructions
+    that start at the end of a jump table have nothing older in front of
+    them, like the entry of the code.
 
     Returns:
         _StackWalk.
@@ -630,6 +747,8 @@ def _walk_stack(insns, count, landmarks):
         if _joined_after(insn, landmarks):
             return _StackWalk(slots, _WalkEnd.UNKNOWN)
         if insn.id == x86.X86_INS_PUSH:
+            if not _moves_esp_a_dword(insn):
+                return _StackWalk(slots, _WalkEnd.UNKNOWN)
             slots.setdefault(pushed, _stack_arg(insn, insn.operands[0], insn.op_str))
             pushed += 1
             continue
@@ -657,7 +776,19 @@ def _walk_stack(insns, count, landmarks):
             return _StackWalk(slots, _WalkEnd.UNKNOWN)
         for store in stores:
             _settle_store(slots, pushed, insn, store)
-    return _StackWalk(slots, _WalkEnd.SETTLED if settled() else _WalkEnd.UNKNOWN)
+    if settled():
+        return _StackWalk(slots, _WalkEnd.SETTLED)
+    return _StackWalk(slots, _WalkEnd.ENTRY if _starts_at_a_table_end(insns, landmarks) else _WalkEnd.UNKNOWN)
+
+
+def _starts_at_a_table_end(insns, landmarks):
+    """Whether nothing older than *insns* runs into them: they start where a jump table ends."""
+    return bool(insns) and insns[0].address in landmarks.table_ends
+
+
+def _moves_esp_a_dword(push_or_pop):
+    """Whether a push or a pop is of a whole dword; with an operand-size prefix it moves esp two bytes."""
+    return push_or_pop.operands[0].size == 4
 
 
 def _caller_cleans_up(insns, call_index):
@@ -676,10 +807,11 @@ def _dwords_released(insn):
     """How many dwords *insn* takes off the stack: pop reg, add esp, imm, sub esp, imm (negative)
     or lea esp, [esp+disp].
 
-    None for any other write to esp, or a constant that is not whole dwords.
+    None for any other write to esp, a pop of less than a dword among them,
+    or a constant that is not whole dwords.
     """
     if insn.id == x86.X86_INS_POP and insn.operands[0].type == x86.X86_OP_REG:
-        return 1
+        return 1 if _moves_esp_a_dword(insn) else None
     if insn.id == x86.X86_INS_LEA:
         target, address = insn.operands
         mem = address.mem
@@ -793,14 +925,16 @@ def _passes_too_few_arguments(walk, param_count):
 def _dispatch_passes_the_arguments(text_data, text_va, insns, param_count):
     """Whether the call's block is a jump-table case and the code before each dispatch to it settles every slot.
 
-    The block is what follows the last jmp, ret or int3 of *insns*. It is
-    walked with the instructions in front of the dispatch put in front of it.
+    The block is what follows the last jmp, ret or int3 of *insns*, or all
+    of *insns* when they start where a jump table ends. It is walked with
+    the instructions in front of the dispatch put in front of it.
     """
-    block = next((index + 1 for index in range(len(insns) - 1, -1, -1) if _flow(insns[index]) is _Flow.END), None)
+    landmarks = _landmarks(text_data, text_va)
+    block = next((index + 1 for index in range(len(insns) - 1, -1, -1) if _flow(insns[index]) is _Flow.END),
+                 0 if _starts_at_a_table_end(insns, landmarks) else None)
     if block is None or block == len(insns):
         return False
     dispatches = _dispatches_by_case(text_data, text_va).get(insns[block].address, ())
-    landmarks = _landmarks(text_data, text_va)
     walks = []
     for dispatch in dispatches:
         before = _certain_instructions_before(text_data, text_va, dispatch)
@@ -955,10 +1089,20 @@ def _straight_line_start(insns, index, landmarks):
     return 0, False
 
 
+# Registers an instruction writes without naming them, which capstone leaves out of what it reports written
+_UNREPORTED_WRITES = {
+    x86.X86_INS_CMPXCHG: (x86.X86_REG_EAX,),                    # takes the destination when the compare fails
+    x86.X86_INS_ENTER: (x86.X86_REG_ESP, x86.X86_REG_EBP),
+    x86.X86_INS_XLATB: (x86.X86_REG_EAX,),
+    x86.X86_INS_RDPMC: (x86.X86_REG_EAX, x86.X86_REG_EDX),
+}
+
+
 def _writes(insn, reg):
     """Whether *insn* writes *reg*, or any part of the 32-bit register that holds it."""
     whole = _ENCLOSING_REGISTER.get(reg, reg)
-    return any(_ENCLOSING_REGISTER.get(written, written) == whole for written in insn.regs_access()[1])
+    return whole in _UNREPORTED_WRITES.get(insn.id, ()) or any(
+        _ENCLOSING_REGISTER.get(written, written) == whole for written in insn.regs_access()[1])
 
 
 def _reads(insn, reg):
@@ -1069,12 +1213,14 @@ def _esp_offset(insns, index, landmarks):
     """Bytes from esp at the end of *insns* up to esp before insns[index].
 
     None when a call other than the Control Flow Guard check of a call
-    target (see _is_guard_check), or a change of esp that is not a push, a
-    pop or an add or sub of whole dwords, lies on the way.
+    target (see _is_guard_check), or a change of esp that is not a push or
+    a pop of a dword or an add or sub of whole dwords, lies on the way.
     """
     dwords = 0
     for insn in insns[index:]:
         if insn.id == x86.X86_INS_PUSH:
+            if not _moves_esp_a_dword(insn):
+                return None
             dwords += 1
         elif _flow(insn) is _Flow.CALL:
             if not _is_guard_check(insn, landmarks):

@@ -64,11 +64,16 @@ def parse_pe(data):
 
 
 def va_to_offset(sections, image_base, va):
-    """Convert virtual address to file offset. Returns None if unmapped."""
+    """Convert virtual address to file offset.
+
+    Returns None if unmapped, or in the part of a section the file holds no
+    bytes for: a section can be larger in memory than in the file.
+    """
     rva = va - image_base
     for s in sections:
         if s['va'] <= rva < s['va'] + s['vsz']:
-            return rva - s['va'] + s['raw']
+            offset = rva - s['va']
+            return s['raw'] + offset if offset < s['rawsz'] else None
     return None
 
 

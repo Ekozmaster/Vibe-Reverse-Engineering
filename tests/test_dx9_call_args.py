@@ -230,6 +230,29 @@ class TestWhereTheWalkStops:
 
         assert _immediates(code, "pop", "SetRenderState") == {"this": None, "State": 22, "Value": 1}
 
+    @pytest.mark.parametrize("narrow_push", [
+        bytes([0x66, 0x6A, 0x05]),                                          # push word 5
+        bytes([0x66, 0x50]),                                                # push ax
+        bytes([0x66, 0xFF, 0x35]) + DEVICE_GLOBAL.to_bytes(4, "little"),    # push word ptr [global]
+    ], ids=["immediate", "register", "memory"])
+    def test_a_push_of_less_than_a_dword_is_no_argument_and_hides_what_was_pushed_before_it(self, narrow_push):
+        # it moves esp by two bytes, so neither it nor the dwords pushed before it line up with the slots
+        code = Code().add("narrow", push(1), push(22), narrow_push, PUSH_ECX, call_method(SET_RENDER_STATE))
+
+        assert _immediates(code, "narrow", "SetRenderState") == {"this": None, "State": None, "Value": None}
+
+    def test_a_pop_of_less_than_a_dword_hides_what_was_pushed_before_it(self):
+        pop_ax = bytes([0x66, 0x58])
+        code = Code().add("narrow", push(1), push(5), pop_ax, push(22), PUSH_ECX, call_method(SET_RENDER_STATE))
+
+        assert _immediates(code, "narrow", "SetRenderState") == {"this": None, "State": 22, "Value": None}
+
+    def test_enter_hides_what_was_pushed_before_it(self):
+        enter_16 = bytes([0xC8, 0x10, 0x00, 0x00])      # enter 16, 0: pushes ebp and reserves 16 bytes
+        code = Code().add("enter", push(1), enter_16, push(22), PUSH_ECX, call_method(SET_RENDER_STATE))
+
+        assert _immediates(code, "enter", "SetRenderState") == {"this": None, "State": 22, "Value": None}
+
     _LOAD_METHOD = bytes([0x8B, 0x82]) + SET_RENDER_STATE.to_bytes(4, "little")   # mov eax, [edx+0xE4]
 
     @pytest.mark.parametrize("chunks", [
@@ -370,6 +393,109 @@ class TestCallsShortlyAfterData:
         assert calls.scan_vtable_calls(data, TEXT_VA, RELEASE) == []
 
 
+class TestCallsRightAfterAJumpTable:
+    """A function that starts at the end of a switch's tables, with no padding between them."""
+
+    _CASE = bytes([0xB8, 0x05, 0x00, 0x00, 0x00]) + _RET                   # mov eax, 5 / ret
+    _JUMP_BY_EAX = bytes([0xFF, 0x24, 0x85])                               # jmp [eax*4 + table]
+    _SET_CULL_MODE = (push(1), push(22), bytes([0x8B, 0x06]), PUSH_ESI,    # ... / mov eax, [esi] / push esi
+                      bytes([0xFF, 0x90]) + SET_RENDER_STATE.to_bytes(4, "little"))
+
+    @classmethod
+    def _switch(cls, at: int, case_count: int, index_table: bytes = b"") -> bytes:
+        """A switch at offset *at* of the section, as MSVC lays it out, ending with its tables.
+
+        cmp eax, last / ja default / jmp [eax*4 + table], the cases, the
+        default, nops up to a multiple of four, the table of case addresses.
+        With *index_table*, the byte table of case numbers follows and
+        movzx eax, byte ptr [eax + index table] comes before the jmp.
+        """
+        load_index_size = 7 if index_table else 0
+        cases_at = at + 3 + 2 + load_index_size + 7
+        default_at = cases_at + len(cls._CASE) * case_count
+        filler = -(default_at + len(_RET)) % 4
+        table_va = TEXT_VA + default_at + len(_RET) + filler
+        last = (len(index_table) or case_count) - 1
+        dispatch = bytes([0x83, 0xF8, last, 0x77, default_at - (at + 5)])
+        if index_table:
+            dispatch += bytes([0x0F, 0xB6, 0x80]) + struct.pack("<I", table_va + 4 * case_count)
+        dispatch += cls._JUMP_BY_EAX + struct.pack("<I", table_va)
+        table = b"".join(struct.pack("<I", TEXT_VA + cases_at + len(cls._CASE) * case)
+                         for case in range(case_count))
+        return dispatch + cls._CASE * case_count + _RET + bytes([0x90]) * filler + table + index_table
+
+    @classmethod
+    def _function_after_a_switch(cls, body: tuple[bytes, ...], case_count: int,
+                                 index_table: bytes = b"") -> tuple[bytes, int]:
+        """(section bytes, address of the last instruction of the function *body* that follows the switch's tables)."""
+        before = _PADDING + _REAL_CODE
+        before += cls._switch(len(before), case_count, index_table)
+        data = before + b"".join(body) + _RET + _PADDING
+        return data, TEXT_VA + len(before) + sum(len(chunk) for chunk in body[:-1])
+
+    def test_arguments_of_a_call_right_after_a_jump_table_are_the_ones_the_function_pushes(self):
+        # the table ends ... 10 40 00, and 00 6A 01 is add [edx+1], ch, which hides the push 1
+        data, call_va = self._function_after_a_switch(self._SET_CULL_MODE, case_count=4)
+
+        assert calls.scan_vtable_calls(data, TEXT_VA, SET_RENDER_STATE) == [(call_va, "eax")]
+        assert calls.immediates(calls.method_args(data, TEXT_VA, call_va, "SetRenderState")) == {
+            "this": None, "State": 22, "Value": 1}
+
+    def test_a_table_entry_is_not_an_argument_of_a_call_right_after_the_table(self):
+        # no push of a Value: it is not what the bytes of the table decode into
+        data, call_va = self._function_after_a_switch(self._SET_CULL_MODE[1:], case_count=4)
+
+        assert calls.immediates(calls.method_args(data, TEXT_VA, call_va, "SetRenderState")) == {
+            "this": None, "State": 22, "Value": None}
+
+    def test_call_right_after_a_jump_table_that_pushes_too_few_arguments_is_dropped(self):
+        # nothing runs into the function from the table, so what it pushes is all the call is given
+        data, _call_va = self._function_after_a_switch(self._SET_CULL_MODE[1:], case_count=6)
+
+        assert calls.scan_vtable_calls(data, TEXT_VA, SET_RENDER_STATE) == []
+
+    def test_call_right_after_the_index_table_of_a_switch_is_found_with_its_arguments(self):
+        data, call_va = self._function_after_a_switch(self._SET_CULL_MODE, case_count=3,
+                                                      index_table=bytes([0, 2, 2, 0]))
+
+        assert calls.scan_vtable_calls(data, TEXT_VA, SET_RENDER_STATE) == [(call_va, "eax")]
+        assert calls.immediates(calls.method_args(data, TEXT_VA, call_va, "SetRenderState")) == {
+            "this": None, "State": 22, "Value": 1}
+
+    def test_call_bytes_in_a_jump_table_are_not_found(self):
+        # three entries 50 10 40 00 decode into push eax each; the entry FF 10 40 00 starts with call [eax]
+        pushing_case, calling_case = 0x50, 0xFF
+        dispatch_at = len(_PADDING + _REAL_CODE)
+        table_at = dispatch_at + len(self._JUMP_BY_EAX) + 4 + 1
+        table = struct.pack("<4I", *[TEXT_VA + pushing_case] * 3, TEXT_VA + calling_case)
+        before = (_PADDING + _REAL_CODE + self._JUMP_BY_EAX + struct.pack("<I", TEXT_VA + table_at)
+                  + bytes([0x90]) + table)
+        data = before + bytes([0xCC]) * (calling_case - len(before)) + self._CASE + _PADDING
+
+        assert calls.scan_vtable_calls(data, TEXT_VA, QUERY_INTERFACE) == []
+
+    def test_case_that_starts_where_its_table_ends_is_given_the_arguments_pushed_before_the_dispatch(self):
+        # push 1 / push 22 / jmp [eax*4 + table] / nop / table / mov eax, [esi] / push esi / call
+        case = b"".join(self._SET_CULL_MODE[2:])
+        before = _PADDING + _REAL_CODE + push(1) + push(22)
+        table_at = len(before) + len(self._JUMP_BY_EAX) + 4 + 1
+        case_at = table_at + 4
+        data = (before + self._JUMP_BY_EAX + struct.pack("<I", TEXT_VA + table_at) + bytes([0x90])
+                + struct.pack("<I", TEXT_VA + case_at) + case + _RET + _PADDING)
+        call_va = TEXT_VA + case_at + sum(len(chunk) for chunk in self._SET_CULL_MODE[2:-1])
+
+        assert calls.scan_vtable_calls(data, TEXT_VA, SET_RENDER_STATE) == [(call_va, "eax")]
+
+    def test_arguments_before_data_that_is_no_known_table_are_not_guessed(self):
+        # addresses no dispatch reads, then a function a direct call shows the start of
+        addresses = struct.pack("<4I", *[TEXT_VA + 0x6A] * 4)
+        data, [body_at] = TestCallsShortlyAfterData._called_functions([(addresses, b"".join(self._SET_CULL_MODE))])
+        call_va = TEXT_VA + body_at + sum(len(chunk) for chunk in self._SET_CULL_MODE[:-1])
+
+        assert calls.immediates(calls.method_args(data, TEXT_VA, call_va, "SetRenderState")) == {
+            "this": None, "State": 22, "Value": None}
+
+
 class TestCallScan:
     def test_finds_the_short_and_the_long_form(self):
         code = (Code().add("short", *_NO_PRESENT_ARGUMENTS, PUSH_ECX, call_method(PRESENT, short=True))
@@ -456,6 +582,20 @@ class TestMethodPointerLoadScan:
 
         assert _immediates_at(code, load_va, "SetSamplerState") == {
             "this": None, "Sampler": 0, "Type": 7, "Value": 2}
+
+    @pytest.mark.parametrize("load_method, overwrite, call", [
+        (bytes([0x8B, 0x82]), bytes([0x0F, 0xB1, 0x0E]), _CALL_EAX),               # cmpxchg [esi], ecx
+        (bytes([0x8B, 0x82]), bytes([0xF0, 0x0F, 0xB0, 0x0E]), _CALL_EAX),         # lock cmpxchg [esi], cl
+        (bytes([0x8B, 0x82]), bytes([0xD7]), _CALL_EAX),                           # xlatb
+        (bytes([0x8B, 0x82]), bytes([0x0F, 0x33]), _CALL_EAX),                     # rdpmc
+        (bytes([0x8B, 0x91]), bytes([0x0F, 0x33]), bytes([0xFF, 0xD2])),           # rdpmc, method in edx
+        (bytes([0x8B, 0xAA]), bytes([0xC8, 0x08, 0x00, 0x00]), bytes([0xFF, 0xD5])),   # enter 8, 0, method in ebp
+    ], ids=["cmpxchg", "cmpxchg_byte", "xlatb", "rdpmc_eax", "rdpmc_edx", "enter_ebp"])
+    def test_a_load_whose_register_is_overwritten_before_the_call_is_not_found(self, load_method, overwrite, call):
+        code = Code().add("overwritten", load_method + SET_RENDER_STATE.to_bytes(4, "little"), overwrite,
+                          push(1), push(22), PUSH_ESI, call)
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE) == []
 
     def test_a_call_between_load_and_call_is_passed_when_the_method_sits_in_a_saved_register(self):
         draw_primitive = 0x144
@@ -1310,6 +1450,35 @@ class TestDeviceProvenance:
                 .add_com_calls(load_device(_OTHER_GLOBAL), self._EVIDENCE))
 
         assert calls.device_origins(code.data, TEXT_VA) == {"[0x009D915C]"}
+
+
+class TestFunctionStarts:
+    def test_padding_at_the_end_of_the_section_does_not_end_at_its_start(self):
+        section = load_device() + _RET + bytes([0xCC]) * 7
+
+        assert not calls._starts_function(section, TEXT_VA, 0)
+
+    def test_the_byte_after_alignment_padding_starts_a_function(self):
+        section = _PADDING + load_device() + _RET
+
+        assert calls._starts_function(section, TEXT_VA, len(_PADDING))
+
+
+class TestVaToOffset:
+    _SECTIONS = [
+        {"name": ".data", "va": 0x1000, "raw": 0x400, "rawsz": 0x200, "vsz": 0x1000, "chars": 0xC0000040},
+        {"name": ".rdata", "va": 0x2000, "raw": 0x600, "rawsz": 0x200, "vsz": 0x200, "chars": 0x40000040},
+    ]
+
+    def test_an_address_in_the_bytes_the_file_holds_maps_to_them(self):
+        assert dx9_pe.va_to_offset(self._SECTIONS, 0x400000, 0x4011FF) == 0x5FF
+
+    def test_an_address_in_the_part_of_a_section_the_file_does_not_hold_is_unmapped(self):
+        # .data is 0x1000 bytes in memory and 0x200 in the file: the file bytes that follow are .rdata's
+        assert dx9_pe.va_to_offset(self._SECTIONS, 0x400000, 0x401200) is None
+
+    def test_an_address_outside_every_section_is_unmapped(self):
+        assert dx9_pe.va_to_offset(self._SECTIONS, 0x400000, 0x403000) is None
 
 
 class TestLoadBinary:
