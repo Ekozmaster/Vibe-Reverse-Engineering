@@ -16,6 +16,9 @@ from pathlib import Path
 
 MIN_MAJOR = 21
 
+# pyghidra starts the Java home this variable names in place of any other, whatever its version
+PYGHIDRA_OVERRIDE = "JAVA_HOME_OVERRIDE"
+
 TOOLS_DIR = Path(__file__).resolve().parent.parent / "tools"
 _LAUNCHER = "java.exe" if os.name == "nt" else "java"
 
@@ -65,6 +68,17 @@ def probe(launcher: Path) -> Jdk | None:
     if home is None or major is None:
         return None
     return Jdk(home=Path(home.group(1)), major=major)
+
+
+def probe_home(home: Path) -> Jdk | None:
+    """``probe`` of the launcher in the Java home *home*."""
+    return probe(home / "bin" / _LAUNCHER)
+
+
+def pyghidra_override() -> Path | None:
+    """The Java home ``PYGHIDRA_OVERRIDE`` names, or None when it is unset or empty."""
+    home = os.environ.get(PYGHIDRA_OVERRIDE)
+    return Path(home) if home else None
 
 
 def _version_key(jdk_dir: Path) -> tuple[int, ...]:

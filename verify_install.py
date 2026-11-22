@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 from urllib.request import urlopen
 
-from retools.jdk import MIN_MAJOR as MIN_JDK_MAJOR, find_jdk
+from retools.jdk import MIN_MAJOR as MIN_JDK_MAJOR, PYGHIDRA_OVERRIDE, find_jdk, probe_home, pyghidra_override
 
 ROOT = Path(__file__).resolve().parent
 TOOLS_DIR = ROOT / "tools"
@@ -114,7 +114,18 @@ def check_sigdb():
 
 
 def check_java() -> bool:
-    """Check for a JDK new enough for Ghidra. Returns True if found."""
+    """Check that the JDK pyghidra will start is new enough for Ghidra. Returns True if it is."""
+    override = pyghidra_override()
+    if override is not None:
+        found = probe_home(override)
+        if found is None or found.major < MIN_JDK_MAJOR:
+            record("java", WARN,
+                   f"{PYGHIDRA_OVERRIDE} names {override}, which is no JDK {MIN_JDK_MAJOR}+ -- "
+                   "pyghidra starts it in place of any other; unset it or point it at one")
+            return False
+        record("java", PASS, f"JDK {found.major} ({found.home}, named by {PYGHIDRA_OVERRIDE})")
+        return True
+
     found = find_jdk()
     if found is None:
         record("java", WARN,

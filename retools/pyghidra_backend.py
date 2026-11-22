@@ -57,13 +57,13 @@ def _ensure_java_env():
     pyghidra takes its JDK from JAVA_HOME_OVERRIDE, else from whatever ``java``
     on PATH resolves to, whatever its version; it does not read JAVA_HOME.
     """
-    from jdk import find_jdk
+    import jdk
 
-    if os.environ.get("JAVA_HOME_OVERRIDE"):
+    if jdk.pyghidra_override() is not None:
         return
-    found = find_jdk()
+    found = jdk.find_jdk()
     if found is not None:
-        os.environ["JAVA_HOME_OVERRIDE"] = str(found.home)
+        os.environ[jdk.PYGHIDRA_OVERRIDE] = str(found.home)
 
 
 def _ensure_ghidra_env():
