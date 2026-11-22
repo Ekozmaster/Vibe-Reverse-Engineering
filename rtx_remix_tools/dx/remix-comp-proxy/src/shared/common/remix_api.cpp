@@ -315,18 +315,16 @@ namespace shared::common
 		auto& circle = m_debug_circles.back();
 		circle.handle = m_debug_circles[m_debug_circles.size() - 2u].handle; // previous handle
 
-		D3DXMATRIX scale_matrix, rotation_x, rotation_y, rotation_z, mat_rotation, mat_translation, world, transposed;
+		// roll (Z), then yaw (Y), then pitch (X)
+		const auto rotation = DirectX::XMMatrixRotationZ(DEG2RAD(rot.z))
+			* DirectX::XMMatrixRotationY(DEG2RAD(rot.y))
+			* DirectX::XMMatrixRotationX(DEG2RAD(rot.x));
 
-		D3DXMatrixScaling(&scale_matrix, scale.x, scale.y, scale.z);
-		D3DXMatrixRotationX(&rotation_x, DEG2RAD(rot.x)); // pitch
-		D3DXMatrixRotationY(&rotation_y, DEG2RAD(rot.y)); // yaw
-		D3DXMatrixRotationZ(&rotation_z, DEG2RAD(rot.z)); // roll
-		mat_rotation = rotation_z * rotation_y * rotation_x; // combine rotations (order: Z * Y * X)
+		const auto world = DirectX::XMMatrixScaling(scale.x, scale.y, scale.z)
+			* rotation
+			* DirectX::XMMatrixTranslation(center.x, center.y, center.z);
 
-		D3DXMatrixTranslation(&mat_translation, center.x, center.y, center.z);
-		world = scale_matrix * mat_rotation * mat_translation;
-
-		D3DXMatrixTranspose(&transposed, &world);
+		const auto transposed = shared::utils::to_d3dmatrix(DirectX::XMMatrixTranspose(world));
 
 		circle.transform.matrix[0][0] = transposed.m[0][0];
 		circle.transform.matrix[0][1] = transposed.m[0][1];

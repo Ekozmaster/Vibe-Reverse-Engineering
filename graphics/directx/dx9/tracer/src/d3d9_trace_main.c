@@ -65,6 +65,9 @@ typedef struct TracedDevice TracedDevice;
 /* From d3d9_trace_wrapper.c */
 WrappedD3D9* WrappedD3D9_Create(void* pRealD3D9);
 
+/* From d3d9_trace_device.c */
+void TraceLock_Init(void);
+
 static void get_dll_sibling_path(char *out, int outSize, const char *filename) {
     int i, lastSlash = -1, p;
     GetModuleFileNameA(g_hInstance, out, outSize);
@@ -156,6 +159,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
         g_hInstance = hinstDLL;
         DisableThreadLibraryCalls(hinstDLL);
+        TraceLock_Init();
     }
     if (fdwReason == DLL_PROCESS_DETACH) {
         log_str("Trace proxy unloading\r\n");

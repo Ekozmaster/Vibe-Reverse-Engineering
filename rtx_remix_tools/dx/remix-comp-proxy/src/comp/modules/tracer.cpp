@@ -5,13 +5,118 @@
 #include "shared/common/ffp_state.hpp"
 #define HAS_FFP_STATE 1
 
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <optional>
+#include <string_view>
 
 namespace comp
 {
+	namespace
+	{
+		constexpr int DEFAULT_TRIGGER_FRAMES = 2;
+		constexpr long MAX_TRIGGER_FRAMES = 100000;
+
+		// dxtrace_progress.txt holds one line at any time: "<frame> <calls> <id>" while capturing,
+		// " done" added once the capture file is closed and holds every record, " failed <reason>"
+		// instead when a write to it failed, or "0 0 <id> failed <reason>" for a capture that
+		// could not start. <id> is the id of the trigger that asked for the capture,
+		// NO_TRIGGER_ID without one. The standalone tracer writes the same format, which
+		// "trigger --wait" follows. When it finds no progress it sends its user to the log, so a
+		// capture, or a trigger that starts none, whose progress cannot be written says so there, once.
+		// Read and written under the tracer's record mutex, as the progress file is.
+		bool progress_failure_logged = false;
+
+		void write_progress_line(const std::string& line)
+		{
+			const std::string path = shared::globals::root_path + "\\dxtrace_progress.txt";
+			FILE* f = fopen(path.c_str(), "w");
+			// Of the first call that failed: a later one that succeeds may change errno
+			int write_errno = errno;
+			bool written = false;
+			if (f)
+			{
+				written = fprintf(f, "%s\n", line.c_str()) > 0;
+				if (!written)
+					write_errno = errno;
+				if (fclose(f) != 0 && written)
+				{
+					written = false;
+					write_errno = errno;
+				}
+			}
+			if (written || progress_failure_logged)
+				return;
+
+			progress_failure_logged = true;
+			shared::common::log("Tracer", std::format("Cannot write {}: {}", path, strerror(write_errno)),
+				shared::common::LOG_TYPE::LOG_TYPE_ERROR);
+		}
+
+		void write_progress(int frame, int calls, const std::string& trigger_id, bool done)
+		{
+			write_progress_line(std::format("{} {} {}{}", frame, calls, trigger_id, done ? " done" : ""));
+		}
+
+		void write_capture_failure(int frame, int calls, const std::string& trigger_id, const std::string& reason)
+		{
+			write_progress_line(std::format("{} {} {} failed {}", frame, calls, trigger_id, reason));
+		}
+
+		// The value of the line "<key>=<value>" of a trigger file; nullopt when it has no such line
+		std::optional<std::string> trigger_value(std::string_view text, std::string_view key)
+		{
+			while (!text.empty())
+			{
+				const size_t line_end = text.find('\n');
+				std::string_view line = text.substr(0, line_end);
+				text.remove_prefix(line_end == std::string_view::npos ? text.size() : line_end + 1);
+
+				if (!line.empty() && line.back() == '\r')
+					line.remove_suffix(1);
+				if (line.size() >= key.size() + 1 && line.starts_with(key) && line[key.size()] == '=')
+					return std::string(line.substr(key.size() + 1));
+			}
+			return std::nullopt;
+		}
+
+		bool is_blank(std::string_view text)
+		{
+			return text.find_first_not_of(" \t\r\v\f") == std::string_view::npos;
+		}
+
+		// The id a trigger carries: 16 lowercase hex digits with nothing but blanks behind them
+		// on the line. NO_TRIGGER_ID for a trigger without one.
+		std::string trigger_id(std::string_view text)
+		{
+			constexpr size_t ID_LENGTH = 16;
+			const auto token = trigger_value(text, "id");
+			if (!token || token->size() < ID_LENGTH || !is_blank(std::string_view(*token).substr(ID_LENGTH)))
+				return tracer::NO_TRIGGER_ID;
+
+			const std::string id = token->substr(0, ID_LENGTH);
+			return id.find_first_not_of("0123456789abcdef") == std::string::npos ? id : tracer::NO_TRIGGER_ID;
+		}
+
+		// The frame count a trigger asks for, at most MAX_TRIGGER_FRAMES; nullopt unless the
+		// token starts with the digits of a number from 1 up and has nothing but blanks behind them
+		std::optional<int> trigger_frame_count(const std::string& token)
+		{
+			// strtol alone would skip blanks and take a sign
+			if (token.empty() || !isdigit(static_cast<unsigned char>(token.front())))
+				return std::nullopt;
+
+			char* end = nullptr;
+			const long frames = strtol(token.c_str(), &end, 10);
+			if (!is_blank(end) || frames < 1)
+				return std::nullopt;
+			return static_cast<int>((std::min)(frames, MAX_TRIGGER_FRAMES));
+		}
+	}
+
 	tracer::tracer()
 	{
 		p_this = this;
@@ -102,9 +207,11 @@ namespace comp
 		return TRACE_MISC;
 	}
 
-	void tracer::start_capture(int num_frames, const std::string& filename)
+	void tracer::start_capture(int num_frames, const std::string& filename, const std::string& trigger_id)
 	{
+		std::lock_guard<std::recursive_mutex> lock(record_mutex_);
 		if (capturing_) return;
+		progress_failure_logged = false;
 
 		// Ensure output directory exists
 		std::string dir_path = shared::globals::root_path + "\\" + output_dir_;
@@ -118,9 +225,9 @@ namespace comp
 
 		if (log_file_ == INVALID_HANDLE_VALUE)
 		{
-			shared::common::log("Tracer",
-				std::format("Failed to create: {}", full_path),
-				shared::common::LOG_TYPE::LOG_TYPE_ERROR);
+			const std::string reason = std::format("cannot create {}: Windows error {}", full_path, GetLastError());
+			shared::common::log("Tracer", "Capture not started, " + reason, shared::common::LOG_TYPE::LOG_TYPE_ERROR);
+			write_capture_failure(0, 0, trigger_id, reason);
 			return;
 		}
 
@@ -129,6 +236,7 @@ namespace comp
 		frames_captured_ = 0;
 		frames_to_capture_ = num_frames;
 		write_pos_ = 0;
+		write_error_ = ERROR_SUCCESS;
 
 #ifdef HAS_FFP_STATE
 		// Save FFP state and disable during capture to record unmodified game calls
@@ -137,7 +245,9 @@ namespace comp
 #endif
 
 		capturing_ = true;
+		capture_trigger_id_ = trigger_id;
 		last_capture_path_ = full_path;
+		write_progress(frame_index_, sequence_, capture_trigger_id_, false);
 
 		shared::common::log("Tracer",
 			std::format("Capture started: {} frames -> {}", num_frames, full_path));
@@ -145,6 +255,7 @@ namespace comp
 
 	void tracer::stop_capture()
 	{
+		std::lock_guard<std::recursive_mutex> lock(record_mutex_);
 		if (!capturing_) return;
 		capturing_ = false;
 
@@ -164,15 +275,24 @@ namespace comp
 			CloseHandle(log_file_);
 			log_file_ = INVALID_HANDLE_VALUE;
 		}
+		if (write_error_ != ERROR_SUCCESS)
+		{
+			const std::string reason = std::format("cannot write {}: Windows error {}", last_capture_path_, write_error_);
+			shared::common::log("Tracer", "Capture incomplete, " + reason, shared::common::LOG_TYPE::LOG_TYPE_ERROR);
+			write_capture_failure(frames_captured_, sequence_, capture_trigger_id_, reason);
+		}
+		else
+			write_progress(frames_captured_, sequence_, capture_trigger_id_, true);
 
 #ifdef HAS_FFP_STATE
 		// Restore FFP to its pre-capture state (don't force it on if config had it off)
 		shared::common::ffp_state::get().set_enabled(ffp_was_enabled_);
 #endif
 
-		shared::common::log("Tracer",
-			std::format("Capture done: {} frames, {} calls, {:.1f} KB",
-				frames_captured_, sequence_, last_capture_size_ / 1024.0));
+		if (write_error_ == ERROR_SUCCESS)
+			shared::common::log("Tracer",
+				std::format("Capture done: {} frames, {} calls, {:.1f} KB",
+					frames_captured_, sequence_, last_capture_size_ / 1024.0));
 	}
 
 	void tracer::start_capture_delayed(int num_frames, const std::string& filename, float delay_seconds)
@@ -212,39 +332,70 @@ namespace comp
 
 	void tracer::check_trigger_file()
 	{
-		std::string trigger_path = shared::globals::root_path + "\\dxtrace_capture.trigger";
-		DWORD attr = GetFileAttributesA(trigger_path.c_str());
-		if (attr == INVALID_FILE_ATTRIBUTES) return;
+		std::lock_guard<std::recursive_mutex> lock(record_mutex_);
+		const std::string trigger_path = shared::globals::root_path + "\\dxtrace_capture.trigger";
 
-		// Read contents for frames=N
-		int frames = 2;
+		// No trigger, or one its writer still has open: that one is taken at a later frame
 		HANDLE hf = CreateFileA(trigger_path.c_str(), GENERIC_READ, FILE_SHARE_READ,
 			nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (hf != INVALID_HANDLE_VALUE)
+		if (hf == INVALID_HANDLE_VALUE)
 		{
-			char buf[256] = {};
-			DWORD bytes_read = 0;
-			ReadFile(hf, buf, sizeof(buf) - 1, &bytes_read, nullptr);
-			CloseHandle(hf);
-
-			// Parse "frames=N"
-			if (const char* p = strstr(buf, "frames="))
-				frames = atoi(p + 7);
-			if (frames < 1) frames = 2;
+			if (GetLastError() == ERROR_FILE_NOT_FOUND)
+				undeleted_trigger_id_.clear();
+			return;
 		}
 
-		DeleteFileA(trigger_path.c_str());
+		char buf[256] = {};
+		DWORD bytes_read = 0;
+		ReadFile(hf, buf, sizeof(buf) - 1, &bytes_read, nullptr);
+		CloseHandle(hf);
 
-		shared::common::log("Tracer",
-			std::format("External trigger: {} frames", frames));
-		start_capture(frames, generate_default_filename());
+		const std::string_view text(buf, bytes_read);
+		const std::string id = trigger_id(text);
+		if (id == undeleted_trigger_id_)
+		{
+			// Left in the folder, it would start a capture in the next run of the game
+			if (DeleteFileA(trigger_path.c_str()))
+				undeleted_trigger_id_.clear();
+			return;
+		}
+
+		const auto frames_line = trigger_value(text, "frames");
+		const auto frames = frames_line ? trigger_frame_count(*frames_line) : DEFAULT_TRIGGER_FRAMES;
+
+		if (frames)
+		{
+			shared::common::log("Tracer", std::format("External trigger: {} frames", *frames));
+			start_capture(*frames, generate_default_filename(), id);
+		}
+		else
+		{
+			progress_failure_logged = false;
+			write_capture_failure(0, 0, id, std::format("frames={} is not a number of frames from 1 up", *frames_line));
+		}
+
+		// Deleted only now that the progress file answers it, so whoever wrote the trigger
+		// never finds it gone with the answer still to come
+		if (DeleteFileA(trigger_path.c_str()))
+		{
+			undeleted_trigger_id_.clear();
+		}
+		else
+		{
+			shared::common::log("Tracer", std::format("Trigger file not deleted: Windows error {}", GetLastError()),
+				shared::common::LOG_TYPE::LOG_TYPE_ERROR);
+			undeleted_trigger_id_ = id;
+		}
 	}
 
 	void tracer::on_present()
 	{
-		// Check for external trigger file
+		// A capture the trigger file starts begins with the next frame, as a delayed one does
 		if (!capturing_ && !waiting_)
+		{
 			check_trigger_file();
+			return;
+		}
 
 		// Check delayed start countdown
 		if (waiting_)
@@ -258,14 +409,18 @@ namespace comp
 			return;
 		}
 
+		// stop_capture can have run on another thread since capturing_ was read above
+		std::lock_guard<std::recursive_mutex> lock(record_mutex_);
 		if (!capturing_) return;
 
 		flush_buffer();
 		frame_index_++;
 		frames_captured_ = frame_index_;
 
-		if (frame_index_ >= frames_to_capture_)
+		if (frame_index_ >= frames_to_capture_ || write_error_ != ERROR_SUCCESS)
 			stop_capture();
+		else
+			write_progress(frame_index_, sequence_, capture_trigger_id_, false);
 	}
 
 	void tracer::on_reset()
@@ -279,8 +434,12 @@ namespace comp
 	void tracer::flush_buffer()
 	{
 		if (write_pos_ == 0 || log_file_ == INVALID_HANDLE_VALUE) return;
-		DWORD written;
-		WriteFile(log_file_, buffer_, static_cast<DWORD>(write_pos_), &written, nullptr);
+		const DWORD size = static_cast<DWORD>(write_pos_);
+		DWORD written = 0;
+		if (!WriteFile(log_file_, buffer_, size, &written, nullptr))
+			note_write_error(GetLastError());
+		else if (written != size)
+			note_write_error(ERROR_DISK_FULL);
 		write_pos_ = 0;
 	}
 
@@ -301,11 +460,22 @@ namespace comp
 			flush_buffer();
 
 		va_list ap;
+		va_list ap_again;
 		va_start(ap, fmt);
+		va_copy(ap_again, ap);
 		int n = vsnprintf(buffer_ + write_pos_, BUFFER_SIZE - write_pos_, fmt, ap);
 		va_end(ap);
 
-		if (n > 0)
+		// Text too long for the room behind what is buffered goes into the emptied buffer
+		if (n >= 0 && static_cast<size_t>(n) >= BUFFER_SIZE - write_pos_)
+		{
+			flush_buffer();
+			n = vsnprintf(buffer_ + write_pos_, BUFFER_SIZE - write_pos_, fmt, ap_again);
+		}
+		va_end(ap_again);
+
+		// vsnprintf returns the length of the whole text, which is in the buffer only if it fit
+		if (n > 0 && static_cast<size_t>(n) < BUFFER_SIZE - write_pos_)
 			write_pos_ += static_cast<size_t>(n);
 	}
 

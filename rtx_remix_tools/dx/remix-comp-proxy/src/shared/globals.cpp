@@ -3,7 +3,7 @@
 
 namespace shared::globals
 {
-	D3DXMATRIX IDENTITY =
+	D3DMATRIX IDENTITY =
 	{
 		1.0f, 0.0f, 0.0f, 0.0f,
 		0.0f, 1.0f, 0.0f, 0.0f,

@@ -22,10 +22,8 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-from capstone import CS_ARCH_X86, CS_MODE_32, CS_MODE_64, Cs
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import Binary
+from common import Binary, sweep_code
 
 IndirectRef = namedtuple(
     "IndirectRef", ["va", "mnemonic", "base", "index", "scale", "disp", "target_type"]
@@ -84,13 +82,11 @@ def scan_indirect_refs(
     Returns:
         List of IndirectRef for each indirect call/jump found.
     """
-    cs = Cs(CS_ARCH_X86, CS_MODE_64 if is_64 else CS_MODE_32)
-    cs.detail = True
     results: list[IndirectRef] = []
 
     for sec_va, sec_off, sec_size in sections:
-        chunk = code[sec_off : sec_off + sec_size]
-        for insn in cs.disasm(chunk, sec_va):
+        section_code = code[sec_off : sec_off + sec_size]
+        for insn in sweep_code(section_code, sec_va, is_64):
             if insn.mnemonic not in ("call", "jmp"):
                 continue
             for mop in Binary.mem_operands(insn):

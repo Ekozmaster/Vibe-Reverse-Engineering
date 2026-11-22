@@ -46,10 +46,14 @@ src/
 
 ## Building
 
-1. Run `build.bat` (requires Visual Studio 2022)
+1. Run `build.bat` (requires Visual Studio 2022 or later with a Windows SDK; x86 only)
 2. Output: `build/bin/release/d3d9.dll`
 
 For per-game projects: `build.bat release --name GameName --comp path/to/comp`
+
+## Testing
+
+From the toolkit root, `python -m pytest tests/test_proxy_template.py tests/test_proxy_template_live.py` checks this folder. The live tests build a copy of it, run the built `d3d9.dll` in front of a small Direct3D 9 program (`tests/proxy_toy/toy.cpp`) and compare what the proxy converted with what the program's own shaders draw. They need Visual Studio 2022 or later and a Direct3D 9 device, and are skipped without them.
 
 ## Deploying
 

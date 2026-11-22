@@ -22,3 +22,37 @@ jobs:
         run: pip install -r requirements.txt pytest
       - name: Run tests
         run: pytest tests/ -v --tb=short
+
+  # What the Linux job has to skip: tests that read a system DLL, attach to a live
+  # process, or build with Visual Studio. The checkout takes no Git LFS files, so
+  # tools/ holds pointer files and the tests that need radare2 skip here as well.
+  test-windows:
+    runs-on: windows-latest
+    # A test that attaches to a live process can block for good; the suite takes about 5 minutes
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Run tests
+        run: pytest tests/ -v --tb=short -rs
+
+  # Pyflakes rules, which find undefined names and redefinitions. Three are left
+  # out because the code does not pass them yet: unused imports (F401), f-strings
+  # without placeholders (F541) and unused variables (F841).
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff==0.15.12
+      - name: Lint
+        run: ruff check --select F --ignore F401,F541,F841 --exclude tools,rtx_remix_tools/dx/remix-comp-proxy/deps .

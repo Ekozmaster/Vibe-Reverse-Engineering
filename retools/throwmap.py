@@ -85,7 +85,7 @@ def _find_throw_sites_x64(pe: pefile.PE, code_sections, iat_rva: int):
     # Find JMP [rip+disp32] thunk pointing to the IAT slot
     thunk_rva = None
     for sec_rva, sec_data, _ in code_sections:
-        for i in range(len(sec_data) - 6):
+        for i in range(len(sec_data) - 5):
             if sec_data[i] == 0xFF and sec_data[i + 1] == 0x25:
                 disp = struct.unpack_from("<i", sec_data, i + 2)[0]
                 insn_rva = sec_rva + i
@@ -97,7 +97,7 @@ def _find_throw_sites_x64(pe: pefile.PE, code_sections, iat_rva: int):
 
     if thunk_rva is not None:
         for sec_rva, sec_data, _ in code_sections:
-            for i in range(len(sec_data) - 5):
+            for i in range(len(sec_data) - 4):
                 if sec_data[i] == 0xE8:
                     disp = struct.unpack_from("<i", sec_data, i + 1)[0]
                     insn_rva = sec_rva + i
@@ -106,7 +106,7 @@ def _find_throw_sites_x64(pe: pefile.PE, code_sections, iat_rva: int):
 
     # Direct FF 15 [rip+disp32] calls to IAT
     for sec_rva, sec_data, _ in code_sections:
-        for i in range(len(sec_data) - 6):
+        for i in range(len(sec_data) - 5):
             if sec_data[i] == 0xFF and sec_data[i + 1] == 0x15:
                 disp = struct.unpack_from("<i", sec_data, i + 2)[0]
                 insn_rva = sec_rva + i
@@ -129,7 +129,7 @@ def _find_throw_sites_x86(pe: pefile.PE, code_sections, iat_rva: int):
     # Find JMP [abs32] thunk
     thunk_rva = None
     for sec_rva, sec_data, _ in code_sections:
-        for i in range(len(sec_data) - 6):
+        for i in range(len(sec_data) - 5):
             if sec_data[i] == 0xFF and sec_data[i + 1] == 0x25:
                 target_va = struct.unpack_from("<I", sec_data, i + 2)[0]
                 if target_va == iat_va:
@@ -140,7 +140,7 @@ def _find_throw_sites_x86(pe: pefile.PE, code_sections, iat_rva: int):
 
     if thunk_rva is not None:
         for sec_rva, sec_data, _ in code_sections:
-            for i in range(len(sec_data) - 5):
+            for i in range(len(sec_data) - 4):
                 if sec_data[i] == 0xE8:
                     disp = struct.unpack_from("<i", sec_data, i + 1)[0]
                     insn_rva = sec_rva + i
@@ -149,7 +149,7 @@ def _find_throw_sites_x86(pe: pefile.PE, code_sections, iat_rva: int):
 
     # Direct FF 15 <abs32> calls
     for sec_rva, sec_data, _ in code_sections:
-        for i in range(len(sec_data) - 6):
+        for i in range(len(sec_data) - 5):
             if sec_data[i] == 0xFF and sec_data[i + 1] == 0x15:
                 target_va = struct.unpack_from("<I", sec_data, i + 2)[0]
                 if target_va == iat_va:

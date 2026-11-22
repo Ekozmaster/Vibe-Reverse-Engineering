@@ -16,12 +16,9 @@ import sys
 import struct
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "retools"))
-
-from dx9_common import (
-    load_binary, load_text_section, find_text_section,
-    scan_vtable_calls, scan_vtable_mov, D3D9_DEVICE_VTABLE,
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from dx9_pe import code_section, find_text_section, load_binary
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, split_device_hits, device_origin_summary
 
 # Key methods for FFP conversion (the ones you'll most likely intercept)
 KEY_METHODS = {
@@ -41,11 +38,28 @@ KEY_METHODS = {
 }
 
 
+def print_sites(method_name, vtable_off, hits, show_unconfirmed, limit):
+    """Print the confirmed sites of one method, up to *limit* (None: all), then the unconfirmed ones' count."""
+    confirmed = hits.confirmed
+    print(f"\n  {method_name} (vtable+0x{vtable_off:03X}): {len(confirmed)} sites")
+    for va, desc in confirmed[:limit]:
+        print(f"    0x{va:08X}: {desc}")
+    if limit is not None and len(confirmed) > limit:
+        print(f"    ... and {len(confirmed) - limit} more")
+    if hits.unconfirmed:
+        print(f"    + {len(hits.unconfirmed)} unconfirmed (object not shown to be the device)")
+        if show_unconfirmed:
+            for va, desc in hits.unconfirmed:
+                print(f"      0x{va:08X}: {desc}")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("binary", help="Path to PE binary (.exe / .dll)")
     p.add_argument("--device-addr", type=lambda x: int(x, 0), metavar="ADDR",
                    help="VA of the device pointer global (hex, e.g. 0x7C5548)")
+    p.add_argument("--unconfirmed", action="store_true",
+                   help="List the calls below vtable+0x80 on objects not shown to be the device")
     args = p.parse_args()
 
     device_addr = args.device_addr
@@ -56,9 +70,10 @@ def main():
         print("ERROR: no executable section found")
         sys.exit(1)
 
-    text_data = data[raw_start:raw_start + raw_size]
+    text_data = code_section(data, sections, raw_start, raw_size)
     print(f"ImageBase: 0x{image_base:08X}")
     print(f"Executable section: VA 0x{text_va:08X}, size 0x{raw_size:X}")
+    print(device_origin_summary(text_data, text_va))
 
     # --- Key D3D9 vtable offsets ---
     print("\n=== Key D3D9 Device vtable offsets ===")
@@ -90,27 +105,18 @@ def main():
     print("\n=== Direct vtable calls: call [reg+offset] ===")
 
     for vtable_off, method_name in sorted(KEY_METHODS.items()):
-        results = scan_vtable_calls(text_data, text_va, vtable_off)
-        if results:
-            print(f"\n  {method_name} (vtable+0x{vtable_off:03X}): {len(results)} sites")
-            for va, reg in results:
-                print(f"    0x{va:08X}: call [{reg}+0x{vtable_off:03X}]")
-        else:
-            print(f"\n  {method_name} (vtable+0x{vtable_off:03X}): 0 sites")
+        calls = [(va, f"call [{reg}+0x{vtable_off:03X}]")
+                 for va, reg in scan_vtable_calls(text_data, text_va, vtable_off)]
+        print_sites(method_name, vtable_off, split_device_hits(text_data, text_va, vtable_off, calls),
+                    args.unconfirmed, limit=None)
 
     # --- mov reg, [reg+offset] indirect dispatch ---
     print("\n\n=== Indirect vtable dispatch: mov reg, [reg+offset] ===")
 
     for vtable_off, method_name in sorted(KEY_METHODS.items()):
-        results = scan_vtable_mov(text_data, text_va, vtable_off)
-        if results:
-            print(f"\n  {method_name} (vtable+0x{vtable_off:03X}): {len(results)} sites")
-            for va, desc in results[:30]:
-                print(f"    0x{va:08X}: {desc}")
-            if len(results) > 30:
-                print(f"    ... and {len(results) - 30} more")
-        else:
-            print(f"\n  {method_name} (vtable+0x{vtable_off:03X}): 0 sites")
+        loads = scan_vtable_mov(text_data, text_va, vtable_off)
+        print_sites(method_name, vtable_off, split_device_hits(text_data, text_va, vtable_off, loads),
+                    args.unconfirmed, limit=30)
 
     print("\n--- DONE ---")
 

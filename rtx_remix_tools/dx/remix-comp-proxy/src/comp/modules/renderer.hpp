@@ -6,7 +6,8 @@ namespace comp
 	{
 		extern bool initialized;
 		extern LPDIRECT3DTEXTURE9 icon;
-		extern void init_texture_addons(bool release = false);
+		extern void init_texture_addons();
+		extern void release_texture_addons();
 	}
 
 	/*
@@ -20,7 +21,7 @@ namespace comp
 		bool has_saved_renderstate(const D3DRENDERSTATETYPE& state) const;
 		bool has_saved_renderstate(const uint32_t& state) const;
 
-		void set_texture_transform(IDirect3DDevice9* device, const D3DXMATRIX* matrix);
+		void set_texture_transform(IDirect3DDevice9* device, const D3DMATRIX* matrix);
 		void save_vs(IDirect3DDevice9* device);
 		void save_ps(IDirect3DDevice9* device);
 		void save_texture(IDirect3DDevice9* device, const bool stage);

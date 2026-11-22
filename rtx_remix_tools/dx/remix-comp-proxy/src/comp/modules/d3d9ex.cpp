@@ -12,12 +12,48 @@
 
 using comp::tracer;
 #include "tracer_dispatch.inc"
+
+// Records a call that creates an object, once the driver has returned it. The tracer keeps one
+// record open at a time, so the record is begun and ended with no driver call in between.
+#define TRACE_CREATION_IF_ACTIVE(fn, created, ...) \
+	do { if (auto trace_lock = comp::tracer::lock_if_active()) { fn(comp::tracer::ref(), __VA_ARGS__); trace_created(comp::tracer::ref(), created); } } while(0)
 #include "shared/common/ffp_state.hpp"
 #include "shared/common/config.hpp"
 
 namespace comp
 {
+	namespace
+	{
+		// Everything the modules created on the device or keep a reference to, apart from the
+		// overlay's own objects. Each is made again when it is next needed.
+		void release_device_objects()
+		{
+			if (auto* t = tracer::get()) t->on_reset();
+			shared::common::ffp_state::get().on_reset();
+			if (auto* s = skinning::get()) s->release_device_objects();
+			shared::common::g_shader_cache.clear_cache();
+			tex_addons::release_texture_addons();
+		}
+
+		// The modules keep one state and serve one device, the one created last. They let go of
+		// what they have on the device still current, which gets the game's shaders back, before
+		// another takes its place. From then on the replaced device is passed through (see
+		// D3D9Device::is_current), so the modules take nothing from it again.
+		void set_current_device(IDirect3DDevice9* device)
+		{
+			if (shared::globals::d3d_device)
+				release_device_objects();
+			shared::globals::d3d_device = device;
+		}
+	}
+
 #pragma region D3D9Device
+
+	IDirect3DDevice9* d3d9ex::D3D9Device::with_game_shaders()
+	{
+		shared::common::ffp_state::get().disengage(m_pIDirect3DDevice9);
+		return m_pIDirect3DDevice9;
+	}
 
 	HRESULT d3d9ex::D3D9Device::QueryInterface(REFIID riid, void** ppvObj)
 	{
@@ -27,6 +63,7 @@ namespace comp
 
 		if (hRes == NOERROR) {
 			*ppvObj = this;
+			m_references++;
 		}
 
 		return hRes;
@@ -35,14 +72,41 @@ namespace comp
 	ULONG d3d9ex::D3D9Device::AddRef()
 	{
 		TRACE_IF_ACTIVE_NOARGS(trace_AddRef);
+		m_references++;
 		return m_pIDirect3DDevice9->AddRef();
 	}
 
 	ULONG d3d9ex::D3D9Device::Release()
 	{
 		TRACE_IF_ACTIVE_NOARGS(trace_Release);
-		ULONG count = m_pIDirect3DDevice9->Release();
-		if (!count) delete this;
+
+		// With the game's last reference to the wrapper the proxy lets go of what it has on the
+		// device, while the device is still there. An object left behind would keep the device
+		// alive, and would be handed to the device the game creates next. The modules hold
+		// objects of the current device only, so a device that another has replaced leaves
+		// them alone when it goes. The overlay takes and gives back a reference of its own
+		// while it shuts down, which is why the last reference is counted off only afterwards,
+		// under a lock a thread may take twice. A reference the game took on the device itself
+		// and gives back here is not counted.
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_release_mutex);
+			if (m_references == 1)
+			{
+				if (is_current())
+					release_device_objects();
+				if (auto* im = imgui::get()) im->release_device(this);
+			}
+			if (m_references > 0)
+				m_references--;
+		}
+
+		const ULONG count = m_pIDirect3DDevice9->Release();
+		if (!count)
+		{
+			if (is_current())
+				shared::globals::d3d_device = nullptr;
+			delete this;
+		}
 		return count;
 	}
 
@@ -127,14 +191,10 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters)
 	{
 		TRACE_IF_ACTIVE(trace_Reset, pPresentationParameters);
-		if (auto* t = tracer::get()) t->on_reset();
-		shared::common::ffp_state::get().on_reset();
-		if (auto* s = skinning::get()) s->on_reset();
-		shared::common::g_shader_cache.clear_cache();
-		tex_addons::init_texture_addons(true);
+		if (is_current())
+			release_device_objects();
 		ImGui_ImplDX9_InvalidateDeviceObjects();
 		const auto hr = m_pIDirect3DDevice9->Reset(pPresentationParameters);
-		tex_addons::init_texture_addons();
 		ImGui_ImplDX9_CreateDeviceObjects();
 		return hr;
 	}
@@ -142,9 +202,12 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::Present(CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindowOverride, CONST RGNDATA* pDirtyRegion)
 	{
 		TRACE_IF_ACTIVE(trace_Present, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+		if (!is_current())
+			return m_pIDirect3DDevice9->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+
 		auto& ffp = shared::common::ffp_state::get();
 		if (auto* d = diagnostics::get()) d->on_present(ffp.frame_count(), ffp.draw_call_count(), ffp.scene_count());
-		ffp.on_present();
+		ffp.on_present(m_pIDirect3DDevice9);
 		auto hr = m_pIDirect3DDevice9->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
 		if (auto* t = tracer::get()) t->on_present();
 		return hr;
@@ -291,6 +354,9 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::BeginScene()
 	{
 		TRACE_IF_ACTIVE_NOARGS(trace_BeginScene);
+		if (!is_current())
+			return m_pIDirect3DDevice9->BeginScene();
+
 		shared::common::ffp_state::get().on_begin_scene();
 		if (auto* d = diagnostics::get()) d->on_begin_scene(shared::common::ffp_state::get().scene_count());
 
@@ -304,7 +370,7 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::EndScene()
 	{
 		TRACE_IF_ACTIVE_NOARGS(trace_EndScene);
-		if (imgui::is_initialized()) {
+		if (is_current() && imgui::is_initialized()) {
 			imgui::get()->on_present();
 		}
 
@@ -413,13 +479,14 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9** ppSB)
 	{
 		TRACE_IF_ACTIVE(trace_CreateStateBlock, Type, ppSB);
-		return m_pIDirect3DDevice9->CreateStateBlock(Type, ppSB);
+		return with_game_shaders()->CreateStateBlock(Type, ppSB);
 	}
 
 	HRESULT d3d9ex::D3D9Device::BeginStateBlock()
 	{
 		TRACE_IF_ACTIVE_NOARGS(trace_BeginStateBlock);
-		return m_pIDirect3DDevice9->BeginStateBlock();
+		// The shaders the game sets while the block records have to reach the device to be recorded
+		return with_game_shaders()->BeginStateBlock();
 	}
 
 	HRESULT d3d9ex::D3D9Device::EndStateBlock(IDirect3DStateBlock9** ppSB)
@@ -449,7 +516,8 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture)
 	{
 		TRACE_IF_ACTIVE(trace_SetTexture, Stage, pTexture);
-		shared::common::ffp_state::get().on_set_texture(Stage, pTexture);
+		if (sets_game_state())
+			shared::common::ffp_state::get().on_set_texture(Stage, pTexture);
 		return m_pIDirect3DDevice9->SetTexture(Stage, pTexture);
 	}
 
@@ -480,7 +548,7 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::ValidateDevice(DWORD* pNumPasses)
 	{
 		TRACE_IF_ACTIVE(trace_ValidateDevice, pNumPasses);
-		return m_pIDirect3DDevice9->ValidateDevice(pNumPasses);
+		return with_game_shaders()->ValidateDevice(pNumPasses);
 	}
 
 	HRESULT d3d9ex::D3D9Device::SetPaletteEntries(UINT PaletteNumber, CONST PALETTEENTRY* pEntries)
@@ -546,6 +614,9 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::DrawPrimitive([[maybe_unused]] D3DPRIMITIVETYPE PrimitiveType, [[maybe_unused]] UINT StartVertex, [[maybe_unused]] UINT PrimitiveCount)
 	{
 		TRACE_IF_ACTIVE(trace_DrawPrimitive, PrimitiveType, StartVertex, PrimitiveCount);
+		if (!is_current())
+			return m_pIDirect3DDevice9->DrawPrimitive(PrimitiveType, StartVertex, PrimitiveCount);
+
 		const auto hr = renderer::get()->on_draw_primitive(m_pIDirect3DDevice9, PrimitiveType, StartVertex, PrimitiveCount);
 		return hr;
 	}
@@ -553,6 +624,9 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::DrawIndexedPrimitive(D3DPRIMITIVETYPE PrimitiveType, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount)
 	{
 		TRACE_IF_ACTIVE(trace_DrawIndexedPrimitive, PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+		if (!is_current())
+			return m_pIDirect3DDevice9->DrawIndexedPrimitive(PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
+
 		const auto hr = renderer::get()->on_draw_indexed_prim(m_pIDirect3DDevice9, PrimitiveType, BaseVertexIndex, MinVertexIndex, NumVertices, startIndex, primCount);
 		return hr;
 	}
@@ -560,9 +634,8 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::DrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride)
 	{
 		TRACE_IF_ACTIVE(trace_DrawPrimitiveUP, PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
-		// You might want to wrap this if your game uses this
-		const auto hr = m_pIDirect3DDevice9->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
-		return hr;
+		// Passed through with the game's shaders. GAME-SPECIFIC: route it like DrawPrimitive if the game draws world geometry this way
+		return with_game_shaders()->DrawPrimitiveUP(PrimitiveType, PrimitiveCount, pVertexStreamZeroData, VertexStreamZeroStride);
 	}
 
 	HRESULT d3d9ex::D3D9Device::DrawIndexedPrimitiveUP(
@@ -576,29 +649,28 @@ namespace comp
 		[[maybe_unused]] UINT VertexStreamZeroStride)
 	{
 		TRACE_IF_ACTIVE(trace_DrawIndexedPrimitiveUP, PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
-		// You might want to wrap this if your game uses this
-		return m_pIDirect3DDevice9->DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
+		// Passed through with the game's shaders. GAME-SPECIFIC: route it like DrawIndexedPrimitive if the game draws world geometry this way
+		return with_game_shaders()->DrawIndexedPrimitiveUP(PrimitiveType, MinVertexIndex, NumVertices, PrimitiveCount, pIndexData, IndexDataFormat, pVertexStreamZeroData, VertexStreamZeroStride);
 	}
 
 	HRESULT d3d9ex::D3D9Device::ProcessVertices(UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, IDirect3DVertexBuffer9* pDestBuffer, IDirect3DVertexDeclaration9* pVertexDecl, DWORD Flags)
 	{
 		TRACE_IF_ACTIVE(trace_ProcessVertices, SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDecl, Flags);
-		return m_pIDirect3DDevice9->ProcessVertices(SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDecl, Flags);
+		return with_game_shaders()->ProcessVertices(SrcStartIndex, DestIndex, VertexCount, pDestBuffer, pVertexDecl, Flags);
 	}
 
 	HRESULT d3d9ex::D3D9Device::CreateVertexDeclaration(CONST D3DVERTEXELEMENT9* pVertexElements, IDirect3DVertexDeclaration9** ppDecl)
 	{
-		TRACE_IF_ACTIVE(trace_CreateVertexDeclaration, pVertexElements, ppDecl);
-		auto hr = m_pIDirect3DDevice9->CreateVertexDeclaration(pVertexElements, ppDecl);
-		if (SUCCEEDED(hr) && ppDecl && *ppDecl)
-			if (auto* t = tracer::get(); t && t->is_capturing()) t->record_created_handle(*ppDecl);
+		const auto hr = m_pIDirect3DDevice9->CreateVertexDeclaration(pVertexElements, ppDecl);
+		TRACE_CREATION_IF_ACTIVE(trace_CreateVertexDeclaration, SUCCEEDED(hr) && ppDecl ? *ppDecl : nullptr, pVertexElements, ppDecl);
 		return hr;
 	}
 
 	HRESULT d3d9ex::D3D9Device::SetVertexDeclaration(IDirect3DVertexDeclaration9* pDecl)
 	{
 		TRACE_IF_ACTIVE(trace_SetVertexDeclaration, pDecl);
-		shared::common::ffp_state::get().on_set_vertex_declaration(pDecl);
+		if (sets_game_state())
+			shared::common::ffp_state::get().on_set_vertex_declaration(pDecl);
 		return m_pIDirect3DDevice9->SetVertexDeclaration(pDecl);
 	}
 
@@ -611,6 +683,8 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetFVF(DWORD FVF)
 	{
 		TRACE_IF_ACTIVE(trace_SetFVF, FVF);
+		if (sets_game_state())
+			shared::common::ffp_state::get().on_set_fvf(FVF);
 		return m_pIDirect3DDevice9->SetFVF(FVF);
 	}
 
@@ -622,30 +696,41 @@ namespace comp
 
 	HRESULT d3d9ex::D3D9Device::CreateVertexShader(CONST DWORD* pFunction, IDirect3DVertexShader9** ppShader)
 	{
-		TRACE_IF_ACTIVE(trace_CreateVertexShader, pFunction, ppShader);
-		auto hr = m_pIDirect3DDevice9->CreateVertexShader(pFunction, ppShader);
-		if (SUCCEEDED(hr) && ppShader && *ppShader)
-			if (auto* t = tracer::get(); t && t->is_capturing()) t->record_created_handle(*ppShader);
+		const auto hr = m_pIDirect3DDevice9->CreateVertexShader(pFunction, ppShader);
+		TRACE_CREATION_IF_ACTIVE(trace_CreateVertexShader, SUCCEEDED(hr) && ppShader ? *ppShader : nullptr, pFunction, ppShader);
 		return hr;
 	}
 
+	// Held back while FFP is engaged, like SetPixelShader, so the device stays without shaders
+	// for the converted draws that follow. ffp_state keeps the shader and puts it on the device
+	// when it disengages, which with_game_shaders() does ahead of every call that reads or uses
+	// the device's shaders.
 	HRESULT d3d9ex::D3D9Device::SetVertexShader(IDirect3DVertexShader9* pShader)
 	{
 		TRACE_IF_ACTIVE(trace_SetVertexShader, pShader);
-		shared::common::ffp_state::get().on_set_vertex_shader(pShader);
+		if (!sets_game_state())
+			return m_pIDirect3DDevice9->SetVertexShader(pShader);
+
+		auto& ffp = shared::common::ffp_state::get();
+		ffp.on_set_vertex_shader(pShader);
 		if (auto* d = diagnostics::get()) d->on_set_vertex_shader(pShader);
+		if (ffp.is_ffp_active())
+			return S_OK;
 		return m_pIDirect3DDevice9->SetVertexShader(pShader);
 	}
 
 	HRESULT d3d9ex::D3D9Device::GetVertexShader(IDirect3DVertexShader9** ppShader)
 	{
 		TRACE_IF_ACTIVE(trace_GetVertexShader, ppShader);
-		return m_pIDirect3DDevice9->GetVertexShader(ppShader);
+		return with_game_shaders()->GetVertexShader(ppShader);
 	}
 
 	HRESULT d3d9ex::D3D9Device::SetVertexShaderConstantF(UINT StartRegister, CONST float* pConstantData, UINT Vector4fCount)
 	{
 		TRACE_IF_ACTIVE(trace_SetVertexShaderConstantF, StartRegister, pConstantData, Vector4fCount);
+		if (!is_current())
+			return m_pIDirect3DDevice9->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
+
 		shared::common::ffp_state::get().on_set_vs_const_f(StartRegister, pConstantData, Vector4fCount);
 		if (auto* d = diagnostics::get()) d->on_set_vs_const_f(StartRegister, pConstantData, Vector4fCount);
 		return m_pIDirect3DDevice9->SetVertexShaderConstantF(StartRegister, pConstantData, Vector4fCount);
@@ -684,7 +769,6 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9* pStreamData, UINT OffsetInBytes, UINT Stride)
 	{
 		TRACE_IF_ACTIVE(trace_SetStreamSource, StreamNumber, pStreamData, OffsetInBytes, Stride);
-		shared::common::ffp_state::get().on_set_stream_source(StreamNumber, pStreamData, OffsetInBytes, Stride);
 		return m_pIDirect3DDevice9->SetStreamSource(StreamNumber, pStreamData, OffsetInBytes, Stride);
 	}
 
@@ -720,18 +804,18 @@ namespace comp
 
 	HRESULT d3d9ex::D3D9Device::CreatePixelShader(CONST DWORD* pFunction, IDirect3DPixelShader9** ppShader)
 	{
-		TRACE_IF_ACTIVE(trace_CreatePixelShader, pFunction, ppShader);
-		auto hr = m_pIDirect3DDevice9->CreatePixelShader(pFunction, ppShader);
-		if (SUCCEEDED(hr) && ppShader && *ppShader)
-			if (auto* t = tracer::get(); t && t->is_capturing()) t->record_created_handle(*ppShader);
+		const auto hr = m_pIDirect3DDevice9->CreatePixelShader(pFunction, ppShader);
+		TRACE_CREATION_IF_ACTIVE(trace_CreatePixelShader, SUCCEEDED(hr) && ppShader ? *ppShader : nullptr, pFunction, ppShader);
 		return hr;
 	}
 
-	// Swallowed during FFP so Remix sees fixed-function draws.
-	// GetPixelShader will return the previous shader, not what the game set.
+	// Held back while FFP is engaged, like SetVertexShader, so Remix sees fixed-function draws
 	HRESULT d3d9ex::D3D9Device::SetPixelShader(IDirect3DPixelShader9* pShader)
 	{
 		TRACE_IF_ACTIVE(trace_SetPixelShader, pShader);
+		if (!sets_game_state())
+			return m_pIDirect3DDevice9->SetPixelShader(pShader);
+
 		auto& ffp = shared::common::ffp_state::get();
 		ffp.on_set_pixel_shader(pShader);
 		if (ffp.is_ffp_active())
@@ -742,13 +826,14 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::GetPixelShader(IDirect3DPixelShader9** ppShader)
 	{
 		TRACE_IF_ACTIVE(trace_GetPixelShader, ppShader);
-		return m_pIDirect3DDevice9->GetPixelShader(ppShader);
+		return with_game_shaders()->GetPixelShader(ppShader);
 	}
 
 	HRESULT d3d9ex::D3D9Device::SetPixelShaderConstantF(UINT StartRegister, CONST float* pConstantData, UINT Vector4fCount)
 	{
 		TRACE_IF_ACTIVE(trace_SetPixelShaderConstantF, StartRegister, pConstantData, Vector4fCount);
-		shared::common::ffp_state::get().on_set_ps_const_f(StartRegister, pConstantData, Vector4fCount);
+		if (is_current())
+			shared::common::ffp_state::get().on_set_ps_const_f(StartRegister, pConstantData, Vector4fCount);
 		return m_pIDirect3DDevice9->SetPixelShaderConstantF(StartRegister, pConstantData, Vector4fCount);
 	}
 
@@ -785,13 +870,13 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::DrawRectPatch(UINT Handle, CONST float* pNumSegs, CONST D3DRECTPATCH_INFO* pRectPatchInfo)
 	{
 		TRACE_IF_ACTIVE(trace_DrawRectPatch, Handle, pNumSegs, pRectPatchInfo);
-		return m_pIDirect3DDevice9->DrawRectPatch(Handle, pNumSegs, pRectPatchInfo);
+		return with_game_shaders()->DrawRectPatch(Handle, pNumSegs, pRectPatchInfo);
 	}
 
 	HRESULT d3d9ex::D3D9Device::DrawTriPatch(UINT Handle, CONST float* pNumSegs, CONST D3DTRIPATCH_INFO* pTriPatchInfo)
 	{
 		TRACE_IF_ACTIVE(trace_DrawTriPatch, Handle, pNumSegs, pTriPatchInfo);
-		return m_pIDirect3DDevice9->DrawTriPatch(Handle, pNumSegs, pTriPatchInfo);
+		return with_game_shaders()->DrawTriPatch(Handle, pNumSegs, pTriPatchInfo);
 	}
 
 	HRESULT d3d9ex::D3D9Device::DeletePatch(UINT Handle)
@@ -906,7 +991,7 @@ namespace comp
 		shared::common::log("d3d9", "m_pIDirect3D9->CreateDevice", shared::common::LOG_TYPE::LOG_TYPE_DEFAULT, false);
 		if (SUCCEEDED(hres) && *ppReturnedDeviceInterface) {
 			*ppReturnedDeviceInterface = new d3d9ex::D3D9Device(*ppReturnedDeviceInterface);
-			shared::globals::d3d_device = *ppReturnedDeviceInterface;
+			set_current_device(*ppReturnedDeviceInterface);
 		}
 
 		return hres;
@@ -1013,7 +1098,7 @@ namespace comp
 
 		if (SUCCEEDED(hres) && *ppReturnedDeviceInterface) {
 			*ppReturnedDeviceInterface = new d3d9ex::D3D9Device(*ppReturnedDeviceInterface);
-			shared::globals::d3d_device = *ppReturnedDeviceInterface;
+			set_current_device(*ppReturnedDeviceInterface);
 		}
 
 		return hres;

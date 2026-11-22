@@ -1,8 +1,9 @@
 """Find SetVertexShaderConstantF call sites and analyze arguments.
 
 Scans for call [reg+0x178] patterns (D3D9 device vtable slot 94) and
-inspects push instructions before each call to determine the start
-register and count being written.
+method-pointer loads from that slot, and reads the start register and
+count each call is given from the pushes and [esp+disp] stores in front
+of it.
 
 Also scans for DrawIndexedPrimitive, SetVertexDeclaration, and
 CreateVertexDeclaration call sites.
@@ -14,12 +15,9 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "retools"))
-
-from dx9_common import (
-    load_binary, load_text_section, scan_vtable_calls, scan_vtable_mov,
-    analyze_pushes,
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from dx9_pe import load_binary, load_text_section
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_args, args_text
 
 
 def main():
@@ -53,11 +51,9 @@ def main():
         if len(all_sites) > 50:
             print(f"  (showing first 50 of {len(all_sites)} sites)")
         for va, reg in all_sites[:50]:
-            pushes = analyze_pushes(data, sections, image_base, va)
-            if pushes:
-                print(f"\n  0x{va:08X}: call [{reg}+0x178]")
-                for pva, pval, ptype in pushes[-5:]:
-                    print(f"    push {ptype} {pval} (0x{pval:X})")
+            pushed = method_args(text_data, text_va, va, "SetVertexShaderConstantF")
+            print(f"\n  0x{va:08X}: call [{reg}+0x178]")
+            print("    " + args_text(pushed))
 
     # --- DrawIndexedPrimitive (0x148) ---
     print(f"\n\n=== DrawIndexedPrimitive call sites (call [reg+0x148]) ===")

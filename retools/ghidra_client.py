@@ -41,8 +41,11 @@ def _pid_alive(pid: int | None) -> bool:
         kernel32 = ctypes.windll.kernel32
         h = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
         if h:
+            # An exited process stays openable while anyone holds a handle to
+            # it; only an unsignaled process object is still running.
+            running = kernel32.WaitForSingleObject(h, 0) == 0x102  # WAIT_TIMEOUT
             kernel32.CloseHandle(h)
-            return True
+            return running
         return False
     except Exception:
         try:

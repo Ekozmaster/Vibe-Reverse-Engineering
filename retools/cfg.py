@@ -22,6 +22,7 @@ Examples:
 """
 
 import argparse
+import itertools
 import struct
 import sys
 from pathlib import Path
@@ -34,7 +35,16 @@ _UNCOND_JUMPS = {"jmp", "ret", "retn"}
 _COND_JUMPS = {
     "je", "jne", "jz", "jnz", "jg", "jge", "jl", "jle",
     "ja", "jae", "jb", "jbe", "jo", "jno", "js", "jns", "jp", "jnp",
+    "jcxz", "jecxz", "jrcxz", "loop", "loope", "loopne",
 }
+# Compilers emit int3 only as padding or after a call that does not return, so
+# execution never falls through it: it ends its block without a successor.
+_NO_SUCCESSOR = {"ret", "retn", "int3"}
+
+# Names the way build_cfg divides a function into blocks and edges. A stored
+# shape (sigdb's structural signatures) compares only with shapes counted the
+# same way, so a change to the sets above or to the block rules raises it.
+SHAPE_VERSION = 2
 
 
 def _resolve_target(insn) -> int | None:
@@ -109,33 +119,40 @@ def _resolve_switch(
     return targets
 
 
-def _find_func_end(insns):
-    """Detect function boundary: stop after ret + NOP padding or int3."""
+_MAX_FUNCTION_INSNS = 5000
+
+
+def _decode_function(b: Binary, start: int, max_size: int) -> list:
+    """Decode the function at *start* up to its end.
+
+    The end is a ``ret`` followed by NOP padding or ``int3``. Decoding stops
+    there, so the rest of the *max_size* window is never disassembled.
+    """
+    insns: list = []
     last_ret = None
     nop_run = 0
-    for i, insn in enumerate(insns):
+    window = b.iter_disasm(start, max_bytes=max_size)
+    for insn in itertools.islice(window, _MAX_FUNCTION_INSNS):
+        insns.append(insn)
         if insn.mnemonic in ("ret", "retn"):
-            last_ret = i
+            last_ret = len(insns) - 1
             nop_run = 0
         elif last_ret is not None:
             if insn.mnemonic == "nop":
                 nop_run += 1
                 if nop_run >= 2:
-                    return last_ret + 1
+                    return insns[:last_ret + 1]
             elif insn.mnemonic == "int3":
-                return last_ret + 1
+                return insns[:last_ret + 1]
             else:
                 last_ret = None
                 nop_run = 0
-    return len(insns)
+    return insns
 
 
 def build_cfg(b: Binary, start: int, max_size: int = 0x4000):
     """Return (blocks, edges) where blocks maps block_va -> [insns]."""
-    raw_insns = b.disasm(start, count=5000, max_bytes=max_size)
-    if not raw_insns:
-        return {}, []
-    insns = raw_insns[:_find_func_end(raw_insns)]
+    insns = _decode_function(b, start, max_size)
     if not insns:
         return {}, []
 
@@ -165,7 +182,7 @@ def build_cfg(b: Binary, start: int, max_size: int = 0x4000):
         if current_leader is not None:
             blocks[current_leader].append(insn)
             mn = insn.mnemonic
-            if mn in _UNCOND_JUMPS or mn in _COND_JUMPS:
+            if mn in _UNCOND_JUMPS or mn in _COND_JUMPS or mn in _NO_SUCCESSOR:
                 current_leader = None
 
     # Build edges
@@ -175,7 +192,7 @@ def build_cfg(b: Binary, start: int, max_size: int = 0x4000):
             continue
         last = block_insns[-1]
         mn = last.mnemonic
-        if mn in ("ret", "retn"):
+        if mn in _NO_SUCCESSOR:
             continue
         target = _resolve_target(last)
         fallthrough = last.address + last.size

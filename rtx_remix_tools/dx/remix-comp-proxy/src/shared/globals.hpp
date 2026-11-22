@@ -3,7 +3,7 @@
 // Written once at init, read from the single D3D9 thread — no locks needed.
 namespace shared::globals
 {
-	extern D3DXMATRIX IDENTITY;
+	extern D3DMATRIX IDENTITY;
 	
 	extern std::string root_path;
 	extern HWND main_window;

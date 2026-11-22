@@ -32,14 +32,27 @@ namespace comp
 		static bool is_active() { return p_this && p_this->capturing_; }
 		static tracer& ref() { return *p_this; }
 
+		// One record is built at a time, and device calls can come from several threads.
+		// Returns the held record lock while a capture runs, an unowned lock otherwise.
+		static std::unique_lock<std::recursive_mutex> lock_if_active()
+		{
+			if (!is_active()) return {};
+			std::unique_lock<std::recursive_mutex> lock(p_this->record_mutex_);
+			if (!p_this->capturing_) lock.unlock();
+			return lock;
+		}
+
 		// Delayed capture: starts after countdown expires
 		void start_capture_delayed(int num_frames, const std::string& filename, float delay_seconds);
 		void cancel_delayed();
 		bool is_waiting() const { return waiting_; }
 		float delay_remaining() const;
 
-		// Capture control
-		void start_capture(int num_frames, const std::string& filename);
+		// Id the progress file gives a capture that no trigger file asked for
+		static constexpr char NO_TRIGGER_ID[] = "-";
+
+		// Capture control. trigger_id names the capture in dxtrace_progress.txt.
+		void start_capture(int num_frames, const std::string& filename, const std::string& trigger_id = NO_TRIGGER_ID);
 		void stop_capture();
 		bool is_capturing() const { return capturing_; }
 
@@ -86,7 +99,10 @@ namespace comp
 
 	private:
 		// Capture state
-		bool capturing_ = false;
+		std::atomic<bool> capturing_ = false;
+
+		// Guards the buffer and the record being built; recursive so stop_capture can run under it
+		std::recursive_mutex record_mutex_;
 		int frames_to_capture_ = 2;
 		int frames_captured_ = 0;
 		int sequence_ = 0;
@@ -98,6 +114,11 @@ namespace comp
 		static constexpr size_t FLUSH_THRESHOLD = 3 * 1024 * 1024;
 		char* buffer_ = nullptr;
 		size_t write_pos_ = 0;
+
+		// Windows error of the first write to the capture file that failed; a capture with one
+		// ends at its next frame and is reported failed
+		DWORD write_error_ = ERROR_SUCCESS;
+		void note_write_error(DWORD error) { if (write_error_ == ERROR_SUCCESS) write_error_ = error; }
 
 		// JSON state machine
 		bool first_arg_ = true;
@@ -127,8 +148,14 @@ namespace comp
 		int pending_frames_ = 0;
 		std::string pending_filename_;
 
-		// Trigger file watching
+		// Trigger file watching. dxtrace_capture.trigger holds "frames=<N>" and, from a writer
+		// that follows the progress file, "id=<16 lowercase hex digits>" on a line of its own.
 		void check_trigger_file();
+		std::string capture_trigger_id_ = NO_TRIGGER_ID;
+
+		// Id of a trigger file that was answered and could not be deleted, which is answered
+		// no second time; empty once that file is gone
+		std::string undeleted_trigger_id_;
 
 		// Helpers
 		void flush_buffer();

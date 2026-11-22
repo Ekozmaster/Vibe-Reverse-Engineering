@@ -26,9 +26,9 @@ Inspection:
     python -m livetools mem write <addr> <hex_bytes>
 
 Non-blocking tracing:
-    python -m livetools trace <addr> [--count N] [--read SPEC] [--filter EXPR]
+    python -m livetools trace <addr> [--probe] [--count N] [--read SPEC] [--filter EXPR]
     python -m livetools steptrace <addr> [--max-insn N] [--call-depth D]
-    python -m livetools collect <addr> [addr2 ...] [--duration N] [--fence ADDR]
+    python -m livetools collect <addr> [addr2 ...] [--probe] [--duration N] [--fence ADDR]
     python -m livetools modules [--filter PATTERN]
 
 Offline analysis:
@@ -97,13 +97,17 @@ def cmd_attach(args: argparse.Namespace) -> None:
     _spawn_daemon(args.target, spawn=spawn)
 
 
+_DAEMON_EXIT_SECONDS = 10
+
+
 def _force_cleanup() -> None:
     state = client.read_state()
     if state:
         client._kill_stale_daemon(state)
+        if state.get("pid"):
+            client.wait_for_exit(state["pid"], _DAEMON_EXIT_SECONDS)
     else:
         client.STATE_FILE.unlink(missing_ok=True)
-    time.sleep(0.5)
 
 
 def _spawn_daemon(target: str, *, spawn: bool = False) -> None:
@@ -128,7 +132,6 @@ def _spawn_daemon(target: str, *, spawn: bool = False) -> None:
             resp = client.send_command({"cmd": "status"})
             print(client.format_status_line(resp))
             print(f"Attached to {target}.")
-            client.DAEMON_LOG.unlink(missing_ok=True)
             return
         time.sleep(0.3)
 
@@ -140,22 +143,36 @@ def _spawn_daemon(target: str, *, spawn: bool = False) -> None:
         pass
     if log_text:
         print(f"[error] Daemon log:\n{log_text}", file=sys.stderr)
-    client.DAEMON_LOG.unlink(missing_ok=True)
     sys.exit(1)
 
 
 def cmd_detach(_args: argparse.Namespace) -> None:
-    if not client.is_daemon_alive():
+    state = client.read_state() if client.is_daemon_alive() else None
+    if state is None:
         client.STATE_FILE.unlink(missing_ok=True)
         print("Detached (daemon was already gone).")
         return
+    daemon_pid = state["pid"]
+    waiting = None
     try:
         resp = client.send_command({"cmd": "detach"})
         print(client.format_status_line(resp))
-    except Exception:
-        pass
+        for failure in resp.get("shutdown", []):
+            print(f"[shutdown] {failure}")
+        waiting = resp.get("waitingOn")
+        if waiting:
+            print(waiting)
+    except (ConnectionError, OSError):
+        pass  # the daemon may close the connection as it shuts down
+    # The daemon's stderr is DAEMON_LOG, so the next attach can only reopen
+    # that file once this daemon has exited.
+    if not client.wait_for_exit(daemon_pid, _DAEMON_EXIT_SECONDS):
+        print(f"[error] The daemon (pid {daemon_pid}) has not exited after "
+              f"{_DAEMON_EXIT_SECONDS} s.", file=sys.stderr)
+        if waiting:
+            print(f"[error] {waiting} It logs to {client.DAEMON_LOG}.", file=sys.stderr)
+        sys.exit(1)
     print("Detached.")
-    time.sleep(0.5)
     client.STATE_FILE.unlink(missing_ok=True)
 
 
@@ -189,7 +206,7 @@ def cmd_bp(args: argparse.Namespace) -> None:
         if resp.get("ok"):
             print(f"Breakpoint at {addr} removed.")
         else:
-            print(f"[error] {resp.get('error', resp.get('msg', 'unknown'))}")
+            print(f"[error] {resp.get('error', 'unknown')}")
     elif action == "list":
         resp = client.send_command({"cmd": "bp_list"})
         print(client.format_status_line(resp))
@@ -293,7 +310,7 @@ def cmd_mem_write(args: argparse.Namespace) -> None:
     if resp.get("ok"):
         print(f"Wrote {len(hex_bytes)//2} bytes to {addr}.")
     else:
-        print(f"[error] {resp.get('error', resp.get('msg', 'unknown'))}")
+        print(f"[error] {resp.get('error', 'unknown')}")
 
 
 def cmd_mem_alloc(args: argparse.Namespace) -> None:
@@ -304,7 +321,7 @@ def cmd_mem_alloc(args: argparse.Namespace) -> None:
     if resp.get("ok"):
         print(f"Allocated {args.size} bytes at {resp['addr']} (rwx)")
     else:
-        print(f"[error] {resp.get('error', resp.get('msg', 'unknown'))}")
+        print(f"[error] {resp.get('error', 'unknown')}")
 
 
 def cmd_disasm(args: argparse.Namespace) -> None:
@@ -344,8 +361,11 @@ def cmd_step(args: argparse.Namespace) -> None:
         print(f"[error] {resp.get('error', 'unknown')}")
         return
     snap = resp.get("snapshot")
+    interrupted = resp.get("stepInterrupted")
+    if interrupted:
+        print(f"[note] {interrupted}")
     if snap:
-        print(client.format_snapshot(snap, header="STEP COMPLETE"))
+        print(client.format_snapshot(snap, header="BREAKPOINT HIT" if interrupted else "STEP COMPLETE"))
 
 
 def cmd_resume(_args: argparse.Namespace) -> None:
@@ -381,7 +401,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
             print(f"  {m['addr']}  ({m['size']} bytes)")
 
 
-# ── NEW: trace command ─────────────────────────────────────────────────────
+# ── trace command ─────────────────────────────────────────────────────
 
 def cmd_trace(args: argparse.Namespace) -> None:
     if not _require_attached():
@@ -394,6 +414,7 @@ def cmd_trace(args: argparse.Namespace) -> None:
         "readLeave": args.read_leave or "",
         "filter": args.filter or "",
         "timeout": args.timeout,
+        "probe": args.probe,
     }
     if args.output:
         cmd["output"] = args.output
@@ -405,7 +426,7 @@ def cmd_trace(args: argparse.Namespace) -> None:
     print(client.format_trace(resp))
 
 
-# ── NEW: steptrace command ─────────────────────────────────────────────────
+# ── steptrace command ─────────────────────────────────────────────────
 
 def cmd_steptrace(args: argparse.Namespace) -> None:
     if not _require_attached():
@@ -428,7 +449,7 @@ def cmd_steptrace(args: argparse.Namespace) -> None:
     print(client.format_steptrace(resp))
 
 
-# ── NEW: collect command ───────────────────────────────────────────────────
+# ── collect command ───────────────────────────────────────────────────
 
 def cmd_collect(args: argparse.Namespace) -> None:
     if not _require_attached():
@@ -457,6 +478,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
         "read": args.read or "",
         "readSpecs": read_specs,
         "labels": labels,
+        "probe": args.probe,
     }
     if args.output:
         cmd["output"] = args.output
@@ -473,7 +495,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
     print(client.format_collect(resp))
 
 
-# ── NEW: modules command ───────────────────────────────────────────────────
+# ── modules command ───────────────────────────────────────────────────
 
 def cmd_modules(args: argparse.Namespace) -> None:
     if not _require_attached():
@@ -489,7 +511,7 @@ def cmd_modules(args: argparse.Namespace) -> None:
     print(client.format_modules(resp))
 
 
-# ── NEW: dipcnt command ───────────────────────────────────────────────────
+# ── dipcnt command ───────────────────────────────────────────────────
 
 def cmd_dipcnt(args: argparse.Namespace) -> None:
     action = getattr(args, "action", None)
@@ -497,11 +519,11 @@ def cmd_dipcnt(args: argparse.Namespace) -> None:
         dev_ptr = getattr(args, "dev_ptr")
         resp = client.send_command({"cmd": "dipcnt_on", "devPtrAddr": dev_ptr})
         print(client.format_status_line(resp))
-        print("DIP counter ON." if resp.get("ok") else f"[error] {resp.get('msg', '?')}")
+        print("DIP counter ON." if resp.get("ok") else f"[error] {resp.get('error', 'unknown')}")
     elif action == "off":
         resp = client.send_command({"cmd": "dipcnt_off"})
         print(client.format_status_line(resp))
-        print("DIP counter OFF." if resp.get("ok") else f"[error] {resp.get('msg', '?')}")
+        print("DIP counter OFF." if resp.get("ok") else f"[error] {resp.get('error', 'unknown')}")
     elif action == "read":
         resp = client.send_command({"cmd": "dipcnt_read"})
         print(client.format_status_line(resp))
@@ -520,19 +542,19 @@ def cmd_dipcnt(args: argparse.Namespace) -> None:
             for c in callers:
                 print(f"    {c['addr']}  x{c['count']}")
         else:
-            print(f"  [error] {resp.get('msg', '?')}")
+            print(f"  [error] {resp.get('error', 'unknown')}")
     else:
         print("Usage: python -m livetools dipcnt [on|off|read|callers]")
 
 
-# ── NEW: analyze command ───────────────────────────────────────────────────
+# ── analyze command ───────────────────────────────────────────────────
 
 def cmd_analyze(args: argparse.Namespace) -> None:
     from .analyze import run_analyze
     run_analyze(args)
 
 
-# ── NEW: vishook command ──────────────────────────────────────────────────
+# ── vishook command ──────────────────────────────────────────────────
 
 def cmd_vishook(args: argparse.Namespace) -> None:
     action = getattr(args, "action", None)
@@ -552,14 +574,14 @@ def cmd_vishook(args: argparse.Namespace) -> None:
             print(f"  Callers >= 0x{thr:X}: force visible")
             print(f"  Callers <  0x{thr:X}: call original")
         else:
-            print(f"[error] {resp.get('msg', resp.get('error', 'unknown'))}")
+            print(f"[error] {resp.get('error', 'unknown')}")
     elif action == "off":
         resp = client.send_command({"cmd": "vishook_off"})
         print(client.format_status_line(resp))
         if resp.get("ok"):
             print("Visibility override OFF.  Original jmp restored.")
         else:
-            print(f"[error] {resp.get('msg', resp.get('error', 'unknown'))}")
+            print(f"[error] {resp.get('error', 'unknown')}")
     elif action == "stats":
         resp = client.send_command({"cmd": "vishook_stats"})
         print(client.format_status_line(resp))
@@ -572,7 +594,7 @@ def cmd_vishook(args: argparse.Namespace) -> None:
         print("Usage: python -m livetools vishook [on|off|stats]")
 
 
-# ── NEW: memwatch command ─────────────────────────────────────────────────
+# ── memwatch command ─────────────────────────────────────────────────
 
 def cmd_memwatch(args: argparse.Namespace) -> None:
     action = getattr(args, "action", None)
@@ -585,7 +607,7 @@ def cmd_memwatch(args: argparse.Namespace) -> None:
         })
         print(client.format_status_line(resp))
         if resp.get("ok"):
-            print(f"Memory write watchpoint active: {resp.get('watching')} ({resp.get('size')} bytes)")
+            print(f"Memory access watch active: {resp.get('watching')} ({resp.get('size')} bytes)")
             print(f"  Will capture up to {resp.get('maxHits')} hits, then auto-stop.")
             print("  Use 'python -m livetools memwatch read' to check hits.")
         else:
@@ -602,9 +624,9 @@ def cmd_memwatch(args: argparse.Namespace) -> None:
         print(client.format_status_line(resp))
         if resp.get("ok"):
             hits = resp.get("hits", [])
-            print(f"  {len(hits)} write hit(s):")
+            print(f"  {len(hits)} hit(s) (first access to each watched page, read or write):")
             for i, h in enumerate(hits):
-                print(f"\n  [{i}] Write to {h.get('addr', '?')} from {h.get('from', '?')}")
+                print(f"\n  [{i}] {h.get('operation', 'access')} of {h.get('addr', '?')} from {h.get('from', '?')}")
                 bt = h.get("backtrace", [])
                 if bt:
                     for j, frame in enumerate(bt):
@@ -761,10 +783,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- control --
     sp = sub.add_parser("step",
-        help="Single-step one instruction (must be frozen at a bp)")
+        help="Run the frozen thread for one step (after a breakpoint hit or an earlier step)",
+        description=(
+            "Run the frozen thread for one step and freeze it again.\n\n"
+            "  over   one instruction; a call runs until it returns (default)\n"
+            "  into   one instruction; a call is entered\n"
+            "  out    until the current function has returned to its caller\n\n"
+            "A repeated string instruction (rep movsb, ...) always runs to its end.\n"
+            "A step that has not ended after 10 seconds (a call that blocks, a\n"
+            "function that keeps looping) is given up with an error and the\n"
+            "thread runs on. To stop it later, set a breakpoint and use 'watch'.\n"
+            "If another thread reaches a breakpoint first, the step ends, that\n"
+            "thread is the one frozen, and the reply says so."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     sp.add_argument("mode", nargs="?", default="over",
         choices=["over", "into", "out"],
-        help="'over' skips calls, 'into' enters, 'out' runs to return (default: over)")
+        help="How far to run (default: over)")
 
     sub.add_parser("resume", help="Resume execution (unfreeze from breakpoint)")
 
@@ -778,8 +813,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("trace",
         help="Non-blocking function enter/leave tracing with data capture",
         description=(
-            "Hook a function's entry and exit without freezing the target.\n"
+            "Hook a function's entry and return without freezing the target.\n"
             "Reads specified data at each call, returns structured results.\n\n"
+            "ADDR must be a function entry: the return is trapped through the\n"
+            "top stack slot, which holds a return address only there. A call\n"
+            "instruction is refused. To record at a call site or any other\n"
+            "instruction add --probe, which records the registers and --read\n"
+            "data each time the instruction is reached. A probe has no caller,\n"
+            "no return value and no --read-leave.\n\n"
+            "Either hook is a jump written over the instructions at ADDR: at\n"
+            "least 5 bytes, more in a 64-bit process when no memory near ADDR\n"
+            "is free. ADDR is refused when a return or a jump ends the code\n"
+            "before 5 bytes, when a branch further on jumps back into the\n"
+            "bytes replaced, and when a probe is asked for on a jump (Frida\n"
+            "would hook where it leads). A branch into those bytes from code\n"
+            "before ADDR is not detected and lands inside the jump: check the\n"
+            "disassembly, and where a jump does not fit use bp add, which\n"
+            "changes one byte. The output says how many bytes the hook\n"
+            "replaced.\n\n"
             "Read spec format (semicolon-separated):\n"
             "  register:       ecx, eax, ebp, ...\n"
             "  memory:         [reg+OFFSET]:SIZE:TYPE\n"
@@ -787,20 +838,28 @@ def build_parser() -> argparse.ArgumentParser:
             "  Types: hex, float32, float64, uint32, int32, uint16, int16,\n"
             "         uint8, int8, ascii, utf16, ptr\n\n"
             "Filter format:\n"
-            "  [esp+8]==0x2  |  eax!=0  |  [ecx+0x54]:4:float32>0.5\n\n"
+            "  [esp+8]:4:uint32==0x2  |  eax!=0  |  [ecx+0x54]:4:float32>0.5\n\n"
             "Examples:\n"
             "  python -m livetools trace 0x401000 --count 10 "
             '--read "ecx; [esp+4]:12:float32"\n'
             "  python -m livetools trace 0x402000 --count 5 "
-            '--filter "[esp+8]==0x2" --read "[esp+c]:64:float32"\n'
+            '--filter "[esp+8]:4:uint32==0x2" --read "[esp+0xc]:64:float32"\n'
             "  python -m livetools trace 0x403000 --count 20 "
-            '--read "ecx; [esp+4]:12:float32" --read-leave "eax"\n\n'
+            '--read "ecx; [esp+4]:12:float32" --read-leave "eax"\n'
+            "  python -m livetools trace 0x4012AB --probe --count 20 "
+            '--read "[esp]:4:uint32; [esp+4]:4:uint32"\n\n'
             "NOTE: Some games only execute rendering/logic when their window\n"
             "is focused. If trace times out with 0 samples, alt-tab to the\n"
             "game before running."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    sp.add_argument("addr", help="Function address to hook (hex)")
+    sp.add_argument("addr",
+        help="Function entry to hook, or with --probe an instruction with room "
+             "for a 5-byte jump (hex)")
+    sp.add_argument("--probe", action="store_true",
+        help="Record each time ADDR is reached instead of hooking a function, "
+             "so ADDR need not be a function entry (e.g. a call site). The jump "
+             "it writes replaces at least 5 bytes: see above for where it fits")
     sp.add_argument("--count", type=int, default=10,
         help="Number of calls to capture (default: 10)")
     sp.add_argument("--read", default=None,
@@ -808,7 +867,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--read-leave", default=None,
         help='Read spec for function exit (e.g. "eax; st0")')
     sp.add_argument("--filter", default=None,
-        help='Filter expression (e.g. "[esp+8]==0x2")')
+        help='Filter expression (e.g. "[esp+8]:4:uint32==0x2")')
     sp.add_argument("--timeout", type=int, default=30,
         help="Max seconds to wait for all samples (default: 30)")
     sp.add_argument("--output", default=None,
@@ -837,7 +896,7 @@ def build_parser() -> argparse.ArgumentParser:
             "to the game before running."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    sp.add_argument("addr", help="Function address to trace (hex)")
+    sp.add_argument("addr", help="Function entry to trace (hex)")
     sp.add_argument("--max-insn", type=int, default=1000,
         help="Max instructions to record before stopping (default: 1000)")
     sp.add_argument("--call-depth", type=int, default=0,
@@ -856,11 +915,16 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Collect data from one or more functions over a duration.\n"
             "Optionally partition records into intervals via fence hooks.\n\n"
+            "The addresses must be function entries, as for trace. With --probe\n"
+            "every address is hooked as an instruction probe instead (see\n"
+            "trace --help) and need not be a function entry, e.g. a call site.\n"
+            "trace --help says where the jump of a hook fits.\n\n"
             "The fence concept:\n"
-            "  --fence ADDR   Hook a boundary function (e.g. DX Present) that\n"
-            "                 increments an interval counter. Every trace record\n"
-            "                 includes the current interval ID, enabling per-frame\n"
-            "                 or per-N-calls analysis.\n\n"
+            "  --fence ADDR   Count an interval each time ADDR is reached, e.g.\n"
+            "                 the game's call to DX Present. ADDR is hooked as\n"
+            "                 a probe. Every trace record includes the\n"
+            "                 current interval ID, enabling per-frame or\n"
+            "                 per-N-calls analysis.\n\n"
             "Output: JSONL file in patches/<exe>/traces/ by default.\n\n"
             "Examples:\n"
             "  python -m livetools collect 0x401000 0x402000 "
@@ -871,8 +935,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m livetools collect 0x401000 "
             "--duration 20 --fence-every 100 --output output.jsonl\n\n"
             "  python -m livetools collect 0x401000 0x402000 "
-            '--read@0x401000="ecx; [esp+4]:12:float32" '
-            '--read@0x402000="ecx; [esp+4]:28:hex" '
+            '--read@ 0x401000="ecx; [esp+4]:12:float32" '
+            '--read@ 0x402000="ecx; [esp+4]:28:hex" '
             "--duration 15 --output multi.jsonl\n\n"
             "NOTE: Some games only execute rendering/logic when their window\n"
             "is focused. If collect finishes with 0 records, alt-tab to the\n"
@@ -880,7 +944,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sp.add_argument("addrs", nargs="+",
-        help="One or more function addresses to hook (hex)")
+        help="One or more function entries to hook, or with --probe instructions "
+             "with room for a 5-byte jump (hex)")
+    sp.add_argument("--probe", action="store_true",
+        help="Hook every address as an instruction probe instead of a function "
+             "(see trace --help)")
     sp.add_argument("--duration", type=int, default=10,
         help="Collection duration in seconds (default: 10)")
     sp.add_argument("--max-records", type=int, default=0,
@@ -892,7 +960,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--read@", dest="read_at", action="append", default=None,
         help='Per-address read spec: ADDR=SPEC (e.g. 0x401000="ecx; [esp+4]:12:float32")')
     sp.add_argument("--fence", default=None,
-        help="Address of fence function for interval marking (e.g. DX Present)")
+        help="Address that marks an interval each time it is reached; hooked "
+             "as a probe (e.g. the call to DX Present)")
     sp.add_argument("--fence-every", type=int, default=0,
         help="Mark interval every N calls to first traced addr")
     sp.add_argument("--label", action="append", default=None,
@@ -959,11 +1028,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- memwatch --
     sp = sub.add_parser("memwatch",
-        help="Hardware memory write watchpoint (catch who writes to an address)",
+        help="Report the first access (read or write) to the memory pages holding an address range",
         description=(
-            "Set a memory write watchpoint on a specific address range.\n"
-            "Uses Frida's MemoryAccessMonitor to detect writes, capturing\n"
-            "the instruction pointer and backtrace for each hit.\n\n"
+            "Watch the memory pages that contain an address range.\n"
+            "Uses Frida's MemoryAccessMonitor, which reports only the first\n"
+            "access to each page, of any kind (read, write or execute), and\n"
+            "for any address on the page. It is not a write watchpoint.\n\n"
             "Examples:\n"
             "  python -m livetools memwatch start 0x7A0000 --size 48\n"
             "  python -m livetools memwatch read\n"
@@ -971,13 +1041,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     mw_sub = sp.add_subparsers(dest="action")
-    mw_start = mw_sub.add_parser("start", help="Start watching an address for writes")
+    mw_start = mw_sub.add_parser("start", help="Start watching the pages holding an address range")
     mw_start.add_argument("addr", help="Address to watch (hex, e.g. 0x7A0000)")
     mw_start.add_argument("--size", type=int, default=4,
         help="Number of bytes to watch (default: 4)")
     mw_start.add_argument("--max-hits", type=int, default=20,
         help="Auto-stop after N hits (default: 20)")
-    mw_sub.add_parser("stop", help="Stop the active watchpoint")
+    mw_sub.add_parser("stop", help="Stop the active watch")
     mw_sub.add_parser("read", help="Read captured hits")
 
     # -- analyze --
@@ -1035,10 +1105,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- gamectl --
     sp = sub.add_parser("gamectl",
-        help="Send keystrokes/mouse clicks directly to a game window (no Frida, no focus needed)",
+        help="Bring a game window to the foreground and send it keystrokes/mouse clicks (no Frida)",
         description=(
-            "Posts WM_KEYDOWN/WM_KEYUP directly to the target window handle.\n"
-            "No focus stealing — works even when the game is in the background.\n\n"
+            "Brings the target window to the foreground, then injects real\n"
+            "keyboard and mouse input with SendInput (click also moves the cursor).\n"
+            "If the window cannot be focused the input is still sent and goes to\n"
+            "whichever window is in front; check focused= in the output.\n\n"
             "Window lookup (pick one):\n"
             "  --exe game.exe      find window by process exe name (recommended)\n"
             "  --window <hint>     find window by title substring\n\n"

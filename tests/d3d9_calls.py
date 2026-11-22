@@ -1,0 +1,159 @@
+"""Hand-assembled 32-bit D3D9 device calls with known arguments.
+
+The DX scanner scripts read call arguments out of machine code. These helpers
+build that code byte by byte, so a test states the arguments a call was given
+and checks that a scanner reports exactly those. ``write_pe32`` wraps the code
+in the smallest PE32 file the scripts will load.
+"""
+
+import struct
+from pathlib import Path
+
+IMAGE_BASE = 0x400000
+TEXT_RVA = 0x1000
+TEXT_VA = IMAGE_BASE + TEXT_RVA
+
+_FILE_ALIGNMENT = 0x200
+_PADDING = bytes([0xCC]) * 16
+
+PUSH_EAX = bytes([0x50])
+PUSH_ECX = bytes([0x51])
+PUSH_ESI = bytes([0x56])
+
+
+def push(value: int) -> bytes:
+    """``push imm8`` when the value fits a signed byte, else ``push imm32``."""
+    if 0 <= value <= 0x7F:
+        return bytes([0x6A, value])
+    return bytes([0x68]) + struct.pack("<I", value)
+
+
+def push32(value: int) -> bytes:
+    """``push imm32`` whatever the value."""
+    return bytes([0x68]) + struct.pack("<I", value)
+
+
+DEVICE_GLOBAL = 0x9D915C
+
+
+def load_device(global_va: int = DEVICE_GLOBAL) -> bytes:
+    """``mov ecx, [global_va]`` / ``mov edx, [ecx]``: the object held in a global and its vtable.
+
+    Followed by ``push ecx`` and ``call_method``, that is a COM call on the object.
+    """
+    return bytes([0x8B, 0x0D]) + struct.pack("<I", global_va) + bytes([0x8B, 0x11])
+
+
+def call_method(vtable_offset: int, short: bool = False) -> bytes:
+    """``call [edx + vtable_offset]``, in the disp8 form when *short*."""
+    if short:
+        return bytes([0xFF, 0x52, vtable_offset])
+    return bytes([0xFF, 0x92]) + struct.pack("<I", vtable_offset)
+
+
+def function(*chunks: bytes) -> bytes:
+    """A framed function holding *chunks*, followed by int3 padding."""
+    return bytes([0x55, 0x8B, 0xEC]) + b"".join(chunks) + bytes([0x5D, 0xC3]) + _PADDING
+
+
+class Code:
+    """Functions laid out one after another, with the address of each call in them.
+
+    Attributes:
+        data: The bytes of the code section.
+        calls: Label -> virtual address of the last instruction of the function
+            added under that label, which is the method call when the function
+            ends with one.
+    """
+
+    def __init__(self):
+        self.data = _PADDING
+        self.calls: dict[str, int] = {}
+
+    def add(self, label: str, *chunks: bytes) -> "Code":
+        """Append a function made of *chunks*; record where its last chunk starts."""
+        body_start = len(self.data) + 3
+        self.calls[label] = TEXT_VA + body_start + sum(len(c) for c in chunks[:-1])
+        self.data += function(*chunks)
+        return self
+
+    def add_com_calls(self, object_and_vtable: bytes, param_counts: dict[int, int]) -> "Code":
+        """Add one COM call per vtable offset of *param_counts* on the object *object_and_vtable* loads.
+
+        Each pushes as many zeros as its parameter count, then the object, and
+        is labelled with its offset in hex ("0xE4").
+        """
+        for offset, count in param_counts.items():
+            self.add(f"0x{offset:X}", object_and_vtable, *[push(0)] * count, PUSH_ECX, call_method(offset))
+        return self
+
+    def add_data(self, label: str, blob: bytes) -> int:
+        """Append *blob* as data and return its virtual address."""
+        va = TEXT_VA + len(self.data)
+        self.calls[label] = va
+        self.data += blob + _PADDING
+        return va
+
+
+_DATA_DIRECTORIES = 96             # offset of the data directories in a PE32 optional header
+_LOAD_CONFIG_DIRECTORY = 10
+LOAD_CONFIG_SIZE = 0xC4             # IMAGE_LOAD_CONFIG_DIRECTORY32 as a linker with Control Flow Guard writes it
+_GUARD_CF_CHECK_FUNCTION_POINTER = 72
+
+
+def load_config(guard_check_pointer: int, size: int = LOAD_CONFIG_SIZE) -> bytes:
+    """An IMAGE_LOAD_CONFIG_DIRECTORY32 of *size* bytes that names *guard_check_pointer*, when it reaches that far."""
+    config = bytearray(max(size, 4))
+    struct.pack_into("<I", config, 0, size)
+    if size >= _GUARD_CF_CHECK_FUNCTION_POINTER + 4:
+        struct.pack_into("<I", config, _GUARD_CF_CHECK_FUNCTION_POINTER, guard_check_pointer)
+    return bytes(config)
+
+
+def _pe_headers(optional_magic: int, optional_size: int, machine: int, code_size: int,
+                load_config_rva: int = 0, directory_count: int = 16, section_name: bytes = b".text") -> bytes:
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x40)
+    coff = struct.pack("<4sHHIIIHH", b"PE\0\0", machine, 1, 0, 0, 0, optional_size, 0x0102)
+    optional = bytearray(optional_size)
+    struct.pack_into("<H", optional, 0, optional_magic)
+    if optional_magic == 0x10B:
+        struct.pack_into("<I", optional, 28, IMAGE_BASE)
+        struct.pack_into("<I", optional, _DATA_DIRECTORIES - 4, directory_count)
+        if optional_size >= _DATA_DIRECTORIES + 8 * (_LOAD_CONFIG_DIRECTORY + 1):
+            struct.pack_into("<II", optional, _DATA_DIRECTORIES + 8 * _LOAD_CONFIG_DIRECTORY,
+                             load_config_rva, 0x40 if load_config_rva else 0)
+    else:
+        struct.pack_into("<Q", optional, 24, IMAGE_BASE)
+    section = struct.pack("<8sIIIIIIHHI", section_name, code_size, TEXT_RVA, code_size,
+                          _FILE_ALIGNMENT, 0, 0, 0, 0, 0x60000020)
+    headers = bytes(dos) + coff + bytes(optional) + section
+    return headers.ljust(_FILE_ALIGNMENT, b"\0")
+
+
+def write_pe32(path: Path, code: bytes, config: bytes = b"", *, load_config_rva: int | None = None,
+               directory_count: int = 16, optional_size: int = 0xE0, section_name: bytes = b".text") -> Path:
+    """Write a PE32 file whose one executable section holds *code* at TEXT_VA.
+
+    Args:
+        config: A load configuration directory (see load_config), put in the
+            section after the code. None is named when empty.
+        load_config_rva: Where the headers say the load configuration is,
+            when that is not where *config* was put.
+        directory_count: How many data directories the headers say they hold.
+        optional_size: Size of the optional header, which the section table follows.
+        section_name: The eight bytes the section table starts with.
+    """
+    if load_config_rva is None:
+        load_config_rva = TEXT_RVA + len(code) if config else 0
+    headers = _pe_headers(0x10B, optional_size, 0x14C, len(code) + len(config), load_config_rva, directory_count,
+                          section_name)
+    path.write_bytes(headers + code + config)
+    return path
+
+
+def write_pe32_plus(path: Path, code: bytes) -> Path:
+    """Write a 64-bit PE32+ file with the same layout."""
+    path.write_bytes(_pe_headers(0x20B, 0xF0, 0x8664, len(code)) + code)
+    return path

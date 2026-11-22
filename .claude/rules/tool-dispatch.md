@@ -15,9 +15,9 @@ Run all tools from repo root via `python -m <module>`. **ALWAYS pass `--types pa
 - `python -m retools.context assemble $B $VA --project $P` — full analysis context
 - pipe through `python -m retools.context postprocess` — rename/annotate decompiler output
 - `python -m retools.readmem $B $VA $TYPE` — read typed PE data
-- `python -m retools.dataflow $B $VA --constants` — forward constant propagation
-- `python -m retools.dataflow $B $VA --slice TARGET_VA:REG` — backward register slice
-- `python -m retools.asi_patcher build spec.json` — build ASI patch DLL
+- `python -m retools.dataflow $B $VA --constants` — forward constant propagation (x86 binaries only)
+- `python -m retools.dataflow $B $VA --slice TARGET_VA:REG` — backward register slice (x86 binaries only)
+- `python -m retools.asi_patcher build spec.json --vcvarsall <path to vcvarsall.bat>` — build ASI patch DLL
 - `python retools/pyghidra_backend.py status $B --project $P` — Ghidra project existence check
 - `python -m retools.index status <Game> [--db PATH]` — per-table row counts + schema_version for the game's index.db
 - `python -m retools.query <Game> "SQL" [--db PATH] [--json] [--list-tables] [--schema TABLE]` — read-only SQL over index.db (`callers`/`callees`/`grep` views); prefer this over a fresh xrefs/datarefs/search scan whenever index.db already has the data
@@ -40,11 +40,11 @@ Full syntax and recipes: the `/dynamic-analysis` skill (canonical livetools refe
 - `livetools attach <name_or_pid>` — attach to running process
 - `livetools attach <path> --spawn` — launch exe suspended, instrument, resume (catches init code)
 - `livetools trace` / `steptrace` / `collect` — hit logging, register reads, instruction traces
-- `livetools bp` / `watch` / `regs` / `stack` / `bt` — breakpoints + inspection
+- `livetools bp` / `watch` / `step` / `resume` / `regs` / `stack` / `bt` — breakpoints, single-stepping, inspection
 - `livetools mem read/write/alloc` / `scan` — memory ops
-- `livetools dipcnt` / `memwatch` — D3D9 draw counters, write watchpoints
+- `livetools dipcnt` / `memwatch` — D3D9 draw counters, first-access watch on a memory page (read or write)
 - `livetools vishook` — selective visibility override via code cave
-- `livetools gamectl` — send keys/clicks to game window (no focus steal)
+- `livetools gamectl` — send keys/clicks to the game window (brings it to the foreground and injects real input)
 - `livetools modules` — loaded module list
 - `livetools analyze <jsonl>` — offline trace aggregation
 

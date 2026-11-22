@@ -16,6 +16,7 @@ constexpr auto COMP_MOD_VERSION_PATCH = 1;
 #include <shellapi.h>
 #include <chrono>
 #include <mutex>
+#include <atomic>
 #include <filesystem>
 #include <cassert>
 #include <map>
@@ -32,10 +33,8 @@ constexpr auto COMP_MOD_VERSION_PATCH = 1;
 #pragma warning(push)
 #pragma warning(disable: 26495)
 #include <d3d9.h>
-#include <d3dx9.h>
 #pragma warning(pop)
-
-#pragma comment(lib, "d3dx9.lib")
+#include <DirectXMath.h>
 
 #define STATIC_ASSERT_SIZE(struct, size)				static_assert(sizeof(struct) == size, "Size check")
 #define STATIC_ASSERT_OFFSET(struct, member, offset)	static_assert(offsetof(struct, member) == offset, "Offset check")

@@ -9,12 +9,15 @@ Sub-commands:
 MSVC RTTI structure layout (all fields are DWORDs unless noted):
 ────────────────────────────────────────────────────────────────
 
-  Vtable memory layout (both 32-bit and 64-bit):
+  Vtable memory layout (P = 4 on x86, 8 on x64):
 
-    vtable - 4:   [COL ref]    32-bit value: VA (x86) or RVA (x64)
+    vtable - P:   [COL ref]    pointer-sized: the COL's VA
     vtable + 0:   [vfunc 0]    pointer-sized
-    vtable + P:   [vfunc 1]    pointer-sized  (P = 4 or 8)
+    vtable + P:   [vfunc 1]    pointer-sized
     ...
+
+  The references inside the structures below are 4 bytes on both:
+  VAs on x86, RVAs on x64.
 
   RTTICompleteObjectLocator (COL):
     +0x00  signature       0 = 32-bit, 1 = 64-bit
@@ -96,6 +99,15 @@ def _to_rva(pe: pefile.PE, val: int, is_64: bool) -> int:
     return val - pe.OPTIONAL_HEADER.ImageBase
 
 
+def _locator_rva(pe: pefile.PE, vtable_rva: int, is_64: bool) -> int | None:
+    """RVA of the complete object locator named by the slot in front of a vtable."""
+    pointer_size = 8 if is_64 else 4
+    slot = _safe_read(pe, vtable_rva - pointer_size, pointer_size)
+    if slot is None:
+        return None
+    return int.from_bytes(slot, "little") - pe.OPTIONAL_HEADER.ImageBase
+
+
 def _resolve_td_name(pe: pefile.PE, td_rva: int, is_64: bool) -> str | None:
     """Read the decorated class name from a TypeDescriptor at *td_rva*."""
     name_off = 16 if is_64 else 8
@@ -127,12 +139,8 @@ def resolve_vtable(pe: pefile.PE, vtable_va: int) -> RttiClass | None:
     is_64 = pe.OPTIONAL_HEADER.Magic == 0x20B
     vtable_rva = vtable_va - base
 
-    col_ref = _read_u32(pe, vtable_rva - 4)
-    if col_ref is None:
-        return None
-
-    col_rva = _to_rva(pe, col_ref, is_64)
-    if col_rva <= 0:
+    col_rva = _locator_rva(pe, vtable_rva, is_64)
+    if col_rva is None or col_rva <= 0:
         return None
 
     expected_sig = 1 if is_64 else 0
@@ -188,6 +196,7 @@ def scan_all_rtti(pe: pefile.PE) -> list[RttiClass]:
     base = pe.OPTIONAL_HEADER.ImageBase
     is_64 = pe.OPTIONAL_HEADER.Magic == 0x20B
     expected_sig = 1 if is_64 else 0
+    pointer_size = 8 if is_64 else 4
 
     seen: dict[str, RttiClass] = {}
     for section in pe.sections:
@@ -195,20 +204,18 @@ def scan_all_rtti(pe: pefile.PE) -> list[RttiClass]:
             continue
         sec_rva = section.VirtualAddress
         sec_size = section.SizeOfRawData
-        sec_off = section.PointerToRawData
         data = pe.get_data(sec_rva, min(sec_size, section.Misc_VirtualSize))
 
-        for i in range(0, len(data) - 4, 4):
-            val = struct.unpack_from("<I", data, i)[0]
-            col_rva = _to_rva(pe, val, is_64)
+        for i in range(0, len(data) - pointer_size + 1, pointer_size):
+            col_rva = int.from_bytes(data[i : i + pointer_size], "little") - base
             if col_rva <= 0:
                 continue
             col_sig = _read_u32(pe, col_rva)
             if col_sig != expected_sig:
                 continue
 
-            # The 4-byte COL reference sits at vtable-4, so vtable VA is here + 4
-            vtable_va = base + sec_rva + i + 4
+            # A pointer to a COL is the slot in front of a vtable
+            vtable_va = base + sec_rva + i + pointer_size
             result = resolve_vtable(pe, vtable_va)
             if result is not None and result.name not in seen:
                 seen[result.name] = result
@@ -223,14 +230,13 @@ def cmd_vtable(pe: pefile.PE, args):
         base = pe.OPTIONAL_HEADER.ImageBase
         is_64 = pe.OPTIONAL_HEADER.Magic == 0x20B
         vtable_rva = vtable_va - base
-        col_ref = _read_u32(pe, vtable_rva - 4)
-        if col_ref is None:
-            _fail(f"Cannot read COL reference at vtable-4 "
+        col_rva = _locator_rva(pe, vtable_rva, is_64)
+        if col_rva is None:
+            _fail(f"Cannot read the COL pointer in front of the vtable "
                   f"(vtable RVA 0x{vtable_rva:X}). Is this a valid vtable address?")
-        col_rva = _to_rva(pe, col_ref, is_64)
         if col_rva <= 0:
-            _fail(f"COL reference at vtable-4 is 0x{col_ref:X} which yields "
-                  f"invalid RVA 0x{col_rva:X}. Not a valid RTTI vtable.")
+            _fail(f"The pointer in front of the vtable is 0x{col_rva + base:X}, which is "
+                  f"below the image base. Not a valid RTTI vtable.")
         _fail(f"RTTI resolution failed at vtable 0x{vtable_va:X}. "
               f"Binary may lack RTTI or address is not a vtable.")
     print(f"Class: {result.name}")

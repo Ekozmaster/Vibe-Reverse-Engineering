@@ -83,7 +83,7 @@ Only fall back to `xrefs.py`/`datarefs.py`/`search.py`/`funcinfo.py` for facts `
 
 **Hard pushdown rule**: `decompile` and `export` require a specific function address (or, for `export`, an analyzed program) — never invoke them without one, or you decompile/scan the whole binary instead of the function you actually need. If you don't have an address yet, get one from `query`, `search`, or `xrefs` first.
 
-**Read-First mutation discipline**: `kb-apply` mutates the Ghidra project. Always decompile or `query` the target function first to confirm the current name/prototype, run `kb-apply`, then **re-decompile the same function** to verify the change landed before reporting it as done. `kb-apply` is idempotent — re-running it should produce stable counts and no errors, so if a second run changes anything, treat that as a bug, not expected behavior.
+**Read-First mutation discipline**: `kb-apply` mutates the Ghidra project. Always decompile or `query` the target function first to confirm the current name/prototype, run `kb-apply`, then **re-decompile the same function** to verify the change landed before reporting it as done. `kb-apply` is idempotent — re-running it should produce stable counts and no errors, so if a second run changes anything, treat that as a bug, not expected behavior. Read its summary line: `skipped=N` counts the kb.h entries Ghidra refused, and each one is printed on stderr as `[kb-apply] skipped <kind> ...` with the reason (usually a type the prototype uses that kb.h does not declare). A skipped prototype still leaves the function renamed.
 
 **Cost guard**: run `export` once per analysis pass (after `kb-apply`, so exported names reflect it), not once per query — repeated `export` calls re-walk the whole program for no benefit once `index.db` is current.
 
@@ -99,7 +99,7 @@ python -m retools.bootstrap binary.exe --project patches/MyGame
 python -m retools.sigdb scan binary.exe --db retools/data/signatures.db
 python -m retools.sigdb identify binary.exe 0x401000 --db retools/data/signatures.db
 python -m retools.sigdb fingerprint binary.exe
-python -m retools.context assemble binary.exe 0x401000 --project MyGame
+python -m retools.context assemble binary.exe 0x401000 --project patches/MyGame
 python retools/pyghidra_backend.py analyze binary.exe --project patches/MyGame
 python retools/pyghidra_backend.py status binary.exe --project patches/MyGame
 python retools/pyghidra_backend.py export binary.exe --project patches/MyGame
@@ -137,7 +137,7 @@ Update KB when you: identify a function's purpose, reconstruct a struct, identif
 ## What NOT to Do
 
 - Do NOT use `livetools` commands — those require a live process and are handled by the main agent
-- Do NOT use `graphics.directx.dx9.tracer` — capture and trigger are handled by the main agent
+- Do NOT run `graphics.directx.dx9.tracer trigger` — capturing is handled by the main agent. Offline `python -m graphics.directx.dx9.tracer analyze <JSONL> ...` is yours when the main agent delegates it
 - Do NOT edit source code files — only update KB files and write analysis notes to `patches/`
 
 ## Output

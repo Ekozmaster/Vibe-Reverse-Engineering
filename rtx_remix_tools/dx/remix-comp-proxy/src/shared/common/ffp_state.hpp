@@ -26,14 +26,17 @@ namespace shared::common
 		void on_set_pixel_shader(IDirect3DPixelShader9* shader);
 
 		void on_set_texture(UINT stage, IDirect3DBaseTexture9* texture);
-		void on_set_stream_source(UINT stream, IDirect3DVertexBuffer9* vb, UINT offset, UINT stride);
 		void on_set_vertex_declaration(IDirect3DVertexDeclaration9* decl);
-		void on_present();
+		void on_set_fvf(DWORD fvf);
+		void on_present(IDirect3DDevice9* dev);
 		void on_begin_scene();
 		void on_reset();
 
 		// --- State consumers (called from renderer draw routing) ---
 
+		// engage clears the shaders of dev. disengage puts the ones the game set last back on dev
+		// if dev is the device engaged, and does nothing otherwise. In between is_ffp_active()
+		// holds, and a shader the game sets is kept for disengage instead of reaching the device.
 		void engage(IDirect3DDevice9* dev);
 		void disengage(IDirect3DDevice9* dev);
 
@@ -43,13 +46,16 @@ namespace shared::common
 		// Restore original texture bindings on all 8 stages. Call after draw.
 		void restore_textures(IDirect3DDevice9* dev);
 
+		// Send the world transform again. Call after a draw that used D3DTS_WORLD for something else.
+		void restore_world(IDirect3DDevice9* dev);
+
 		// --- Read-only accessors for renderer ---
 
 		bool is_enabled() const { return enabled_; }
 		void set_enabled(bool e) { enabled_ = e; }
 
 		bool view_proj_valid() const { return view_proj_valid_; }
-		bool is_ffp_active() const { return ffp_active_; }
+		bool is_ffp_active() const { return ffp_device_ != nullptr; }
 		bool cur_decl_is_skinned() const { return cur_decl_is_skinned_; }
 		bool cur_decl_has_normal() const { return cur_decl_has_normal_; }
 		bool cur_decl_has_pos_t() const { return cur_decl_has_pos_t_; }
@@ -74,21 +80,15 @@ namespace shared::common
 		// Texture tracking (stages 0-7)
 		IDirect3DBaseTexture9* cur_texture(UINT stage) const { return stage < 8 ? cur_texture_[stage] : nullptr; }
 
-		// Stream source tracking
-		IDirect3DVertexBuffer9* stream_vb(UINT stream) const { return stream < 4 ? stream_vb_[stream] : nullptr; }
-		UINT stream_offset(UINT stream) const { return stream < 4 ? stream_offset_[stream] : 0; }
-		UINT stream_stride(UINT stream) const { return stream < 4 ? stream_stride_[stream] : 0; }
-
-		// VS constant register layout (game-specific, edit defaults when porting)
-		int reg_view_start() const { return vs_reg_view_start_; }
-		int reg_view_end() const { return vs_reg_view_end_; }
-		int reg_proj_start() const { return vs_reg_proj_start_; }
-		int reg_proj_end() const { return vs_reg_proj_end_; }
-		int reg_world_start() const { return vs_reg_world_start_; }
-		int reg_world_end() const { return vs_reg_world_end_; }
-		int reg_bone_threshold() const { return vs_reg_bone_threshold_; }
-		int regs_per_bone() const { return vs_regs_per_bone_; }
-		int bone_min_regs() const { return vs_bone_min_regs_; }
+		// VS constant register layout: [FFP.Registers] and [Skinning] in remix-comp-proxy.ini
+		int reg_view_start() const { return config::get().ffp.registers.view_start; }
+		int reg_view_end() const { return config::get().ffp.registers.view_end; }
+		int reg_proj_start() const { return config::get().ffp.registers.proj_start; }
+		int reg_proj_end() const { return config::get().ffp.registers.proj_end; }
+		int reg_world_start() const { return config::get().ffp.registers.world_start; }
+		int reg_world_end() const { return config::get().ffp.registers.world_end; }
+		int reg_bone_threshold() const { return config::get().skinning.bone_threshold; }
+		int regs_per_bone() const { return config::get().skinning.regs_per_bone; }
 
 		// Skinning data (populated by skinning module via on_set_vs_const_f bone detection)
 		int bone_start_reg() const { return bone_start_reg_; }
@@ -101,6 +101,10 @@ namespace shared::common
 		int cur_decl_normal_off() const { return cur_decl_normal_off_; }
 		int cur_decl_normal_type() const { return cur_decl_normal_type_; }
 		int cur_decl_texcoord_off() const { return cur_decl_texcoord_off_; }
+
+		// Bytes of a stream-0 vertex the skinning module reads: the stride has to be at least
+		// this. 0 when the skinning module cannot rebuild this declaration's vertices.
+		UINT cur_decl_skin_vertex_bytes() const { return cur_decl_skin_vertex_bytes_; }
 
 		void increment_draw_count() { draw_call_count_++; }
 
@@ -118,16 +122,23 @@ namespace shared::common
 
 		// Dirty tracking
 		bool world_dirty_ = false;
+		bool world_written_ = false;
 		bool view_proj_dirty_ = false;
 		bool view_proj_valid_ = false;
-		bool ffp_active_ = false;
 		bool ffp_setup_ = false;
+
+		// The device engage cleared the shaders of, until disengage. No reference is held: the
+		// wrapper resets this state before the device goes.
+		IDirect3DDevice9* ffp_device_ = nullptr;
 
 		// Shader tracking
 		IDirect3DVertexShader9* last_vs_ = nullptr;
 		IDirect3DPixelShader9* last_ps_ = nullptr;
 
-		// Vertex declaration tracking
+		// Vertex declaration tracking. last_decl_ is the declaration last set through the wrapper,
+		// nullptr after a SetFVF, and the one the cur_decl_ members describe. A reference is held,
+		// so the pointer names that declaration for as long as it is kept. A state block can give
+		// the device another declaration without the wrapper seeing it.
 		IDirect3DVertexDeclaration9* last_decl_ = nullptr;
 		bool cur_decl_is_skinned_ = false;
 		bool cur_decl_has_texcoord_ = false;
@@ -145,17 +156,7 @@ namespace shared::common
 		int cur_decl_pos_off_ = 0;
 		int cur_decl_normal_off_ = 0;
 		int cur_decl_normal_type_ = -1;
-
-		// VS constant register layout (game-specific defaults — edit when porting)
-		int vs_reg_view_start_ = 0;
-		int vs_reg_view_end_ = 4;
-		int vs_reg_proj_start_ = 4;
-		int vs_reg_proj_end_ = 8;
-		int vs_reg_world_start_ = 16;
-		int vs_reg_world_end_ = 20;
-		int vs_reg_bone_threshold_ = 20;
-		int vs_regs_per_bone_ = 3;
-		int vs_bone_min_regs_ = 3;
+		UINT cur_decl_skin_vertex_bytes_ = 0;
 
 		// Bone detection
 		int bone_start_reg_ = 0;
@@ -163,11 +164,6 @@ namespace shared::common
 
 		// Texture tracking
 		IDirect3DBaseTexture9* cur_texture_[8] = {};
-
-		// Stream source tracking
-		IDirect3DVertexBuffer9* stream_vb_[4] = {};
-		UINT stream_offset_[4] = {};
-		UINT stream_stride_[4] = {};
 
 		// Frame/draw counters
 		UINT frame_count_ = 0;
@@ -178,10 +174,8 @@ namespace shared::common
 		// VS constant write log (for diagnostics: which registers have been written)
 		int vs_const_write_log_[256] = {};
 
-		// Cached config
-		const config::ffp_settings* cfg_ = nullptr;
-
 		// Internal helpers
+		bool matrix_written(int first_reg) const;
 		void apply_transforms(IDirect3DDevice9* dev);
 		void setup_lighting(IDirect3DDevice9* dev);
 		void setup_texture_stages(IDirect3DDevice9* dev);

@@ -4,12 +4,20 @@ kb.h lines take three shapes:
     @ 0xADDR <signature>;      -- function at an address
     $ 0xADDR <type...> <name>  -- global variable at an address
     <C declaration>            -- bare typedef / struct / enum
-Lines that are blank or begin with ``//`` are ignored.
+Blank lines and ``//`` and ``/* */`` comments are ignored; inside a string or
+character literal those markers are text. A declaration that starts with
+``typedef``, ``struct``, ``union``, ``enum`` or ``class`` may span lines: it
+continues while its braces or parentheses are open, its opening brace may stand
+on the line after its name, and the declarators of a ``typedef`` (``Foo, *PFoo;``)
+on the line after its closing brace. A declaration whose brace or parenthesis is
+never closed ends where the next line starts with one of those keywords. Every
+other line, a preprocessor line included, is one entry.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,7 +40,7 @@ class KbGlobal:
 class Kb:
     functions: list[KbFunction] = field(default_factory=list)
     globals: list[KbGlobal] = field(default_factory=list)
-    typedefs: list[str] = field(default_factory=list)
+    typedefs: list[str] = field(default_factory=list)  # one declaration each, on one line
 
 
 def extract_function_name(sig: str) -> str:
@@ -49,6 +57,89 @@ def extract_function_name(sig: str) -> str:
     return pre.rsplit(None, 1)[-1].lstrip("*&")
 
 
+_DECLARATION_KEYWORDS = frozenset(("typedef", "struct", "union", "enum", "class"))
+
+
+# A literal is matched first, so a comment marker inside it never starts a comment.
+# A character literal holds one character or one escape: an apostrophe elsewhere
+# (``Foo::`vftable'``) opens nothing.
+_LITERAL_OR_COMMENT = re.compile(
+    r"""(?P<literal>"(?:\\.|[^"\\\n])*"|'(?:\\.[^'\n]*|[^'\\\n])')"""
+    r"""|[ \t]*(?://[^\n]*|/\*.*?(?:\*/|\Z))[ \t]*""",
+    re.DOTALL,
+)
+_FIRST_WORD = re.compile(r"\w*")
+# What may follow a typedef's closing brace on a line of its own: "Foo;", "Foo, *PFoo;", "Vec[4];"
+_DECLARATORS = re.compile(r"[*&\s]*\w+(?:\s*\[\w*\])*(?:\s*,[*&\s]*\w+(?:\s*\[\w*\])*)*\s*;")
+
+
+def _without_comments(text: str) -> str:
+    """*text* with each comment and the blanks around it replaced by one space, keeping
+    the line breaks a block comment spans. String and character literals stay as written."""
+    def replacement(match: re.Match) -> str:
+        if match.group("literal"):
+            return match.group()
+        return " " + "\n" * match.group().count("\n")
+
+    return _LITERAL_OR_COMMENT.sub(replacement, text)
+
+
+def _first_word(text: str) -> str:
+    return _FIRST_WORD.match(text).group()
+
+
+def _is_open(text: str) -> bool:
+    """Whether *text* has a brace or parenthesis that is not closed, literals aside."""
+    code = text
+    if '"' in text or "'" in text:
+        code = _LITERAL_OR_COMMENT.sub(lambda match: "" if match.group("literal") else match.group(), text)
+    return code.count("{") > code.count("}") or code.count("(") > code.count(")")
+
+
+def _continues(declaration: list[str], line: str) -> bool:
+    """Whether *line* belongs to the declaration read so far.
+
+    "struct Foo" / "{" and "typedef struct { ... }" / "Foo;" each stay one entry,
+    while a declaration missing its ";" does not swallow the line after it.
+    """
+    text = " ".join(declaration)
+    if _first_word(text) not in _DECLARATION_KEYWORDS:
+        return False
+    if _is_open(text):
+        return True
+    if set(text.split()) <= _DECLARATION_KEYWORDS:
+        return True
+    if text.endswith("}") and line == ";":
+        return True
+    if text.endswith(";") or line.startswith("#") or _first_word(line) in _DECLARATION_KEYWORDS:
+        return False
+    if _first_word(text) == "typedef" and text.endswith("}"):
+        return _DECLARATORS.fullmatch(line) is not None
+    return "{" not in text and line.startswith("{")
+
+
+def _declarations(lines: list[str]) -> list[str]:
+    """Group *lines* into declarations, each joined onto one line.
+
+    A member line may start with a keyword (``struct Node *next;``, ``union {``),
+    so only a brace or parenthesis that is still open at the last line shows that
+    a declaration was never closed. Such a declaration ends where the next line
+    starts with a declaration keyword, and grouping resumes from that line.
+    """
+    entries: list[str] = []
+    first = 0
+    while first < len(lines):
+        end = first + 1
+        while end < len(lines) and _continues(lines[first:end], lines[end]):
+            end += 1
+        if _is_open(" ".join(lines[first:end])):
+            end = next((i for i in range(first + 1, end)
+                        if _first_word(lines[i]) in _DECLARATION_KEYWORDS), end)
+        entries.append(" ".join(lines[first:end]))
+        first = end
+    return entries
+
+
 def parse_kb(text_or_path: str | Path) -> Kb:
     """Parse kb.h content or a file.
 
@@ -59,12 +150,21 @@ def parse_kb(text_or_path: str | Path) -> Kb:
     text = (text_or_path.read_text(encoding="utf-8", errors="replace")
             if isinstance(text_or_path, Path) else text_or_path)
     kb = Kb()
-    for raw in text.splitlines():
-        # Inline comments never reach entries: signatures/names/types feed
-        # backend command strings (r2, Ghidra) where stray text is unsafe.
-        line = raw.split("//", 1)[0].strip()
+    declaration_lines: list[str] = []  # the lines since the last function or global
+
+    def end_declarations() -> None:
+        kb.typedefs.extend(_declarations(declaration_lines))
+        declaration_lines.clear()
+
+    # Comments never reach entries: signatures/names/types feed backend command
+    # strings (r2, Ghidra) where stray text is unsafe.
+    for raw in _without_comments(text).splitlines():
+        line = raw.strip()
         if not line:
             continue
+
+        if line.startswith(("@ ", "$ ")):
+            end_declarations()
 
         if line.startswith("@ "):
             parts = line[2:].split(None, 1)
@@ -90,7 +190,8 @@ def parse_kb(text_or_path: str | Path) -> Kb:
             type_ = " ".join(parts[1:-1])
             kb.globals.append(KbGlobal(address=addr, type=type_, name=name))
         else:
-            kb.typedefs.append(line)
+            declaration_lines.append(line)
+    end_declarations()
     return kb
 
 

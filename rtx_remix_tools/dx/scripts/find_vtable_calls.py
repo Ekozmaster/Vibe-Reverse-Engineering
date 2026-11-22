@@ -14,26 +14,24 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "retools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from dx9_pe import load_binary, load_text_section
+from dx9_calls import scan_all_patterns, D3DX_CONSTANT_TABLE, D3DX_CONSTANT_TABLE_METHODS
 
-from dx9_common import load_binary, load_text_section, scan_all_patterns
+_REPORTED_CONSTANT_TABLE_METHODS = {
+    "GetConstantByName",
+    "SetValue", "SetBool", "SetInt", "SetFloat", "SetFloatArray",
+    "SetVector", "SetVectorArray",
+    "SetMatrix", "SetMatrixArray", "SetMatrixPointerArray",
+    "SetMatrixTranspose", "SetMatrixTransposeArray",
+    "SetMatrixTransposePointerArray",
+}
 
 # ID3DXConstantTable vtable (32-bit, offset = slot * 4)
 D3DX_CONST_TABLE = {
-    0x1C: "GetConstantByName",
-    0x28: "SetValue",
-    0x2C: "SetBool",
-    0x34: "SetInt",
-    0x3C: "SetFloat",
-    0x40: "SetFloatArray",
-    0x44: "SetVector",
-    0x48: "SetVectorArray",
-    0x4C: "SetMatrix",
-    0x50: "SetMatrixArray",
-    0x54: "SetMatrixPointerArray",
-    0x58: "SetMatrixTranspose",
-    0x5C: "SetMatrixTransposeArray",
-    0x60: "SetMatrixTransposePointerArray",
+    slot * 4: name
+    for slot, (name, _param_count) in enumerate(D3DX_CONSTANT_TABLE_METHODS)
+    if name in _REPORTED_CONSTANT_TABLE_METHODS
 }
 
 # Key D3D9 device vtable offsets (32-bit)
@@ -64,7 +62,7 @@ def main():
     # --- D3DX Constant Table calls ---
     print("\n=== ID3DXConstantTable vtable calls ===")
     for vtable_off, method_name in sorted(D3DX_CONST_TABLE.items()):
-        results = scan_all_patterns(text_data, text_va, vtable_off)
+        results = scan_all_patterns(text_data, text_va, vtable_off, D3DX_CONSTANT_TABLE)
         if results:
             print(f"\n  {method_name} (vtable+0x{vtable_off:02X}): {len(results)} sites")
             for va, desc in results[:50]:

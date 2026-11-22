@@ -17,11 +17,11 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_common import (
-    load_binary, load_text_section, print_header,
-    scan_vtable_calls, scan_vtable_mov, analyze_pushes,
-    D3DTSS, D3DSAMP, decode_tss_value, decode_samp_value,
+from dx9_pe import load_binary, load_text_section, print_header
+from dx9_calls import (
+    scan_vtable_calls, scan_vtable_mov, method_args, immediates, print_undecoded_calls,
 )
+from dx9_enums import D3DTSS, D3DSAMP, decode_tss_value, decode_samp_value
 
 METHODS = {
     0x104: "SetTexture",
@@ -49,21 +49,18 @@ def main():
     indirect = scan_vtable_mov(text_data, text_va, offset)
     print(f"  Direct: {len(direct)}, Indirect: {len(indirect)}")
 
-    # SetTexture(device, Stage, pTexture) — push pTexture; push Stage; call
     stage_counts = defaultdict(int)
     all_tex = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
+    undecoded = []
     for va, reg in all_tex:
-        pushes = analyze_pushes(data, sections, image_base, va, window=40)
-        if pushes:
-            # Last push before call is the stage index (or close to it)
-            stage = pushes[-1][1] if len(pushes) >= 1 else None
-            # If stage looks like a pointer, try the other push
-            if stage is not None and stage > 16 and len(pushes) >= 2:
-                stage = pushes[-2][1]
-            if stage is not None and stage <= 16:
-                stage_counts[stage] += 1
-                if args.all:
-                    print(f"    0x{va:08X}: stage={stage}")
+        call_args = method_args(text_data, text_va, va, "SetTexture")
+        stage = immediates(call_args)["Stage"]
+        if stage is None:
+            undecoded.append((va, call_args))
+        elif stage <= 16:
+            stage_counts[stage] += 1
+            if args.all:
+                print(f"    0x{va:08X}: stage={stage}")
 
     if stage_counts:
         print(f"\n  Texture stages used:")
@@ -71,6 +68,7 @@ def main():
             print(f"    Stage {stage}: {stage_counts[stage]} call sites")
     else:
         print(f"  (no stage arguments decoded -- likely register-loaded)")
+    print_undecoded_calls("SetTexture", undecoded, args.all)
 
     # -- SetTextureStageState --
     offset = 0x10C
@@ -79,23 +77,18 @@ def main():
     indirect = scan_vtable_mov(text_data, text_va, offset)
     print(f"  Direct: {len(direct)}, Indirect: {len(indirect)}")
 
-    # SetTextureStageState(device, Stage, Type, Value)
-    # Push order: Value, Type, Stage
     tss_data = defaultdict(lambda: defaultdict(list))  # stage -> type -> [values]
     all_tss = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
 
+    undecoded = []
     for va, reg in all_tss:
-        pushes = analyze_pushes(data, sections, image_base, va, window=50)
-        if len(pushes) >= 3:
-            stage = pushes[-3][1]
-            tss_type = pushes[-2][1]
-            value = pushes[-1][1]
-            # Validate: stage 0-7, type in D3DTSS
-            if stage <= 7 and tss_type in D3DTSS:
-                tss_data[stage][tss_type].append(value)
-            elif tss_type <= 7 and stage in D3DTSS:
-                # Arguments might be swapped
-                tss_data[tss_type][stage].append(value)
+        call_args = method_args(text_data, text_va, va, "SetTextureStageState")
+        pushed = immediates(call_args)
+        stage, tss_type, value = pushed["Stage"], pushed["Type"], pushed["Value"]
+        if None in (stage, tss_type, value):
+            undecoded.append((va, call_args))
+        elif stage <= 7 and tss_type in D3DTSS:
+            tss_data[stage][tss_type].append(value)
 
     if tss_data:
         print(f"\n  -- Per-stage texture state summary --")
@@ -114,6 +107,7 @@ def main():
                 print(f"    {type_name:30s} = {', '.join(decoded)}")
     else:
         print(f"  (no TSS arguments decoded -- likely register-loaded or via D3DX)")
+    print_undecoded_calls("SetTextureStageState", undecoded, args.all)
 
     # -- SetSamplerState --
     offset = 0x114
@@ -122,21 +116,18 @@ def main():
     indirect = scan_vtable_mov(text_data, text_va, offset)
     print(f"  Direct: {len(direct)}, Indirect: {len(indirect)}")
 
-    # SetSamplerState(device, Sampler, Type, Value)
-    # Push order: Value, Type, Sampler
     samp_data = defaultdict(lambda: defaultdict(list))  # sampler -> type -> [values]
     all_samp = [(va, r) for va, r in direct] + [(va, 'indirect') for va, _ in indirect]
 
+    undecoded = []
     for va, reg in all_samp:
-        pushes = analyze_pushes(data, sections, image_base, va, window=50)
-        if len(pushes) >= 3:
-            sampler = pushes[-3][1]
-            samp_type = pushes[-2][1]
-            value = pushes[-1][1]
-            if sampler <= 16 and samp_type in D3DSAMP:
-                samp_data[sampler][samp_type].append(value)
-            elif samp_type <= 16 and sampler in D3DSAMP:
-                samp_data[samp_type][sampler].append(value)
+        call_args = method_args(text_data, text_va, va, "SetSamplerState")
+        pushed = immediates(call_args)
+        sampler, samp_type, value = pushed["Sampler"], pushed["Type"], pushed["Value"]
+        if None in (sampler, samp_type, value):
+            undecoded.append((va, call_args))
+        elif sampler <= 16 and samp_type in D3DSAMP:
+            samp_data[sampler][samp_type].append(value)
 
     if samp_data:
         print(f"\n  -- Per-sampler state summary --")
@@ -155,6 +146,7 @@ def main():
                 print(f"    {type_name:20s} = {', '.join(decoded)}")
     else:
         print(f"  (no sampler arguments decoded -- likely register-loaded)")
+    print_undecoded_calls("SetSamplerState", undecoded, args.all)
 
     # -- Overall summary --
     total_sites = sum(

@@ -8,8 +8,23 @@ namespace shared::utils
 	std::string str_to_lower(std::string input);
 	std::string convert_wstring(const std::wstring& wstr);
 
-	void transpose_float3x4_to_d3dxmatrix(const float3x4& src, D3DXMATRIX& dest);
-	void transpose_d3dxmatrix(const D3DXMATRIX* input, D3DXMATRIX* output, std::uint32_t count);
+	void transpose_float3x4_to_d3dmatrix(const float3x4& src, D3DMATRIX& dest);
+	void transpose_d3dmatrix(const D3DMATRIX* input, D3DMATRIX* output, std::uint32_t count);
+
+	/// A DirectXMath matrix in the layout SetTransform takes.
+	inline D3DMATRIX XM_CALLCONV to_d3dmatrix(DirectX::FXMMATRIX matrix)
+	{
+		static_assert(sizeof(D3DMATRIX) == sizeof(DirectX::XMFLOAT4X4));
+		DirectX::XMFLOAT4X4 stored;
+		DirectX::XMStoreFloat4x4(&stored, matrix);
+		D3DMATRIX out;
+		std::memcpy(&out, &stored, sizeof(out));
+		return out;
+	}
+
+	/// Decodes an image file (PNG, JPEG, BMP, ...) into a new A8R8G8B8 texture with one mip level.
+	/// @param texture	receives the texture; the caller releases it
+	HRESULT create_texture_from_file(IDirect3DDevice9* device, const char* path, IDirect3DTexture9** texture);
 	void transpose_float4x4(const float* row_major, float* column_major);
 	bool float_equal(float a, float b, float eps = 1.e-6f);
 	

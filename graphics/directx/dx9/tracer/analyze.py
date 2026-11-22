@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import subprocess
@@ -36,7 +37,13 @@ from .d3d9_methods import (
 # ── Data loading ────────────────────────────────────────────────────────────
 
 def load_records(path: str, filt: str | None = None) -> list[dict]:
+    """The records of a capture file that match *filt*; every record without one.
+
+    A line that is not JSON is left out, and their number is reported on
+    stderr: a tracer that keeps the file open leaves its last line half written.
+    """
     records = []
+    unreadable_lines = 0
     field, op, val = (None, None, None)
     if filt:
         field, op, val = _parse_filter(filt)
@@ -49,10 +56,13 @@ def load_records(path: str, filt: str | None = None) -> list[dict]:
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
+                unreadable_lines += 1
                 continue
             if field and not _match_filter(rec, field, op, val):
                 continue
             records.append(rec)
+    if unreadable_lines:
+        print(f"[warning] {path}: lines skipped because they are not JSON: {unreadable_lines}", file=sys.stderr)
     return records
 
 
@@ -809,6 +819,15 @@ def do_rt_graph(records: list[dict]) -> None:
         print(f"  ```")
 
 
+def _shader_key(bytecode_hex: str) -> str:
+    """Identity of a shader: a digest of its whole bytecode.
+
+    Shaders of one model with the same constant-table size share their first
+    DWORDs, so a bytecode prefix does not tell them apart.
+    """
+    return hashlib.sha1(bytecode_hex.encode("ascii")).hexdigest()[:16]
+
+
 def do_shader_map(records: list[dict], fxc_path: str | None) -> None:
     shaders: dict[str, dict] = {}
     handle_to_bc: dict[str, str] = {}
@@ -822,13 +841,14 @@ def do_shader_map(records: list[dict], fxc_path: str | None) -> None:
             handle = r.get("created_handle")
             if bytecode:
                 kind = "VS" if r["slot"] == SLOT["CreateVertexShader"] else "PS"
-                shaders[bytecode[:32]] = {
+                key = _shader_key(bytecode)
+                shaders[key] = {
                     "kind": kind, "bytecode": bytecode,
                     "handle": handle, "slot": r["slot"],
                     "disasm": disasm,
                 }
                 if handle:
-                    handle_to_bc[handle] = bytecode[:32]
+                    handle_to_bc[handle] = key
         elif r["slot"] in (SLOT["SetVertexShader"], SLOT["SetPixelShader"]):
             ptr = r.get("args", {}).get("pShader", "NULL")
             kind = "VS" if r["slot"] == SLOT["SetVertexShader"] else "PS"
@@ -848,7 +868,7 @@ def do_shader_map(records: list[dict], fxc_path: str | None) -> None:
 
     for key, info in shaders.items():
         handle_str = f" handle={info['handle']}" if info.get("handle") else ""
-        print(f"\n  {info['kind']}{handle_str} (hash: {key}...)")
+        print(f"\n  {info['kind']}{handle_str} (hash: {key})")
         bc = info["bytecode"]
         print(f"    Bytecode length: {len(bc) // 8} DWORDs")
 
@@ -1001,7 +1021,7 @@ def do_const_provenance(records: list[dict], draw_index: int | None) -> None:
             disasm = data.get("disasm", "")
             handle = r.get("created_handle")
             if bc and handle:
-                key = bc[:32]
+                key = _shader_key(bc)
                 if disasm:
                     shader_disasm[key] = disasm
                 handle_to_hash[handle] = key
@@ -1535,7 +1555,7 @@ def do_state_snapshot(records: list[dict], draw_index: int) -> None:
             disasm = data.get("disasm", "")
             handle = r.get("created_handle")
             if bc and handle:
-                key = bc[:32]
+                key = _shader_key(bc)
                 if disasm:
                     shader_disasm[key] = disasm
                 handle_to_hash[handle] = key
@@ -1569,7 +1589,7 @@ def do_state_snapshot(records: list[dict], draw_index: int) -> None:
 
     args = draw_rec.get("args", {})
     prim_type = _int(args.get("PrimitiveType", 0))
-    bt = draw_rec.get("bt", [])
+    bt = draw_rec.get("backtrace", [])
 
     print(f"\n=== State Snapshot: Draw #{draw_index} ===")
     print(f"  seq={draw_rec['seq']}  frame={draw_rec.get('frame','?')}  "
@@ -1708,7 +1728,7 @@ def do_transform_calls(records: list[dict]) -> None:
                 "seq": r["seq"], "frame": r.get("frame", "?"),
                 "state": state, "matrix": matrix,
                 "draws_before": draw_count, "svcfs_before": svcf_count,
-                "bt": r.get("bt", [])[:5],
+                "bt": r.get("backtrace", [])[:5],
             })
         elif slot == SLOT["SetViewport"]:
             args = r.get("args", {})
