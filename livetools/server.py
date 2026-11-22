@@ -43,6 +43,46 @@ _PROBE_SEES_NO_RETURN = (
     "and never sees a return."
 )
 
+
+class _RecordFile:
+    """The JSON-lines file a trace or a collect writes its records to.
+
+    Opening it proves the path can be written, before anything is hooked, and
+    changes nothing a refused command would have to undo: what the file held
+    is replaced only by ``start()``, which is called once a hook is in, and a
+    file this created is deleted again if ``start()`` never was.
+
+    Attributes:
+        started: Whether the file now holds this command's records.
+    """
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._created = not path.exists()
+        self._file = open(path, "a", encoding="utf-8")
+        self.started = False
+
+    def __enter__(self) -> "_RecordFile":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self._file.close()
+        if self._created and not self.started:
+            self._path.unlink()
+
+    def start(self) -> None:
+        """Empty the file for this command's records, the first time it is called."""
+        if not self.started:
+            self._file.truncate(0)
+            self.started = True
+
+    def write(self, records: list) -> None:
+        """Append *records*, one JSON line each, where a reader of the file sees them at once."""
+        for record in records:
+            self._file.write(json.dumps(record) + "\n")
+        self._file.flush()
+
+
 _STEP_MODES = ("into", "over", "out")
 _STEP_GIVEN_UP = (
     "step did not end within {timeout} s and was given up: the call being stepped over, "
@@ -442,17 +482,47 @@ class Daemon:
             "label": cmd.get("label", ""),
             "probe": bool(cmd.get("probe")),
         }
-        result = self._install_trace(addr, config)
+        timeout = cmd.get("timeout", 30)
+        output = cmd.get("output")
+        if not output:
+            return self._trace(addr, config, timeout)
+        path = Path(output) if os.path.isabs(output) else self._resolve_output_path(output)
+        with _RecordFile(path) as records:
+            reply = self._trace(addr, config, timeout)
+            if reply["ok"]:
+                records.start()
+                records.write(reply["samples"])
+                reply["output"] = str(output)
+        return reply
+
+    def _trace(self, addr: str, config: dict, timeout: float) -> dict:
+        """Hook *addr*, wait for the trace to fill up or *timeout* to pass, and unhook.
+
+        The hook comes out however the wait ends. Its removal reports how many
+        bytes its jump replaced, or None where that could not be read.
+        """
+        result = self.api.install_trace(addr, config)
         if not result.get("ok"):
             return {**self._base_resp(), "ok": False,
                     "error": result.get("error", "install_trace failed")}
 
         trace_id = result["traceId"]
-        timeout = cmd.get("timeout", 30)
-        count = config["count"]
+        arrived = self._expect_trace(trace_id)
+        try:
+            try:
+                self._await_trace(trace_id, arrived, timeout)
+            finally:
+                removed = self.api.remove_trace(trace_id)
+        finally:
+            samples = self._take_trace_records([trace_id])
 
-        ev = self._expect_trace(trace_id)
+        hook_diag = {"addr": addr, "bytesTaken": removed.get("bytesTaken"),
+                     "followedTo": result.get("followedTo"), "prologue": result.get("prologue")}
+        return {**self._base_resp(), "ok": True, "samples": samples,
+                "count": len(samples), "output": None, "hookDiag": hook_diag}
 
+    def _await_trace(self, trace_id: int, ev: threading.Event, timeout: float) -> None:
+        """Wait until trace *trace_id* has all the records it was to take, or *timeout* has passed."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             ev.wait(timeout=min(0.5, max(0.1, deadline - time.time())))
@@ -463,26 +533,6 @@ class Daemon:
             status = self.api.flush_traces(trace_id)
             if status.get("done"):
                 break
-
-        self.api.remove_trace(trace_id)
-
-        with self._lock:
-            samples = self._trace_batches.pop(trace_id, [])
-            self._trace_done.pop(trace_id, None)
-            self._trace_events.pop(trace_id, None)
-
-        output = cmd.get("output")
-        if output:
-            p = Path(output) if os.path.isabs(output) else self._resolve_output_path(output)
-            with open(p, "w", encoding="utf-8") as f:
-                for s in samples:
-                    f.write(json.dumps(s) + "\n")
-
-        hook_diag = {"addr": addr, "bytesTaken": result.get("bytesTaken"),
-                     "followedTo": result.get("followedTo"), "prologue": result.get("prologue")}
-        return {**self._base_resp(), "ok": True, "samples": samples,
-                "count": len(samples), "output": str(output) if output else None,
-                "hookDiag": hook_diag}
 
     # ── collect ────────────────────────────────────────────────────────────
 
@@ -504,40 +554,38 @@ class Daemon:
         removals: list[Callable[[], object]] = []
         total_collected = 0
         failure: Exception | None = None
-        # The file is opened before anything is hooked: a path that cannot be
-        # written leaves the target as it was. Every hook is removed on the way
-        # out, whether or not the hooks after it went in or another came out.
-        try:
-            with open(out_path, "w", encoding="utf-8") as f:
+        # Every hook is removed on the way out, whether or not the hooks after
+        # it went in or another came out.
+        with _RecordFile(out_path) as records:
+            try:
                 total_collected = self._collect_into(
-                    f, cmd, addrs, trace_ids, hook_diags, removals)
-        except Exception as exc:
-            failure = exc
-        unremoved = self._remove_hooks(removals)
-        remaining = self._take_trace_records(trace_ids)
-        if failure is not None:
-            also = f" Removing the hooks failed as well: {'; '.join(unremoved)}" if unremoved else ""
-            raise RuntimeError(f"{failure}{also}") from failure
-        if unremoved:
-            raise RuntimeError("; ".join(unremoved))
-        if remaining:
-            with open(out_path, "a", encoding="utf-8") as f:
-                for s in remaining:
-                    f.write(json.dumps(s) + "\n")
+                    records, cmd, addrs, trace_ids, hook_diags, removals)
+            except Exception as exc:
+                failure = exc
+            unremoved = self._remove_hooks(removals)
+            remaining = self._take_trace_records(trace_ids)
+            if failure is not None:
+                also = f" Removing the hooks failed as well: {'; '.join(unremoved)}" if unremoved else ""
+                raise RuntimeError(f"{failure}{also}") from failure
+            if unremoved:
+                raise RuntimeError("; ".join(unremoved))
+            records.write(remaining)
             total_collected += len(remaining)
 
-        return {**self._base_resp(), "ok": True, "output": str(out_path),
+        return {**self._base_resp(), "ok": True,
+                "output": str(out_path) if records.started else None,
                 "totalRecords": total_collected,
                 "fenceCount": self.api.get_fence_counter(),
                 "hookDiags": hook_diags}
 
-    def _collect_into(self, f, cmd: dict, addrs: list[str], trace_ids: list[int],
+    def _collect_into(self, records: _RecordFile, cmd: dict, addrs: list[str], trace_ids: list[int],
                       hook_diags: list[dict], removals: list[Callable[[], object]]) -> int:
-        """Hook *addrs* and write their records to *f* until the collect is over.
+        """Hook *addrs* and write what they record to *records* until the collect is over.
 
         Each hook's removal is appended to *removals* as soon as the hook is
         in, its trace id to *trace_ids* and what it reported to *hook_diags*,
-        so the caller has them however this ends.
+        so the caller has them however this ends. *records* is started once
+        the first hook is in.
 
         Returns:
             How many records were written.
@@ -560,12 +608,14 @@ class Daemon:
                 "label": labels.get(addr, ""),
                 "probe": bool(cmd.get("probe")),
             }
-            result = self._install_trace(addr, config)
-            hook_diags.append(self._collect_hook_diag(addr, result))
+            result = self.api.install_trace(addr, config)
+            diag = self._collect_hook_diag(addr, result)
+            hook_diags.append(diag)
             if result.get("ok"):
                 trace_ids.append(result["traceId"])
-                removals.append(functools.partial(self.api.remove_trace, result["traceId"]))
+                removals.append(functools.partial(self._remove_collect_hook, result["traceId"], diag))
                 self._expect_trace(result["traceId"])
+                records.start()
 
         deadline = time.time() + duration
         while time.time() < deadline:
@@ -578,11 +628,9 @@ class Daemon:
                 for tid in trace_ids:
                     batch = self._trace_batches.get(tid, [])
                     if batch:
-                        for s in batch:
-                            f.write(json.dumps(s) + "\n")
-                            total_collected += 1
+                        records.write(batch)
+                        total_collected += len(batch)
                         self._trace_batches[tid] = []
-                        f.flush()
 
             all_done = all(self._trace_done.get(t) for t in trace_ids)
             if all_done:
@@ -590,6 +638,10 @@ class Daemon:
             if max_records > 0 and total_collected >= max_records:
                 break
         return total_collected
+
+    def _remove_collect_hook(self, trace_id: int, diag: dict) -> None:
+        """Remove trace *trace_id* and note in *diag* how many bytes its removal counted."""
+        diag["bytesTaken"] = self.api.remove_trace(trace_id).get("bytesTaken")
 
     @staticmethod
     def _remove_hooks(removals: list[Callable[[], object]]) -> list[str]:
@@ -612,23 +664,12 @@ class Daemon:
                 self._trace_events.pop(tid, None)
         return remaining
 
-    def _install_trace(self, addr: str, config: dict) -> dict:
-        """Install a trace hook; the result of one that went in says how many bytes its jump replaced.
-
-        The agent is asked for the count in a call of its own: Frida writes
-        the jump when the installing call returns.
-        """
-        result = self.api.install_trace(addr, config)
-        if result.get("ok"):
-            result["bytesTaken"] = self.api.trace_hook_bytes(result["traceId"])
-        return result
-
     @staticmethod
     def _collect_hook_diag(addr: str, result: dict) -> dict:
         """What collect reports about the hook it asked for at *addr*."""
         if not result.get("ok"):
             return {"addr": addr, "ok": False, "error": result.get("error", "unknown")}
-        return {"addr": addr, "ok": True, "bytesTaken": result.get("bytesTaken"),
+        return {"addr": addr, "ok": True, "bytesTaken": None,
                 "followedTo": result.get("followedTo"), "prologue": result.get("prologue")}
 
     def _expect_trace(self, trace_id: int) -> threading.Event:
@@ -905,6 +946,7 @@ def main() -> None:
         daemon.run()
     except Exception as exc:
         print(f"[livetools daemon] fatal: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

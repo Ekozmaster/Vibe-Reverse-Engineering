@@ -9,6 +9,7 @@ there hands the callee a corrupted argument and never sees a return.
 
 import json
 import struct
+import time
 
 import pytest
 
@@ -29,6 +30,20 @@ _LOOP_HEAD_INSIDE_THE_JUMP = bytes.fromhex("31C0 FFC0 83F803 75F9 C3")
 _RETURNS_AFTER_TWO_BYTES = bytes.fromhex("90 90 C3")
 # 00 jmp 08   08 xor eax, eax   0A inc eax   0C cmp eax, 3   0F ret
 _JUMP_THEN_ITS_TARGET = bytes.fromhex("EB06 909090909090 31C0 FFC0 83F803 C3")
+
+
+# 00 xor eax, eax   02 nop   07 inc eax   09 nop   10 cmp eax, 3   13 jne 07   15 ret
+_LOOP_HEAD_INSIDE_THE_LONG_JUMP = bytes.fromhex("31C0 0F1F440000 FFC0 0F1F8000000000 83F803 75F2 C3")
+# 00 xor eax, eax   02 nop   07 inc eax   09 cmp eax, 3   0C nop   0E nop   10 ret
+_STRAIGHT_PAST_THE_LONG_JUMP = bytes.fromhex("31C0 0F1F440000 FFC0 83F803 6690 6690 C3")
+# 00 xor eax, eax   02 nop   07 inc eax   09 nop   0E add [rax], al   10 ret
+# The long jump ends in the top bytes of an address, which are zero like the add.
+_ZEROES_WHERE_THE_LONG_JUMP_ENDS = bytes.fromhex("31C0 0F1F440000 FFC0 0F1F440000 0000 C3")
+_LONG_JUMP_BYTES = 16
+
+# 00 stc   01 jb 04   03 hlt   04 nop   09 nop   10 return from a thread's start routine
+_BRANCH_OVER_A_HALT = {arch: bytes.fromhex("F9 7201 F4 0F1F440000 0F1F8000000000") + returns
+                       for arch, returns in (("x86", bytes.fromhex("C20400")), ("x64", b"\xC3"))}
 
 
 _JUMP_FORMS = ["target in the instruction", "target in a pointer"]
@@ -53,9 +68,52 @@ def _write_jump_to(target, destination: int, form: str) -> int:
     return base
 
 
+def _write_out_of_reach(target, code: bytes) -> int:
+    """Write *code* where a hook's jump must be the long form; skips where that cannot be arranged."""
+    if target.arch == "x86":
+        pytest.skip("every address is within reach of a 32-bit jump")
+    address = target.write_code_out_of_reach(code)
+    if address is None:
+        pytest.skip("the address space around a page could not be reserved")
+    return address
+
+
+def _wait_until(condition, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "condition not met in time"
+        time.sleep(0.01)
+
+
+def _wait_for_jump(target, address: int, code: bytes) -> None:
+    """Block until a hook's jump stands at *address*, where the program has *code*."""
+    def first_byte() -> bytes:
+        return bytes.fromhex(target.run({"cmd": "mem_read", "addr": hex_addr(address), "size": 1})["hex"])
+
+    _wait_until(lambda: first_byte() != code[:1])
+
+
 def _probe(target, address: int) -> dict:
     return target.run({"cmd": "trace", "addr": hex_addr(address), "count": 1, "timeout": 0.2,
                        "probe": True})
+
+
+class _InstallReturnsOnceTheHookIsGone:
+    """The agent's exports, with ``install_trace`` returning only once its hook has removed itself."""
+
+    def __init__(self, api):
+        self._api = api
+
+    def __getattr__(self, name):
+        return getattr(self._api, name)
+
+    def install_trace(self, addr, config):
+        result = self._api.install_trace(addr, config)
+        deadline = time.monotonic() + 5
+        while not self._api.flush_traces(result["traceId"])["done"]:
+            assert time.monotonic() < deadline, "the trace did not fill up"
+            time.sleep(0.01)
+        return result
 
 
 def _arguments(record: dict, arch: str) -> tuple:
@@ -83,6 +141,41 @@ class TestFunctionHook:
         diag = reply["hookDiag"]
         assert diag["bytesTaken"] == _JUMP_COVERS["callee"][target.arch]
         assert diag["followedTo"] is None and "hookVerified" not in diag
+
+    def test_reports_the_bytes_its_jump_replaced_once_the_hook_has_removed_itself(
+            self, target, monkeypatch):
+        monkeypatch.setattr(target.daemon, "api", _InstallReturnsOnceTheHookIsGone(target.daemon.api))
+
+        reply = target.run({"cmd": "trace", "addr": target.addr("callee"), "count": 1, "timeout": 5})
+
+        assert reply["ok"] and reply["count"] == 1, reply
+        assert reply["hookDiag"]["bytesTaken"] == _JUMP_COVERS["callee"][target.arch]
+
+    def test_owns_the_bytes_its_jump_replaced_and_no_more_once_the_jump_is_written(self, target):
+        callee = int(target.addr("callee"), 16)
+        taken = _JUMP_COVERS["callee"][target.arch]
+        installed = target.daemon.api.install_trace(target.addr("callee"), {"count": 0})
+        try:
+            _wait_for_jump(target, callee, target.loop.built_bytes("callee", 1))
+            inside = target.run({"cmd": "bp_add", "addr": hex_addr(callee + taken - 1)})
+            past = target.run({"cmd": "bp_add", "addr": hex_addr(callee + taken)})
+            target.run({"cmd": "bp_del", "addr": hex_addr(callee + taken)})
+            with target.stays_correct():
+                pass
+        finally:
+            target.daemon.api.remove_trace(installed["traceId"])
+
+        assert not inside["ok"] and f"has replaced {taken} bytes" in inside["error"], inside
+        assert past["ok"], past
+
+    def test_on_a_page_that_can_no_longer_be_read_comes_out_with_its_bytes_uncounted(self, target):
+        code = target.write_code(_ZEROES_WHERE_THE_LONG_JUMP_ENDS)
+        installed = target.daemon.api.install_trace(hex_addr(code), {"count": 0})
+        target.helper.make_inaccessible(hex_addr(code), 1)
+
+        removed = target.daemon.api.remove_trace(installed["traceId"])
+
+        assert removed["ok"] and removed["bytesTaken"] is None, removed
 
     @pytest.mark.parametrize("form", _JUMP_FORMS)
     def test_asked_for_at_a_jump_sits_where_the_jump_leads(self, target, form):
@@ -151,6 +244,55 @@ class TestProbe:
 
         assert not reply["ok"]
         assert hex_addr(code + 2)[2:] in reply["error"] and "bp add" in reply["error"], reply
+
+    def test_whose_long_jump_would_cover_a_branch_target_is_refused(self, target):
+        code = _write_out_of_reach(target, _LOOP_HEAD_INSIDE_THE_LONG_JUMP)
+
+        reply = _probe(target, code)
+
+        assert not reply["ok"]
+        assert hex_addr(code + 7)[2:] in reply["error"] and "bp add" in reply["error"], reply
+
+    def test_out_of_reach_of_a_short_jump_owns_the_bytes_of_its_long_one(self, target):
+        code = _write_out_of_reach(target, _STRAIGHT_PAST_THE_LONG_JUMP)
+        installed = target.daemon.api.install_trace(hex_addr(code), {"count": 0, "probe": True})
+        try:
+            _wait_for_jump(target, code, _STRAIGHT_PAST_THE_LONG_JUMP)
+            reply = target.run({"cmd": "bp_add", "addr": hex_addr(code + _LONG_JUMP_BYTES - 2)})
+        finally:
+            removed = target.daemon.api.remove_trace(installed["traceId"])
+
+        assert removed["bytesTaken"] == _LONG_JUMP_BYTES
+        assert not reply["ok"] and f"has replaced {_LONG_JUMP_BYTES} bytes" in reply["error"], reply
+
+    def test_long_jump_owns_the_bytes_it_wrote_that_equal_the_ones_before(self, target):
+        code = _write_out_of_reach(target, _ZEROES_WHERE_THE_LONG_JUMP_ENDS)
+        installed = target.daemon.api.install_trace(hex_addr(code), {"count": 0, "probe": True})
+        try:
+            _wait_for_jump(target, code, _ZEROES_WHERE_THE_LONG_JUMP_ENDS)
+            reply = target.run({"cmd": "bp_add", "addr": hex_addr(code + _LONG_JUMP_BYTES - 2)})
+        finally:
+            removed = target.daemon.api.remove_trace(installed["traceId"])
+
+        assert removed["bytesTaken"] == _LONG_JUMP_BYTES
+        assert not reply["ok"] and "hook" in reply["error"], reply
+
+    @pytest.mark.parametrize("jump", ["short", "long"])
+    def test_over_a_branch_among_the_instructions_its_jump_replaces_runs_them_as_before(
+            self, target, jump):
+        if jump == "short":
+            code = target.write_code(_BRANCH_OVER_A_HALT[target.arch])
+        else:
+            code = _write_out_of_reach(target, _BRANCH_OVER_A_HALT[target.arch])
+        installed = target.daemon.api.install_trace(hex_addr(code), {"count": 1, "probe": True})
+        try:
+            _wait_for_jump(target, code, _BRANCH_OVER_A_HALT[target.arch])
+            target.helper.start_thread(hex_addr(code))
+            _wait_until(lambda: target.daemon.api.flush_traces(installed["traceId"])["done"])
+            with target.stays_correct():
+                pass
+        finally:
+            target.daemon.api.remove_trace(installed["traceId"])
 
     def test_with_no_room_for_its_jump_before_a_return_is_refused(self, target):
         code = target.write_code(_RETURNS_AFTER_TWO_BYTES)

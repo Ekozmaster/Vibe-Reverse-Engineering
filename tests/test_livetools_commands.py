@@ -58,6 +58,8 @@ class FakeAgent:
         self.shutdown_rounds: list[dict] = []
         self.trace_failures: dict[str, str] = {}
         self.removal_failure: str | None = None
+        self.trace_refusals: dict[str, str] = {}
+        self.bytes_taken: int | None = 5
 
     def shutdown(self):
         self.calls.append("shutdown")
@@ -113,11 +115,10 @@ class FakeAgent:
     def install_trace(self, addr, config):
         if addr in self.trace_failures:
             raise RuntimeError(self.trace_failures[addr])
+        if addr in self.trace_refusals:
+            return {"ok": False, "error": self.trace_refusals[addr]}
         self.traces.append((addr, config))
         return {"ok": True, "traceId": len(self.traces)}
-
-    def trace_hook_bytes(self, trace_id):
-        return 5
 
     def flush_traces(self, trace_id):
         return {"ok": True, "done": True, "collected": 0}
@@ -126,7 +127,7 @@ class FakeAgent:
         self.removed_traces.append(trace_id)
         if self.removal_failure:
             raise RuntimeError(self.removal_failure)
-        return {"ok": True}
+        return {"ok": True, "bytesTaken": self.bytes_taken}
 
     def install_fence(self, addr):
         self.fences.append(addr)
@@ -197,6 +198,72 @@ class TestTrace:
         ((addr, config),) = agent.traces
         assert addr == CALL_SITE and config["probe"]
 
+    def test_an_output_file_that_cannot_be_opened_hooks_nothing(self, daemon, agent, tmp_path):
+        reply = daemon.handle({"cmd": "trace", "addr": ENTRY, "timeout": 0,
+                               "output": str(tmp_path / "no_such_folder" / "out.jsonl")})
+
+        assert not reply["ok"]
+        assert agent.traces == []
+
+    def test_records_are_written_to_the_output_file(self, daemon, agent, tmp_path):
+        output = tmp_path / "out.jsonl"
+        daemon._trace_batches[1] = [{"addr": ENTRY}]
+
+        reply = daemon.handle({"cmd": "trace", "addr": ENTRY, "timeout": 0, "output": str(output)})
+
+        assert reply["ok"] and reply["output"] == str(output)
+        assert output.read_text(encoding="utf-8") == '{"addr": "0x00401040"}\n'
+
+    def test_records_replace_what_the_output_file_held(self, daemon, agent, tmp_path):
+        output = tmp_path / "out.jsonl"
+        output.write_text("an earlier trace\n", encoding="utf-8")
+
+        reply = daemon.handle({"cmd": "trace", "addr": ENTRY, "timeout": 0, "output": str(output)})
+
+        assert reply["ok"]
+        assert output.read_text(encoding="utf-8") == ""
+
+    def test_hook_the_agent_refuses_leaves_an_existing_output_file_as_it_was(
+            self, daemon, agent, tmp_path):
+        output = tmp_path / "out.jsonl"
+        output.write_text("an earlier trace\n", encoding="utf-8")
+        agent.trace_refusals[ENTRY] = "refused"
+
+        reply = daemon.handle({"cmd": "trace", "addr": ENTRY, "timeout": 0, "output": str(output)})
+
+        assert not reply["ok"] and reply["error"] == "refused"
+        assert output.read_text(encoding="utf-8") == "an earlier trace\n"
+
+    def test_hook_the_agent_refuses_leaves_no_output_file(self, daemon, agent, tmp_path):
+        output = tmp_path / "out.jsonl"
+        agent.trace_refusals[ENTRY] = "refused"
+
+        reply = daemon.handle({"cmd": "trace", "addr": ENTRY, "timeout": 0, "output": str(output)})
+
+        assert not reply["ok"]
+        assert not output.exists()
+
+    def test_reports_the_bytes_the_hook_replaced_as_its_removal_counted_them(self, daemon, agent):
+        reply = daemon.handle({"cmd": "trace", "addr": ENTRY, "timeout": 0})
+
+        assert reply["ok"] and reply["hookDiag"]["bytesTaken"] == 5
+
+    def test_hook_whose_bytes_could_not_be_counted_is_no_error(self, daemon, agent):
+        agent.bytes_taken = None
+
+        reply = daemon.handle({"cmd": "trace", "addr": ENTRY, "timeout": 0})
+
+        assert reply["ok"] and reply["hookDiag"]["bytesTaken"] is None
+
+    def test_hook_is_removed_when_waiting_for_its_records_fails(self, daemon, agent):
+        agent.flush_traces = lambda trace_id: 1 / 0
+
+        reply = daemon.handle({"cmd": "trace", "addr": ENTRY, "timeout": 5})
+
+        assert not reply["ok"]
+        assert agent.removed_traces == [1]
+        assert (daemon._trace_batches, daemon._trace_done, daemon._trace_events) == ({}, {}, {})
+
     def test_probe_cannot_read_at_return(self, daemon, agent):
         reply = daemon.handle({"cmd": "trace", "addr": CALL_SITE, "timeout": 0,
                                "probe": True, "readLeave": "eax"})
@@ -225,6 +292,7 @@ class TestCollect:
         assert reply["ok"]
         assert [(addr, config["probe"]) for addr, config in agent.traces] == [
             (ENTRY, True), (CALL_SITE, True)]
+        assert [diag["bytesTaken"] for diag in reply["hookDiags"]] == [5, 5]
 
     def test_hook_that_cannot_go_in_is_reported_with_what_could_not_be_removed(
             self, daemon, agent, tmp_path):
@@ -252,6 +320,48 @@ class TestCollect:
 
         assert not reply["ok"]
         assert agent.traces == [] and agent.fences == []
+
+    def test_no_hook_going_in_leaves_an_existing_output_file_as_it_was(self, daemon, agent, tmp_path):
+        output = tmp_path / "out.jsonl"
+        output.write_text("an earlier collect\n", encoding="utf-8")
+        agent.trace_refusals[ENTRY] = "refused"
+
+        reply = daemon.handle({"cmd": "collect", "addrs": [ENTRY], "duration": 0,
+                               "output": str(output)})
+
+        assert reply["ok"] and reply["output"] is None
+        assert [diag["error"] for diag in reply["hookDiags"]] == ["refused"]
+        assert output.read_text(encoding="utf-8") == "an earlier collect\n"
+
+    def test_no_hook_going_in_leaves_no_output_file(self, daemon, agent, tmp_path):
+        output = tmp_path / "out.jsonl"
+        agent.trace_refusals[ENTRY] = "refused"
+
+        reply = daemon.handle({"cmd": "collect", "addrs": [ENTRY], "duration": 0,
+                               "output": str(output)})
+
+        assert reply["ok"] and reply["output"] is None
+        assert not output.exists()
+
+    def test_one_hook_going_in_replaces_what_the_output_file_held(self, daemon, agent, tmp_path):
+        output = tmp_path / "out.jsonl"
+        output.write_text("an earlier collect\n", encoding="utf-8")
+        agent.trace_refusals[CALL_SITE] = "refused"
+        daemon._trace_batches[1] = [{"addr": ENTRY}]
+
+        reply = daemon.handle({"cmd": "collect", "addrs": [ENTRY, CALL_SITE], "duration": 0,
+                               "probe": True, "output": str(output)})
+
+        assert reply["ok"] and reply["output"] == str(output)
+        assert output.read_text(encoding="utf-8") == '{"addr": "0x00401040"}\n'
+
+    def test_hook_whose_bytes_could_not_be_counted_is_no_error(self, daemon, agent, tmp_path):
+        agent.bytes_taken = None
+
+        reply = daemon.handle({"cmd": "collect", "addrs": [ENTRY], "duration": 0,
+                               "output": str(tmp_path / "out.jsonl")})
+
+        assert reply["ok"] and [diag["bytesTaken"] for diag in reply["hookDiags"]] == [None]
 
     def test_hooks_are_removed_when_collecting_fails(self, daemon, agent, tmp_path):
         agent.flush_traces = lambda trace_id: 1 / 0
@@ -604,10 +714,12 @@ class TestStartup:
         monkeypatch.setattr(sys, "argv", ["livetools.server", "second.exe"])
 
         try:
-            server.main()
+            with pytest.raises(SystemExit) as exit_:
+                server.main()
         finally:
             live.close()
 
+        assert exit_.value.code == 1
         assert "fatal" in capsys.readouterr().err
         assert attached == []
         assert state_file.read_text() == '{"pid": 1, "target": "first.exe"}'
@@ -662,6 +774,12 @@ class TestFormatTrace:
 
         assert f"Hook at {CALL_SITE} sits at {ENTRY}" in text and "replaced 6 bytes there" in text
 
+    def test_says_when_the_hooks_jump_was_never_seen(self):
+        text = client.format_trace({"samples": [], "count": 0, "hookDiag": {
+            "addr": CALL_SITE, "bytesTaken": None, "followedTo": None}})
+
+        assert f"Hook at {CALL_SITE} replaced an unknown number of bytes" in text
+
 
 class TestFormatCollect:
     def test_shows_how_many_bytes_each_hook_replaced(self):
@@ -671,6 +789,19 @@ class TestFormatCollect:
 
         assert f"Hook at {ENTRY} replaced 6 bytes" in text
         assert f"[HOOK FAILED] {CALL_SITE}: refused" in text
+
+    def test_says_when_a_hooks_jump_was_never_seen(self):
+        text = client.format_collect({"totalRecords": 0, "hookDiags": [
+            {"addr": ENTRY, "ok": True, "bytesTaken": None, "followedTo": None}]})
+
+        assert f"Hook at {ENTRY} replaced an unknown number of bytes" in text
+        assert "trace" not in text
+
+    def test_names_no_output_file_when_no_hook_went_in(self):
+        text = client.format_collect({"totalRecords": 0, "output": None, "hookDiags": [
+            {"addr": ENTRY, "ok": False, "error": "refused"}]})
+
+        assert "Output: none" in text
 
 
 class TestProcessExit:

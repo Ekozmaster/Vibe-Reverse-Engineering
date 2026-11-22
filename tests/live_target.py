@@ -60,6 +60,13 @@ var virtualFree = new NativeFunction(kernel32.getExportByName('VirtualFree'),
 var createThread = new NativeFunction(kernel32.getExportByName('CreateThread'),
     'pointer', ['pointer', 'size_t', 'pointer', 'pointer', 'uint32', 'pointer']);
 
+var MEM_RESERVE = 0x2000;
+var MEM_RELEASE = 0x8000;
+var PAGE_NOACCESS = 1;
+var ALLOCATION_GRANULARITY = 0x10000;
+// More than a 32-bit jump spans.
+var OUT_OF_REACH = 0x80000000 + ALLOCATION_GRANULARITY;
+
 var EFLAGS_OFFSET = Process.pointerSize === 8 ? 0x44 : 0xC0;
 var TRAP_FLAG = 0x100;
 var ownTraps = {};
@@ -91,17 +98,44 @@ rpc.exports = {
     allocate: function (size) {
         return virtualAlloc(NULL, size, 0x3000, 0x40).toString();
     },
+    allocateOutOfReach: function () {
+        var span = virtualAlloc(NULL, 2 * OUT_OF_REACH + ALLOCATION_GRANULARITY, MEM_RESERVE, PAGE_NOACCESS);
+        if (span.isNull()) return null;
+        virtualFree(span, 0, MEM_RELEASE);
+        var page = span.add(OUT_OF_REACH);
+        var below = virtualAlloc(span, OUT_OF_REACH, MEM_RESERVE, PAGE_NOACCESS);
+        var above = virtualAlloc(page.add(ALLOCATION_GRANULARITY), OUT_OF_REACH, MEM_RESERVE, PAGE_NOACCESS);
+        if (below.isNull() || above.isNull()) return null;
+        var allocated = virtualAlloc(page, Process.pageSize, 0x3000, 0x40);
+        return allocated.isNull() ? null : allocated.toString();
+    },
     release: function (address) {
         return virtualFree(ptr(address), 0, 0x8000) !== 0;
     },
     makeReadExecute: function (address, size) {
         return Memory.protect(ptr(address), size, 'r-x');
     },
+    // Writes where the agent's `mem write` cannot: it finds no range in memory Frida cloaks.
+    write: function (address, hex) {
+        var bytes = [];
+        for (var i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substr(i, 2), 16));
+        ptr(address).writeByteArray(bytes);
+    },
+    makeInaccessible: function (address, size) {
+        return Memory.protect(ptr(address), size, '---');
+    },
     protection: function (address) {
         return Process.getRangeByAddress(ptr(address)).protection;
     },
-    startThread: function (entry) {
-        return createThread(NULL, 0, ptr(entry), NULL, 0, NULL).toString();
+    startThread: function (entry, parameter) {
+        var argument = parameter ? ptr(parameter) : NULL;
+        return createThread(NULL, 0, ptr(entry), argument, 0, NULL).toString();
+    },
+    // Runs the code at `address` on the thread that serves this call, and
+    // returns whether that thread is one Frida cloaks.
+    callOnFridasThread: function (address) {
+        new NativeFunction(ptr(address), 'void', [], { exceptions: 'propagate' })();
+        return Cloak.hasCurrentThread();
     },
     plantOwnTrap: function (address) {
         ownTraps[ptr(address).toString()] = true;
@@ -343,6 +377,21 @@ class LiveTarget:
         base = int(self.helper.allocate(_PAGE), 16)
         self.run({"cmd": "mem_write", "addr": hex_addr(base), "hex": code.hex()})
         return base
+
+    def write_code_out_of_reach(self, code: bytes) -> int | None:
+        """Write *code* to a page with no free memory within reach of a 32-bit jump.
+
+        A hook there cannot have its trampoline nearby, so its jump is the long
+        form. The address space around the page stays reserved.
+
+        Returns:
+            The address of the code, or None if the address space could not be reserved.
+        """
+        page = self.helper.allocate_out_of_reach()
+        if page is None:
+            return None
+        self.run({"cmd": "mem_write", "addr": page, "hex": code.hex()})
+        return int(page, 16)
 
     def release(self, base: int) -> None:
         """Unmap the pages allocated at *base*."""

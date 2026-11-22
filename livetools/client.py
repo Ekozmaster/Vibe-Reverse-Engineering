@@ -246,11 +246,15 @@ def format_snapshot(snap: dict, header: str = "BREAKPOINT HIT") -> str:
 def _format_hook(diag: dict) -> str:
     """One line on the bytes the hook reported in *diag* replaced in the target."""
     taken = diag.get("bytesTaken")
+    if taken is None:
+        count, unseen = "an unknown number of bytes", ": no jump of Frida's was seen there before the hook was removed"
+    else:
+        count, unseen = f"{taken} bytes", ""
     followed_to = diag.get("followedTo")
     if followed_to:
         return (f"Hook at {diag['addr']} sits at {followed_to}, where the jump at "
-                f"{diag['addr']} leads, and replaced {taken} bytes there")
-    return f"Hook at {diag['addr']} replaced {taken} bytes"
+                f"{diag['addr']} leads, and replaced {count} there{unseen}")
+    return f"Hook at {diag['addr']} replaced {count}{unseen}"
 
 
 def format_trace(resp: dict) -> str:
@@ -312,8 +316,8 @@ def format_trace(resp: dict) -> str:
         lines.append("")
         lines.append(f"Output written to: {output}")
 
-    diag = resp.get("hookDiag", {})
-    if diag.get("bytesTaken") is not None:
+    diag = resp.get("hookDiag")
+    if diag:
         lines.append("")
         lines.append(_format_hook(diag))
 
@@ -411,7 +415,7 @@ def format_steptrace(resp: dict) -> str:
 def format_collect(resp: dict) -> str:
     lines: list[str] = []
     total = resp.get("totalRecords", 0)
-    output = resp.get("output", "?")
+    output = resp.get("output") or "none: no hook went in"
     fence = resp.get("fenceCount", 0)
     lines.append(f"=== COLLECT COMPLETE ===")
     lines.append(f"  Records: {total}")
@@ -420,7 +424,7 @@ def format_collect(resp: dict) -> str:
 
     diags = resp.get("hookDiags", [])
     for d in diags:
-        if d.get("ok") and d.get("bytesTaken") is not None:
+        if d.get("ok"):
             lines.append(f"  {_format_hook(d)}")
     failed = [d for d in diags if not d.get("ok")]
     if failed:

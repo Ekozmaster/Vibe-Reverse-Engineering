@@ -65,6 +65,16 @@ def _detach(target, timeout: float = 20.0) -> None:
     assert not detaching.is_alive(), "the daemon is still detaching"
 
 
+def _within(seconds: float, command):
+    """What *command* returns, failing if it has not returned after *seconds*."""
+    replies = []
+    running = threading.Thread(target=lambda: replies.append(command()), daemon=True)
+    running.start()
+    running.join(seconds)
+    assert replies, f"no reply within {seconds} s"
+    return replies[0]
+
+
 def _wait_until(condition, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while not condition():
@@ -521,6 +531,37 @@ class TestBreakpoint:
         assert _hit_counts(target)[int(shared.addr("loop"), 16)] == hits_at_freeze
 
 
+# mov eax/rax, destination; jmp eax/rax
+_LOAD_DESTINATION = {"x86": lambda destination: b"\xB8" + struct.pack("<I", destination),
+                     "x64": lambda destination: b"\x48\xB8" + struct.pack("<Q", destination)}
+_JUMP_TO_IT = bytes.fromhex("FFE0")
+# call the return at 08; return from a thread's start routine; 08 ret
+_CALLS_ITS_OWN_RETURN = {"x86": bytes.fromhex("E803000000 C20400 C3"),
+                         "x64": bytes.fromhex("E803000000 C39090 C3")}
+
+
+def _freeze_in_a_block_from_mem_alloc(target, size: int, code: bytes) -> tuple[int, int]:
+    """Run *code* in a new ``mem alloc`` block on a new thread, frozen at its first instruction.
+
+    The thread starts on a page of its own, which jumps to the block, because
+    neither ``mem write`` nor ``bp add`` reaches a block Frida serves from its heap.
+
+    Returns:
+        The block, and the page the thread started on.
+    """
+    block = int(target.run({"cmd": "mem_alloc", "size": size})["addr"], 16)
+    target.helper.write(hex_addr(block), code.hex())
+    load = _LOAD_DESTINATION[target.arch](block)
+    entry = target.write_code(load + _JUMP_TO_IT)
+    target.run({"cmd": "bp_add", "addr": hex_addr(entry)})
+    target.helper.start_thread(hex_addr(entry))
+    assert target.run({"cmd": "watch", "timeout": 5})["ok"]
+    assert _pc(_step(target, "into"), target.arch) == entry + len(load)
+    target.run({"cmd": "bp_del", "addr": hex_addr(entry)})
+    assert _pc(_step(target, "into"), target.arch) == block
+    return block, entry
+
+
 class TestStep:
     def test_into_executes_exactly_one_instruction(self, target):
         _freeze_at(target, "loop")
@@ -612,6 +653,83 @@ class TestStep:
         target.run({"cmd": "bp_del", "addr": target.addr("call_site")})
         target.wait_for_iterations(3)
         assert target.loop.live_bytes("loop", _LOOP_BODY) == target.loop.built_bytes("loop", _LOOP_BODY)
+
+    def test_through_the_jump_of_a_hook_ends_where_fridas_memory_begins(self, target):
+        installed = target.daemon.api.install_trace(target.addr("callee"), {"count": 0})
+        try:
+            _freeze_at(target, "call_site")
+            entered = _step(target, "into")
+            reply = target.run({"cmd": "step", "mode": "into"})
+            target.run({"cmd": "bp_del", "addr": target.addr("call_site")})
+            status = target.run({"cmd": "status"})
+            with target.stays_correct():
+                pass
+        finally:
+            target.daemon.api.remove_trace(installed["traceId"])
+
+        assert _pc(entered, target.arch) == _at(target, "callee")
+        assert not reply["ok"] and "memory Frida keeps to itself" in reply["error"], reply
+        assert status["state"] == "RUNNING", status
+
+    def test_out_across_a_probe_ends_where_fridas_memory_begins(self, target):
+        installed = target.daemon.api.install_trace(target.addr("spare"), {"count": 0, "probe": True})
+        try:
+            _freeze_at(target, "after_call")
+            reply = target.run({"cmd": "step", "mode": "out"})
+            target.run({"cmd": "bp_del", "addr": target.addr("after_call")})
+            status = target.run({"cmd": "status"})
+            with target.stays_correct():
+                pass
+        finally:
+            target.daemon.api.remove_trace(installed["traceId"])
+
+        assert not reply["ok"] and "memory Frida keeps to itself" in reply["error"], reply
+        assert status["state"] == "RUNNING", status
+
+    def test_out_of_a_function_whose_return_a_hook_took_ends_where_fridas_memory_begins(self, target):
+        returning = _offset(target, "callee", {"x86": 0x0C, "x64": 0x10}[target.arch])
+        installed = target.daemon.api.install_trace(target.addr("callee"), {"count": 0})
+        try:
+            target.run({"cmd": "bp_add", "addr": returning})
+            frozen = target.run({"cmd": "watch", "timeout": 5})
+            reply = target.run({"cmd": "step", "mode": "out"})
+            target.run({"cmd": "bp_del", "addr": returning})
+            status = target.run({"cmd": "status"})
+            with target.stays_correct():
+                pass
+        finally:
+            target.daemon.api.remove_trace(installed["traceId"])
+
+        assert frozen["ok"], frozen
+        assert not reply["ok"] and "memory Frida keeps to itself" in reply["error"], reply
+        assert status["state"] == "RUNNING", status
+
+    @pytest.mark.parametrize("size", [64, 0x2000], ids=["from Frida's heap", "pages of its own"])
+    def test_into_code_in_memory_from_mem_alloc(self, target, size):
+        block, _ = _freeze_in_a_block_from_mem_alloc(target, size, _RETURNS_AT_ONCE[target.arch])
+
+        further = _step(target, "into")
+        target.run({"cmd": "resume"})
+
+        assert _pc(further, target.arch) == block + 1
+
+    def test_over_a_call_in_a_block_frida_serves_from_its_heap_ends_with_the_reason(self, target):
+        _freeze_in_a_block_from_mem_alloc(target, 64, _CALLS_ITS_OWN_RETURN[target.arch])
+
+        reply = target.run({"cmd": "step", "mode": "over"})
+        status = target.run({"cmd": "status"})
+
+        assert not reply["ok"] and "memory Frida keeps to itself" in reply["error"], reply
+        assert "mem alloc of a page or more" in reply["error"], reply
+        assert status["state"] == "RUNNING", status
+
+    def test_over_a_call_in_pages_from_mem_alloc(self, target):
+        block, _ = _freeze_in_a_block_from_mem_alloc(target, 0x2000, _CALLS_ITS_OWN_RETURN[target.arch])
+
+        after_call = _step(target, "over")
+        target.run({"cmd": "resume"})
+
+        assert _pc(after_call, target.arch) == block + 5
 
     def test_without_a_frozen_thread_is_an_error(self, target):
         reply = target.run({"cmd": "step", "mode": "over"})
@@ -771,6 +889,97 @@ class TestRepeatedInstruction:
         assert int(snapshot["regs"][_COUNT_REGISTER[target.arch]], 16) == 0
 
 
+# kernel32 functions the breakpoint handler calls on the thread it stops, and
+# the ones Frida calls to rewrite code.
+_CALLED_WHILE_HANDLING = ["CreateEventW", "SetEvent", "CloseHandle", "WaitForSingleObject",
+                          "VirtualProtect", "VirtualQuery", "FlushInstructionCache"]
+
+
+# call the routine a thread was started with as its parameter
+_CALL_THE_PARAMETER = {"x86": bytes.fromhex("FF542404"), "x64": bytes.fromhex("FFD1")}
+
+
+class TestSystemCode:
+    @pytest.mark.parametrize("export", _CALLED_WHILE_HANDLING)
+    def test_breakpoint_on_a_function_called_while_handling_one_is_refused(self, target, export):
+        entry = target.helper.export_address("kernel32.dll", export)
+
+        reply = target.run({"cmd": "bp_add", "addr": entry})
+
+        assert not reply["ok"], reply
+        assert f"kernel32.dll!{export}" in reply["error"] and "trace" in reply["error"], reply
+
+    def test_breakpoint_where_the_jump_at_such_a_function_leads_is_refused(self, target):
+        stub = int(target.helper.export_address("kernel32.dll", "SetEvent"), 16)
+        hops = target.daemon.api.disasm_at(hex_addr(stub), 1)
+        if not hops[0]["str"].startswith("jmp"):
+            pytest.skip("kernel32.dll!SetEvent is not a jump on this system")
+        implementation = target.helper.export_address("kernelbase.dll", "SetEvent")
+
+        reply = target.run({"cmd": "bp_add", "addr": implementation})
+
+        assert not reply["ok"] and "kernel32.dll!SetEvent" in reply["error"], reply
+
+    @pytest.mark.parametrize("export", ["WriteFile", "ReadFile"])
+    def test_breakpoint_reached_by_a_thread_of_fridas_does_not_freeze_it(self, fresh_target, export):
+        entry = fresh_target.helper.export_address("kernel32.dll", export)
+
+        added = _within(10, lambda: fresh_target.run({"cmd": "bp_add", "addr": entry}))
+        with fresh_target.stays_correct():
+            status = _within(10, lambda: fresh_target.run({"cmd": "status"}))
+
+        assert added["ok"], added
+        assert status["state"] == "RUNNING" and status["bpCount"] == 1, status
+
+    def test_step_over_a_call_that_returns_onto_such_a_function_ends_with_the_reason(self, fresh_target):
+        entry = int(fresh_target.helper.export_address("kernel32.dll", "FlushInstructionCache"), 16)
+        call = _CALL_THE_PARAMETER[fresh_target.arch]
+        site = hex_addr(entry - len(call))
+        before = fresh_target.run({"cmd": "mem_read", "addr": site, "size": len(call)})
+        if bytes.fromhex(before["hex"]) != bytes([_INT3]) * len(call):
+            pytest.skip("no padding before kernel32.dll!FlushInstructionCache to hold a call")
+        fresh_target.run({"cmd": "mem_write", "addr": site, "hex": call.hex()})
+        fresh_target.run({"cmd": "bp_add", "addr": site})
+        # A thread may not start in the padding of a system module, but it may jump there.
+        start = fresh_target.write_code(_LOAD_DESTINATION[fresh_target.arch](int(site, 16)) + _JUMP_TO_IT)
+        fresh_target.helper.start_thread(hex_addr(start), fresh_target.addr("dormant"))
+        frozen = fresh_target.run({"cmd": "watch", "timeout": 5})
+
+        reply = _within(10, lambda: fresh_target.run({"cmd": "step", "mode": "over"}))
+        fresh_target.run({"cmd": "bp_del", "addr": site})
+        with fresh_target.stays_correct():
+            status = _within(10, lambda: fresh_target.run({"cmd": "status"}))
+
+        assert frozen["ok"], frozen
+        assert not reply["ok"] and "kernel32.dll!FlushInstructionCache" in reply["error"], reply
+        assert status["state"] == "RUNNING", status
+
+    def test_breakpoint_in_the_code_of_a_hook_of_fridas_is_refused(self, target):
+        callee = _at(target, "callee")
+        installed = target.daemon.api.install_trace(target.addr("callee"), {"count": 0})
+        try:
+            _wait_until(lambda: target.loop.live_bytes("callee", 1) == b"\xE9")
+            trampoline = callee + 5 + struct.unpack("<i", target.loop.live_bytes("callee", 5)[1:])[0]
+            reply = target.run({"cmd": "bp_add", "addr": hex_addr(trampoline)})
+            with target.stays_correct():
+                pass
+        finally:
+            target.daemon.api.remove_trace(installed["traceId"])
+
+        assert not reply["ok"] and "memory Frida keeps to itself" in reply["error"], reply
+
+    def test_breakpoint_a_thread_of_fridas_runs_into_is_passed_uncounted(self, fresh_target):
+        dormant = fresh_target.addr("dormant")
+        fresh_target.run({"cmd": "bp_add", "addr": dormant})
+
+        on_fridas_thread = _within(10, lambda: fresh_target.helper.call_on_fridas_thread(dormant))
+        status = _within(10, lambda: fresh_target.run({"cmd": "status"}))
+
+        assert on_fridas_thread
+        assert status["state"] == "RUNNING", status
+        assert _hit_counts(fresh_target) == {int(dormant, 16): 0}
+
+
 class TestForeignExceptions:
     def test_the_programs_own_int3_and_single_step_reach_its_handler(self, target):
         other = target.start_loop()
@@ -783,6 +992,24 @@ class TestForeignExceptions:
         after = target.helper.own_exceptions()
         assert after["breakpoint"] - before["breakpoint"] >= 3
         assert after["singleStep"] - before["singleStep"] >= 3
+
+    def test_step_onto_the_programs_own_int3_leaves_its_single_step_to_the_program(self, target):
+        other = target.start_loop()
+        target.run({"cmd": "bp_add", "addr": other.addr("after_call")})
+        assert target.run({"cmd": "watch", "timeout": 5})["ok"]
+        target.helper.plant_own_trap(other.addr("spare"))
+        while _pc(_step(target, "into"), target.arch) != int(other.addr("spare"), 16):
+            pass
+        target.run({"cmd": "bp_del", "addr": other.addr("after_call")})
+        before = target.helper.own_exceptions()
+
+        reply = target.run({"cmd": "step", "mode": "into"})
+
+        assert not reply["ok"] and "breakpoint exception, which the program handles" in reply["error"], reply
+        with other.stays_correct():
+            pass
+        after = target.helper.own_exceptions()
+        assert after["singleStep"] - before["singleStep"] == after["breakpoint"] - before["breakpoint"] > 0
 
 
 class TestHookConflicts:
@@ -1012,6 +1239,24 @@ class TestVishook:
                                 "hex": "90"})
 
         assert not reply["ok"] and "vishook" in reply["error"]
+
+    def test_step_goes_through_its_cave(self, x86_target):
+        page = x86_target.write_code(b"\x90" * 0x10 + _RETURNS_AT_ONCE["x86"])
+        installed = x86_target.run({"cmd": "vishook_on", "threshold": "FFFFFFFF",
+                                    "jmpSite": hex_addr(page + 1), "origTarget": hex_addr(page + 0x10)})
+        x86_target.run({"cmd": "bp_add", "addr": hex_addr(page)})
+        x86_target.helper.start_thread(hex_addr(page))
+        frozen = x86_target.run({"cmd": "watch", "timeout": 5})
+
+        stepped = [x86_target.run({"cmd": "step", "mode": "into"}) for _ in range(3)]
+        x86_target.run({"cmd": "bp_del", "addr": hex_addr(page)})
+        x86_target.run({"cmd": "resume"})
+        _wait_until(lambda: x86_target.run({"cmd": "vishook_stats"})["passthroughCount"] == 1)
+
+        cave = int(installed["cave"], 16)
+        assert frozen["ok"], frozen
+        assert all(reply["ok"] for reply in stepped), stepped
+        assert [_pc(reply["snapshot"], "x86") for reply in stepped] == [page + 1, cave, cave + 3]
 
     def test_keeps_the_page_protection(self, x86_target):
         x86_target.helper.make_read_execute(x86_target.addr("dormant"), 1)

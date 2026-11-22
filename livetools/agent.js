@@ -14,7 +14,6 @@
 
 var is64 = Process.pointerSize === 8;
 var ptrWidth = Process.pointerSize * 2;
-var _allocations = [];
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -78,8 +77,10 @@ function getRegVal(ctx, name) {
 
 // ── prologue validation ──────────────────────────────────────────────────
 
-var MIN_HOOK_BYTES = is64 ? 14 : 5;
 var NEAR_JUMP_BYTES = 5;        // the shortest jump Interceptor writes: jmp rel32
+var FAR_JUMP_BYTES = 16;        // its 64-bit jump through a pointer, written where no trampoline fits within 2 GiB
+var JUMP_BYTES = is64 ? [NEAR_JUMP_BYTES, FAR_JUMP_BYTES] : [NEAR_JUMP_BYTES];
+var MIN_HOOK_BYTES = JUMP_BYTES[JUMP_BYTES.length - 1];
 var STRAIGHT_LINE_LIMIT = 512;  // instructions read ahead of a hook for branches back into it
 var REDIRECT_LIMIT = 16;        // jumps followed from the address of a hook to where its jump is written
 
@@ -118,8 +119,30 @@ function checkPrologue(addrStr) {
 // Frida does not always write where it is asked to hook: at a jump it hooks the
 // code the jump leads to. The bytes a hook owns are the ones at that site.
 
-var hooks = [];     // { start, size, what, interceptor, original } for every jump written
+var hooks = [];     // the record of every jump written (see recordHook)
 var patches = {};   // address -> the int3 written there (see "breakpoints")
+
+// Memory this agent allocated for the user's own code: the blocks of `mem
+// alloc` and the cave of the vishook. Frida serves a block of under a page from
+// its own heap, which it cloaks like the code of its hooks.
+var userCode = [];  // { start, size }
+
+// Records the `size` bytes at `start` as the user's code; returns its release.
+function recordUserCode(start, size) {
+    var block = { start: start, size: size };
+    userCode.push(block);
+    return function () {
+        var index = userCode.indexOf(block);
+        if (index >= 0) userCode.splice(index, 1);
+    };
+}
+
+// Whether `address` is in the code of a hook of Frida's: memory it cloaks that
+// is none of the user's.
+function isFridasCode(address) {
+    return Cloak.hasRangeContaining(address) &&
+        !userCode.some(function (block) { return contains(block.start, block.size, address); });
+}
 
 // Writes `bytes` over code or data and leaves each page with the protection it had.
 function patchBytes(address, bytes) {
@@ -166,10 +189,13 @@ function rewriteRefusal(start, size, what, interceptor) {
     }
     for (var i = 0; i < hooks.length; i++) {
         var hook = hooks[i];
+        if (!hook.written) hook.lookForJump();
         if (!overlaps(hook.start, hook.size, start, size)) continue;
         if (interceptor && hook.interceptor && hook.start.equals(start)) continue;
-        return 'the ' + hook.what + ' at 0x' + ptrToHex(hook.start) + ' has replaced ' + hook.size +
-            ' bytes there, which overlap the ' + size + ' bytes the ' + what + ' at 0x' +
+        var owns = hook.written ? 'has replaced ' + hook.size + ' bytes there'
+            : 'may replace up to ' + hook.size + ' bytes there (Frida has not written its jump yet)';
+        return 'the ' + hook.what + ' at 0x' + ptrToHex(hook.start) + ' ' + owns +
+            ', which overlap the ' + size + ' bytes the ' + what + ' at 0x' +
             ptrToHex(start) + ' would rewrite. ' +
             (hook.interceptor ? 'Wait for it to finish, or remove it first.'
                               : 'Remove it first (' + hook.what + ' off).');
@@ -250,12 +276,32 @@ function straightLine(address) {
     return line;
 }
 
+// The first instruction of `line`, which starts at `address`, that branches
+// into a jump of `jumpBytes` written there, as { insn, target, replaced }, or
+// null. `replaced` counts the whole instructions the jump takes. Frida moves
+// those to a trampoline and keeps the branches among them intact, so only the
+// instructions after them are looked at.
+function branchIntoJump(line, address, jumpBytes) {
+    var replaced = 0;
+    var next = 0;
+    while (replaced < jumpBytes && next < line.insns.length) replaced += line.insns[next++].size;
+    for (var i = next; i < line.insns.length; i++) {
+        var target = directJumpTarget(line.insns[i]);
+        if (target === null || target.equals(address) || !contains(address, replaced, target)) continue;
+        return { insn: line.insns[i], target: target, replaced: replaced };
+    }
+    return null;
+}
+
 // Why the jump of a hook cannot be written at `address`, or null if the code
 // from there to its first return or unconditional jump shows nothing against it.
 //
 // Frida moves the instructions its jump replaces to a trampoline, but a branch
 // to one of them still arrives at the old address, inside the jump. A branch
 // that comes from before `address`, or from beyond that first return, is not seen.
+// Which of its jumps Frida writes is known only once it has, so a branch into
+// either is refused. Code with room for the short jump alone is not: where
+// Frida needs the long one there, it refuses the hook itself.
 function jumpSiteRefusal(address) {
     var line = straightLine(address);
     if (line.insns.length === 0) return null;
@@ -267,14 +313,13 @@ function jumpSiteRefusal(address) {
             site + ' ends after ' + line.size + ' bytes, with the ' + last.mnemonic + ' at 0x' +
             ptrToHex(last.address) + '.' + instead;
     }
-    var replaced = 0;
-    for (var i = 0; replaced < NEAR_JUMP_BYTES && i < line.insns.length; i++) replaced += line.insns[i].size;
-    for (var j = 0; j < line.insns.length; j++) {
-        var target = directJumpTarget(line.insns[j]);
-        if (target === null || target.equals(address) || !contains(address, replaced, target)) continue;
-        return 'the ' + line.insns[j].mnemonic + ' at 0x' + ptrToHex(line.insns[j].address) +
-            ' jumps to 0x' + ptrToHex(target) + ', inside the ' + replaced + ' bytes the jump of a hook at ' +
-            site + ' replaces: it would land in the middle of that jump.' + instead;
+    for (var i = 0; i < JUMP_BYTES.length; i++) {
+        var branch = branchIntoJump(line, address, JUMP_BYTES[i]);
+        if (branch === null) continue;
+        return 'the ' + branch.insn.mnemonic + ' at 0x' + ptrToHex(branch.insn.address) +
+            ' jumps to 0x' + ptrToHex(branch.target) + ', inside the ' + branch.replaced +
+            ' bytes the ' + JUMP_BYTES[i] + '-byte jump of a hook at ' + site +
+            ' replaces: it would land in the middle of that jump.' + instead;
     }
     return null;
 }
@@ -311,25 +356,37 @@ function hasHookAt(address) {
     return hooks.some(function (hook) { return hook.interceptor && hook.start.equals(address); });
 }
 
-// How many of the program's bytes at `address` are replaced now, counted to the
-// end of the last instruction of the program's that lost a byte.
+// How many bytes the jump Frida has written at `address` takes: jmp rel32, or
+// jmp [rip+2] with the two bytes it skips and the pointer it reads after it.
+function writtenJumpBytes(address) {
+    var jump = Instruction.parse(address);
+    var operand = jump.operands[0];
+    if (operand.type === 'mem') return jump.size + operand.value.disp + Process.pointerSize;
+    return jump.size;
+}
+
+// How many of the program's bytes at `address`, which were `original`, the jump
+// of a hook has replaced, counted to the end of the last instruction of the
+// program's that lost a byte, or 0 while the jump is not written. A byte of the
+// jump may equal the byte it replaced, so the count comes from the jump.
 function replacedBytes(address, original) {
     var current = new Uint8Array(address.readByteArray(original.length));
-    var last = -1;
-    for (var i = 0; i < original.length; i++) {
-        if (current[i] !== original[i]) last = i;
-    }
-    // An operand byte of the jump may equal the byte it replaced.
-    if (current[0] === 0xE9) last = Math.max(last, NEAR_JUMP_BYTES - 1);
+    if (!current.some(function (b, i) { return b !== original[i]; })) return 0;
+    var jumpBytes = writtenJumpBytes(address);
     var copy = decodable(original);
     var end = 0;
-    while (end <= last) end += Instruction.parse(copy.add(end)).size;
+    while (end < jumpBytes) end += Instruction.parse(copy.add(end)).size;
     return end;
 }
 
-// Records a jump written over `size` bytes at `start`, which held `original`; returns its release.
-function recordHook(start, size, what, interceptor, original) {
-    var hook = { start: start, size: size, what: what, interceptor: interceptor, original: original };
+// Records `hook`, a jump written over code, and returns its release:
+//   start, size   the bytes it owns
+//   original      the program's bytes there
+//   what          its name in a refusal
+//   interceptor   whether it is Frida's, which chains the hooks at one address
+//   written       false while Frida has yet to write the jump; `size` is then
+//                 the most it may take, and lookForJump() settles it
+function recordHook(hook) {
     hooks.push(hook);
     return function () {
         var index = hooks.indexOf(hook);
@@ -374,22 +431,47 @@ function hookPlacement(address, what, isProbe) {
 // Hooks `address` with a function hook ({onEnter, onLeave}) or, given one
 // function, a probe. Returns { detach, site, bytesTaken }: `site` is where
 // Frida writes its jump, which is not `address` where the program jumps on from
-// there, and bytesTaken() is how many of the program's bytes the jump has
-// replaced. Frida commits the jump when the thread that attached leaves the
-// script, so the count is the caller's to ask for in a later call.
+// there, and bytesTaken() is how many of the program's bytes the jump replaced,
+// or null if the jump was never seen in memory.
+//
+// Frida writes the jump, and takes it out again after a detach, once no thread
+// is inside a script or waiting to enter one. Interceptor.flush() is such a
+// moment only if this thread is alone there, so the jump may come later. It is
+// looked for each time the count is asked for or the bytes of the hook are
+// weighed against another change, and before the hook is detached: a hook that
+// detaches from its own callback was reached through the jump. Until it is
+// seen the hook owns every byte either jump would take, and from then on the
+// bytes that one took. A site the program has made unreadable since shows no jump.
 function attachHook(address, what, callbacks) {
     var placement = hookPlacement(address, what, typeof callbacks === 'function');
     if (placement.refusal !== null) throw new Error(placement.refusal);
     var site = placement.site;
-    var size = hookedBytes(site);
-    var original = originalBytes(site, size);
+    var original = originalBytes(site, hookedBytes(site));
     var listener = Interceptor.attach(address, callbacks);
-    var release = recordHook(site, size, what + ' hook', true, original);
+    var hook = {
+        start: site, size: original.length, original: original, what: what + ' hook',
+        interceptor: true, written: false, lookForJump: lookForJump
+    };
+    var release = recordHook(hook);
+    var attached = true;
+    function lookForJump() {
+        if (hook.written || !attached || !isReadable(site)) return;
+        var replaced = replacedBytes(site, original);
+        if (replaced === 0) return;
+        hook.written = true;
+        hook.size = replaced;
+        hook.original = original.subarray(0, replaced);
+    }
     function detach() {
         try {
-            listener.detach();
+            lookForJump();
         } finally {
-            release();
+            attached = false;
+            try {
+                listener.detach();
+            } finally {
+                release();
+            }
         }
     }
     try {
@@ -398,7 +480,13 @@ function attachHook(address, what, callbacks) {
         detach();
         throw e;
     }
-    return { detach: detach, site: site, bytesTaken: function () { return replacedBytes(site, original); } };
+    return {
+        detach: detach, site: site,
+        bytesTaken: function () {
+            lookForJump();
+            return hook.written ? hook.size : null;
+        }
+    };
 }
 
 // ── read-spec parser & evaluator ──────────────────────────────────────────
@@ -756,7 +844,7 @@ function removeTrace(traceId) {
     } finally {
         _flushTraceBuf(traceId, t.buffer.splice(0));
     }
-    return { ok: true };
+    return { ok: true, bytesTaken: t.listener.bytesTaken() };
 }
 
 function flushTraces(traceId) {
@@ -987,7 +1075,33 @@ var SUSPEND_FAILED = 0xFFFFFFFF;
 var CONTEXT_FLAGS_OFFSET = is64 ? 0x30 : 0;
 var CONTEXT_CONTROL = is64 ? 0x100001 : 0x10001;
 
-var win32 = null;    // the functions below, once a breakpoint was set
+var win32 = null;    // the functions below, once a breakpoint was asked for
+
+// kernel32 functions that run while a breakpoint is handled: the handler calls
+// the first four on the thread it stops, and Frida calls the rest to rewrite
+// code. An int3 in one of them is raised inside that handling, where Frida
+// takes it for a failure of the script. Their entries are the part of that
+// code this agent can name and refuse an int3 on. The rest it cannot: an int3
+// further inside one of them, or in the kernelbase.dll and ntdll.dll code they
+// run, is accepted and has the same end.
+var CALLED_WHILE_HANDLING = ['CreateEventW', 'SetEvent', 'CloseHandle', 'WaitForSingleObject',
+                             'VirtualProtect', 'VirtualQuery', 'FlushInstructionCache'];
+
+// address -> name, for the entry of each such function and of the code its
+// export jumps on to.
+function entriesCalledWhileHandling(kernel32) {
+    var entries = {};
+    CALLED_WHILE_HANDLING.forEach(function (name) {
+        var site = kernel32.getExportByName(name);
+        for (var hops = 0; hops <= REDIRECT_LIMIT; hops++) {
+            entries[patchKey(site)] = name;
+            var jump = redirect(site);
+            if (jump === null) break;
+            site = jump.target;
+        }
+    });
+    return entries;
+}
 
 function resolveWin32() {
     var kernel32 = Process.getModuleByName('kernel32.dll');
@@ -997,6 +1111,7 @@ function resolveWin32() {
         return new NativeFunction(kernel32.getExportByName(name), returns, args, { scheduling: 'exclusive' });
     }
     return {
+        calledWhileHandling: entriesCalledWhileHandling(kernel32),
         openThread: new NativeFunction(kernel32.getExportByName('OpenThread'),
             'pointer', ['uint32', 'int', 'uint32']),
         suspendThread: onSuspendedThread('SuspendThread', 'uint32', ['pointer']),
@@ -1103,6 +1218,32 @@ function lower(patch) {
     patch.lifted--;
 }
 
+// Why the int3 of `what`, a breakpoint or a step waiting for a call to return,
+// cannot be written at `address`, or null if it can.
+function int3Refusal(address, what) {
+    var called = win32.calledWhileHandling[patchKey(address)];
+    if (called !== undefined) {
+        return '0x' + ptrToHex(address) + ' is the entry of kernel32.dll!' + called + ', which ' +
+            'runs while a breakpoint is handled: an int3 there would be reached from inside that ' +
+            'handling and end the agent. Record its calls with trace instead. Only the entries ' +
+            'of the system functions the handling calls are refused: a breakpoint further inside ' +
+            'one, or in the system code it runs, is accepted and ends the agent the same way.';
+    }
+    if (Cloak.hasRangeContaining(address)) {
+        return '0x' + ptrToHex(address) + ' is in memory Frida keeps to itself, where no int3 ' +
+            'can be written: the code of one of its hooks, or a block from its heap (a mem alloc ' +
+            'of under a page, the vishook cave). A thread gets into such a block by step alone; ' +
+            'mem alloc of a page or more returns memory that takes breakpoints.';
+    }
+    var refusal = rewriteRefusal(address, 1, what, false);
+    if (refusal !== null) return refusal;
+    if (address.readU8() === INT3) {
+        return 'the byte at 0x' + ptrToHex(address) + ' is already an int3: padding between ' +
+            'functions, or a breakpoint built into the program.';
+    }
+    return null;
+}
+
 function breakpointRefusal(address) {
     var unsupported = freezeRefusal();
     if (unsupported !== null) return unsupported;
@@ -1110,13 +1251,8 @@ function breakpointRefusal(address) {
         return 'a steptrace is running, and the copy of the code it executes cannot carry a ' +
             'breakpoint. Wait for it to finish.';
     }
-    var refusal = rewriteRefusal(address, 1, 'breakpoint', false);
-    if (refusal !== null) return refusal;
-    if (address.readU8() === INT3) {
-        return 'the byte at this address is already an int3: padding between functions, or a ' +
-            'breakpoint built into the program.';
-    }
-    return null;
+    if (win32 === null) win32 = resolveWin32();
+    return int3Refusal(address, 'breakpoint');
 }
 
 function installBp(addrStr) {
@@ -1128,7 +1264,6 @@ function installBp(addrStr) {
     if (!patch) {
         var refusal = breakpointRefusal(address);
         if (refusal !== null) return { ok: false, error: refusal };
-        if (win32 === null) win32 = resolveWin32();
         patch = addPatch(address);
     }
     patch.bp = { id: nextBpId++, addr: addrStr, hitCount: 0 };
@@ -1231,11 +1366,8 @@ function failStep(reason) {
 function setStepTarget(step, address, sp) {
     var patch = patches[patchKey(address)];
     if (!patch) {
-        var refusal = rewriteRefusal(address, 1, 'step', false);
+        var refusal = int3Refusal(address, 'step');
         if (refusal !== null) return refusal;
-        if (address.readU8() === INT3) {
-            return 'the byte there is an int3 the program put there, so no breakpoint can be set on it.';
-        }
         patch = addPatch(address);
     }
     patch.stepTarget = true;
@@ -1270,15 +1402,33 @@ function cancelStep() {
 // after the single-step described by `pending` if it had asked for one. If it
 // is to freeze, it waits on `wake`. `visit.mode` is set to the step the thread
 // leaves with, before it is sent on.
+//
+// A thread of Frida's own (one it cloaks) passes a breakpoint uncounted and is
+// never frozen: the daemon's commands, resume among them, arrive through those
+// threads. Nor is a thread stopped in the code of Frida's hooks, which it
+// enters through the jump of a hook or through a return address a function
+// hook replaced: a step that leads there ends. The user's own code is stepped
+// through like the program's, in memory Frida cloaks too.
 function arrive(details, threadId, patch, pending, wake, visit) {
+    var programs = !Cloak.hasCurrentThread();
     if (patch !== null) {
         lift(patch);
-        if (patch.bp !== null) patch.bp.hitCount++;
+        if (patch.bp !== null && programs) patch.bp.hitCount++;
     }
 
     var step = (activeStep !== null && activeStep.threadId === threadId) ? activeStep : null;
     var stepEnds = pending !== null && pending.stop;
-    var stop = (patch !== null && patch.bp !== null) || stepEnds;
+    if (pending !== null && (step !== null || stepEnds) && isFridasCode(details.context.pc)) {
+        failStep('the step led from 0x' + ptrToHex(pending.from) + ' to 0x' +
+            ptrToHex(details.context.pc) + ', into memory Frida keeps to itself: the code of a ' +
+            'hook (trace, collect, steptrace, dipcnt), which runs where the hook has written its ' +
+            'jump or taken a return address. No thread is stopped there: the step ended and the ' +
+            'thread is running. To stop it later, set a breakpoint where it will arrive and wait ' +
+            'with watch.');
+        step = null;
+        stepEnds = false;
+    }
+    var stop = programs && ((patch !== null && patch.bp !== null) || stepEnds);
     var mode = null;
     if (step !== null) {
         // Running a call to its end: only the instruction after it, back in
@@ -1501,9 +1651,13 @@ function abandonTrap(details, threadId) {
     }
 }
 
-Process.setExceptionHandler(function (details) {
+// Registered by name. Frida lets go of the function it was given when the agent
+// unloads, and a thread parked in the handler is still inside it then: a
+// function only Frida held would be freed under that thread, while one this
+// script's globals hold stays whole until the thread has left.
+function onException(details) {
     var threadId = Process.getCurrentThreadId();
-    if (details.type === 'breakpoint') return onBreakpoint(details, threadId);
+    if (details.type === 'breakpoint' && onBreakpoint(details, threadId)) return true;
     if (details.type === 'single-step') return onSingleStep(details, threadId);
     try {
         abandonTrap(details, threadId);
@@ -1511,7 +1665,9 @@ Process.setExceptionHandler(function (details) {
         send({ type: 'agent_error', where: 'exception handler', error: e.message, stack: e.stack || '' });
     }
     return false;
-});
+}
+
+Process.setExceptionHandler(onException);
 
 // Takes back the trap flag a thread was given, and returns whether its
 // single-step exception is coming all the same. The flag stays in the thread's
@@ -1622,8 +1778,9 @@ function handlersStillRunning() {
 // forces "fully visible" for callers above a threshold address while
 // letting callers below the threshold run the original function.
 
-var visOverride = null;   // { cave, origBytes, stats, jmpSite, release }
+var visOverride = null;   // { cave, origBytes, stats, jmpSite, release, releaseCave }
 var VIS_JMP_BYTES = 5;
+var VIS_CAVE_BYTES = 72;  // 64 of code, then the two counters
 
 function installVisOverride(thresholdHex, jmpSiteHex, origTargetHex) {
     if (visOverride) return { ok: false, error: 'already installed' };
@@ -1638,9 +1795,8 @@ function installVisOverride(thresholdHex, jmpSiteHex, origTargetHex) {
 
     var origBytes = new Uint8Array(jmpSite.readByteArray(VIS_JMP_BYTES));
 
-    // Allocate code cave (64 bytes code + 8 bytes counters)
-    var cave = Memory.alloc(72);
-    Memory.protect(cave, 72, 'rwx');
+    var cave = Memory.alloc(VIS_CAVE_BYTES);
+    Memory.protect(cave, VIS_CAVE_BYTES, 'rwx');
 
     // Stats: cave+64 = override count (u32), cave+68 = passthrough count (u32)
     var statsPtr = cave.add(64);
@@ -1724,7 +1880,11 @@ function installVisOverride(thresholdHex, jmpSiteHex, origTargetHex) {
 
     visOverride = {
         cave: cave, origBytes: origBytes, stats: statsPtr, jmpSite: jmpSite,
-        release: recordHook(jmpSite, VIS_JMP_BYTES, 'vishook', false, origBytes)
+        release: recordHook({
+            start: jmpSite, size: VIS_JMP_BYTES, original: origBytes, what: 'vishook',
+            interceptor: false, written: true
+        }),
+        releaseCave: recordUserCode(cave, VIS_CAVE_BYTES)
     };
     return { ok: true, cave: ptrToHex(cave), threshold: threshold };
 }
@@ -1734,6 +1894,7 @@ function removeVisOverride() {
     if (!visOverride) return { ok: false, error: 'not installed' };
     if (isReadable(visOverride.jmpSite)) patchBytes(visOverride.jmpSite, Array.from(visOverride.origBytes));
     visOverride.release();
+    visOverride.releaseCave();
     visOverride = null;
     return { ok: true };
 }
@@ -1971,7 +2132,7 @@ rpc.exports = {
         try {
             var p = Memory.alloc(size);
             Memory.protect(p, size, 'rwx');
-            _allocations.push(p);
+            recordUserCode(p, size);
             return { ok: true, addr: ptrToHex(p) };
         } catch (e) { return { ok: false, error: e.message }; }
     },
@@ -2029,9 +2190,6 @@ rpc.exports = {
     // tracing
     originalInstruction: function (addrStr) { return originalInstruction(ptr(addrStr)); },
     installTrace: function (addrStr, config) { return installTrace(addrStr, config); },
-    traceHookBytes: function (traceId) {
-        return traces[traceId] ? traces[traceId].listener.bytesTaken() : null;
-    },
     removeTrace: function (traceId) { return removeTrace(traceId); },
     flushTraces: function (traceId) { return flushTraces(traceId); },
     checkPrologue: function (addrStr) { return checkPrologue(addrStr); },
