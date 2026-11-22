@@ -343,13 +343,9 @@ def decode_format(val):
     """Decode D3DFORMAT value."""
     if val in D3DFMT:
         return D3DFMT[val]
-    # Try as FourCC
-    if val > 0xFF:
-        try:
-            cc = struct.pack('<I', val).decode('ascii', errors='replace')
-            return f"FourCC('{cc}')"
-        except struct.error:
-            pass  # wider than a dword: no FourCC
+    if 0xFF < val <= 0xFFFFFFFF:
+        cc = struct.pack('<I', val).decode('ascii', errors='replace')
+        return f"FourCC('{cc}')"
     return f"UNKNOWN(0x{val:X})"
 
 

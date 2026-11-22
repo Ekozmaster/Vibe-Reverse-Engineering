@@ -18,9 +18,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rtx_remix_tools" / "dx" / "scripts"))
 
 from d3d9_calls import (
-    PUSH_EAX, PUSH_ECX, TEXT_VA, Code, call_method, load_device, push, push32, write_pe32, write_pe32_plus,
+    DEVICE_GLOBAL, PUSH_EAX, PUSH_ECX, TEXT_VA, Code, call_method, load_config, load_device, push, push32, write_pe32,
+    write_pe32_plus,
 )
 import dx9_calls
+import find_matrix_registers
 from proxy_template import ini_section_in, keys_of, keys_the_proxy_reads
 
 # IDirect3DDevice9 vtable offsets
@@ -126,6 +128,33 @@ class TestMatrixRegisters:
     def test_field_read_at_the_method_offset_reports_no_registers(self, text):
         assert "c16-c47" not in text and "c32-" not in text
 
+    def test_function_start_is_an_address_in_the_section_that_holds_it(self):
+        # an incrementally linked image: .textbss, with nothing stored, comes before .text
+        image_base = 0x400000
+        sections = [
+            {"name": ".textbss", "va": 0x1000, "vsz": 0x10000, "raw": 0, "rawsz": 0, "chars": 0xE00000A0},
+            {"name": ".text", "va": 0x11000, "vsz": 0x200, "raw": 0x400, "rawsz": 0x200, "chars": 0x60000020},
+        ]
+        frame = bytes([0x55, 0x8B, 0xEC])                                   # push ebp / mov ebp, esp
+        data = bytes(0x400) + bytes([0xCC]) * 0x10 + frame + bytes([0x90]) * 0x1ED
+
+        function = find_matrix_registers.find_containing_function(data, sections, image_base, 0x411020)
+
+        assert function == 0x411010
+
+    def test_function_start_is_not_sought_in_front_of_the_section(self):
+        # frames in .rdata and in the unmapped bytes between it and .text, both within reach of the address
+        image_base = 0x400000
+        sections = [
+            {"name": ".rdata", "va": 0x1000, "vsz": 0x180, "raw": 0x400, "rawsz": 0x180, "chars": 0x40000040},
+            {"name": ".text", "va": 0x11000, "vsz": 0x200, "raw": 0x600, "rawsz": 0x200, "chars": 0x60000020},
+        ]
+        frame = bytes([0x55, 0x8B, 0xEC])
+        data = (bytes(0x400) + bytes(0x170) + frame + bytes(0xD) + bytes(0x40) + frame + bytes(0x3D)
+                + bytes([0x90]) * 0x200)
+
+        assert find_matrix_registers.find_containing_function(data, sections, image_base, 0x411010) is None
+
     def test_suggested_layout_is_an_ini_section_the_proxy_reads(self, text):
         layout = ini_section_in(text, "FFP.Registers")
         assert dict(layout["FFP.Registers"]) == {"WorldStart": "8", "WorldEnd": "12"}
@@ -150,6 +179,9 @@ class TestRenderStates:
 
     def test_no_state_is_invented_from_a_value(self, text):
         assert "FILLMODE" not in text and "WRAP0" not in text
+
+    def test_a_call_whose_state_is_a_constant_is_not_listed_as_undecoded(self, text):
+        assert "not decoded" not in text
 
 
 class TestPixelShaderConstants:
@@ -276,6 +308,58 @@ class TestOtherDecoders:
         assert f"0x{known_calls[1].calls['vs_bytecode']:08X}" in text and "vs_3_0" in text
 
 
+class TestControlFlowGuardedImage:
+    """A script passes the Control Flow Guard check that the load configuration of its binary names."""
+
+    _GUARD_CHECK_POINTER = 0x564790
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def guarded(cls, tmp_path_factory):
+        """(path of the binary, Code it was built from): one checked SetRenderState and one CreateVertexDeclaration."""
+        code = Code()
+        declaration_va = code.add_data("declaration", _SKINNED_DECLARATION)
+        load_device_and_vtable = bytes([0xA1]) + struct.pack("<I", DEVICE_GLOBAL) + bytes([0x8B, 0x08])
+        call_guard_check = bytes([0xFF, 0x15]) + struct.pack("<I", cls._GUARD_CHECK_POINTER)
+
+        def checked_call(label, offset, *arguments):
+            # mov eax, [device] / mov ecx, [eax] / pushes / mov esi, [ecx+offset] / mov ecx, esi / check / call esi
+            load_method = bytes([0x8B, 0xB1]) + struct.pack("<I", offset)
+            code.add(label, load_device_and_vtable, *arguments, PUSH_EAX, load_method, bytes([0x8B, 0xCE]),
+                     call_guard_check, bytes([0xFF, 0xD6]))
+
+        checked_call("zfunc", SET_RENDER_STATE, push(8), push(D3DRS_ZFUNC))
+        checked_call("vertex_declaration", CREATE_VERTEX_DECLARATION, PUSH_ECX, push32(declaration_va))
+        path = write_pe32(tmp_path_factory.mktemp("dx") / "guarded.exe", code.data,
+                          load_config(cls._GUARD_CHECK_POINTER))
+        return path, code
+
+    def test_arguments_pushed_before_the_check_are_decoded(self, guarded):
+        text = report("find_render_states", guarded[0], "--all")
+
+        assert re.search(r"^\s+ZFUNC\s+\[\s*1 sites\]\s+values: ALWAYS$", text, re.MULTILINE)
+
+    def test_device_calls_are_listed(self, guarded):
+        assert "SetRenderState (vtable+0x0E4): 1 sites" in report("find_device_calls", guarded[0])
+
+    def test_a_region_scan_finds_the_checked_calls(self, guarded):
+        binary, code = guarded
+
+        text = report("scan_d3d_region", binary, f"0x{TEXT_VA:X}", f"0x{TEXT_VA + len(code.data):X}")
+
+        assert "SetRenderState (offset 0xE4): 1 refs" in text
+
+    def test_vertex_declaration_of_a_checked_call_is_decoded(self, guarded):
+        text = report("decode_vtx_decls", guarded[0], "--scan")
+
+        assert f"0x{guarded[1].calls['declaration']:08X}" in text and "BLENDWEIGHT" in text
+
+    def test_without_the_load_configuration_the_checked_calls_are_not_reported(self, guarded, tmp_path):
+        binary = write_pe32(tmp_path / "unnamed.exe", guarded[1].data)
+
+        assert "SetRenderState (vtable+0x0E4): 0 sites" in report("find_device_calls", binary)
+
+
 @pytest.fixture(scope="module")
 def unsettled_calls(tmp_path_factory):
     """(path of a binary whose calls each have an argument that is not a constant, Code it was built from)."""
@@ -314,6 +398,7 @@ class TestCallsWhoseArgumentsAreNotConstants:
         ("find_blend_states", (), "transform", "State=<eax>  pMatrix=<eax>"),
         ("find_matrix_registers", (), "constants", "StartRegister=<eax>  pConstantData=<eax>  Vector4fCount=4"),
         ("find_matrix_registers", (), "vertex_shader", "pFunction=<eax>  ppShader=<eax>"),
+        ("find_render_states", (), "state", "State=<eax>  Value=1"),
         ("find_shader_bytecode", (), "vertex_shader", "pFunction=<eax>  ppShader=<eax>"),
         ("find_shader_bytecode", (), "pixel_shader", "pFunction=<unknown>  ppShader=<unknown>"),
         ("find_skinning", (), "declaration", "pVertexElements=<eax>  ppDecl=<eax>"),
@@ -368,7 +453,8 @@ def many_unsettled_calls(tmp_path_factory):
 
 _SCRIPTS_LISTING_UNDECODED_CALLS = [
     ("decode_fvf", (), SET_FVF), ("decode_vtx_decls", ("--scan",), CREATE_VERTEX_DECLARATION),
-    ("find_blend_states", (), SET_RENDER_STATE), ("find_matrix_registers", (), SET_VS_CONSTANT_F),
+    ("find_blend_states", (), SET_RENDER_STATE), ("find_render_states", (), SET_RENDER_STATE),
+    ("find_matrix_registers", (), SET_VS_CONSTANT_F),
     ("find_matrix_registers", (), CREATE_VERTEX_SHADER), ("find_shader_bytecode", (), CREATE_VERTEX_SHADER),
     ("find_skinning", (), SET_FVF), ("find_surface_formats", (), CREATE_OFFSCREEN_PLAIN_SURFACE),
     ("find_texture_ops", (), SET_TEXTURE),
@@ -438,18 +524,12 @@ class TestRegionScan:
         assert "SetRenderState (offset 0xE4): 2 refs" in text
         assert "Total: 2 vtable reference sites" in text
 
-    def test_only_the_hits_in_the_region_are_checked(self, known_calls, monkeypatch):
+    def test_a_region_without_references_below_0x80_names_no_device_location(self, known_calls):
         binary, code = known_calls
-        start, end = code.calls["zfunc"], code.calls["alpharef"]
-        checked = []
-        is_com_method_call = dx9_calls._is_com_method_call
-        monkeypatch.setattr(dx9_calls, "_is_com_method_call", lambda text_data, text_va, site_va, param_count: (
-            checked.append(site_va) or is_com_method_call(text_data, text_va, site_va, param_count)))
 
-        report("scan_d3d_region", binary, f"0x{start:X}", f"0x{end:X}")
+        text = report("scan_d3d_region", binary, f"0x{code.calls['zfunc']:X}", f"0x{code.calls['alpharef']:X}")
 
-        # A method pointer loaded up to 64 bytes before the region can be called in it
-        assert checked and all(start - 64 <= site_va < end for site_va in checked)
+        assert "Device location" not in text and "unconfirmed" not in text
 
     def test_region_outside_every_section_is_refused(self, known_calls):
         with pytest.raises(SystemExit):
@@ -536,6 +616,31 @@ class TestDeviceProvenanceReport:
         assert "Device location: none learned" in text
         assert "Unconfirmed (object not shown to be the device): 2" in text
         assert "No format arguments decoded" in text
+
+    def test_region_scan_labels_the_call_on_another_object(self, tmp_path):
+        binary, code = self._binary(tmp_path, load_device())
+
+        text = report("scan_d3d_region", binary, f"0x{TEXT_VA:X}", f"0x{TEXT_VA + len(code.data):X}")
+
+        assert "Device location, learned from the calls at vtable+0x80 and above: [0x009D915C]" in text
+        assert "CreateTexture (offset 0x5C): 1 refs, 1 unconfirmed (object not shown to be the device)" in text
+        assert lines_with(text, f"0x{code.calls['device_texture']:08X}") == [
+            f"0x{code.calls['device_texture']:08X}  (call)"]
+        assert lines_with(text, f"0x{code.calls['other_texture']:08X}") == [
+            f"0x{code.calls['other_texture']:08X}  (call)  unconfirmed"]
+        assert "Total: 13 vtable reference sites, 1 unconfirmed" in text
+        assert lines_with(text, "SetTexture  ") == ["SetTexture                     1 refs"]
+
+    def test_region_scan_counts_no_low_slot_call_as_a_device_reference_when_no_device_is_learned(self, tmp_path):
+        load_field_of_this = bytes([0x8B, 0x49, 0x3C, 0x8B, 0x11])          # mov ecx, [ecx+0x3C] / mov edx, [ecx]
+        binary, code = self._binary(tmp_path, load_field_of_this)
+
+        text = report("scan_d3d_region", binary, f"0x{TEXT_VA:X}", f"0x{TEXT_VA + len(code.data):X}")
+
+        assert "Device location: none learned" in text
+        assert "CreateTexture (offset 0x5C): 0 refs, 2 unconfirmed (object not shown to be the device)" in text
+        assert "Total: 12 vtable reference sites, 2 unconfirmed" in text
+        assert "Unique methods referenced: 12" in text
 
 
 class TestInputTheScannersCannotRead:

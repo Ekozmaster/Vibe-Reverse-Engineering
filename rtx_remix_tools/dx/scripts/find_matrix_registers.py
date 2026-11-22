@@ -102,7 +102,7 @@ def _decode_ctab_block(data, start, end):
 
     # Each constant info: name_offset(4) + register_set(2) + register_index(2) +
     #                     register_count(2) + reserved(2) + type_info_offset(4) +
-    #                     default_value_offset(4) + default_value_size(4)
+    #                     default_value_offset(4)
     info_base = table + const_info_off
     for i in range(num_constants):
         entry = info_base + i * 20
@@ -141,26 +141,28 @@ def _decode_ctab_block(data, start, end):
 
 
 def find_containing_function(data, sections, image_base, va, search_back=256):
-    """Heuristic: find likely function start by scanning backwards for common prologues."""
-    file_off = va_to_offset(sections, image_base, va)
-    if file_off is None:
+    """Heuristic: find likely function start by scanning backwards for common prologues.
+
+    Only the section that holds *va* is searched: what the file stores in
+    front of it is not code that runs into *va*.
+    """
+    rva = va - image_base
+    section = next((s for s in sections if s['va'] <= rva < s['va'] + s['vsz']), None)
+    if section is None:
         return None
-    start = max(0, file_off - search_back)
-    region = data[start:file_off]
+    reach = min(search_back, rva - section['va'])
+    file_off = section['raw'] + rva - section['va']
+    region = data[file_off - reach:file_off]
+    region_va = va - reach
 
     # Look for push ebp; mov ebp, esp (55 8B EC) or sub esp (83 EC)
     best = None
     for i in range(len(region) - 2):
         if region[i] == 0x55 and region[i + 1] == 0x8B and region[i + 2] == 0xEC:
-            candidate = image_base + (start + i - sections[0]['raw'] + sections[0]['va'])
-            # Prefer the one closest to our VA
-            if best is None or candidate > best:
-                best = candidate
+            best = region_va + i
         # Also check for naked functions with just sub esp
         if region[i] == 0x83 and region[i + 1] == 0xEC and i > 0 and region[i - 1] in (0xCC, 0x90, 0xC3):
-            candidate = image_base + (start + i - sections[0]['raw'] + sections[0]['va'])
-            if best is None or candidate > best:
-                best = candidate
+            best = region_va + i
 
     return best
 

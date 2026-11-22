@@ -17,7 +17,7 @@ import struct
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_pe import load_binary, find_text_section
+from dx9_pe import code_section, find_text_section, load_binary
 from dx9_calls import scan_vtable_calls, scan_vtable_mov, split_device_hits, device_origin_summary
 
 # Key methods for FFP conversion (the ones you'll most likely intercept)
@@ -70,7 +70,7 @@ def main():
         print("ERROR: no executable section found")
         sys.exit(1)
 
-    text_data = data[raw_start:raw_start + raw_size]
+    text_data = code_section(data, sections, raw_start, raw_size)
     print(f"ImageBase: 0x{image_base:08X}")
     print(f"Executable section: VA 0x{text_va:08X}, size 0x{raw_size:X}")
     print(device_origin_summary(text_data, text_va))

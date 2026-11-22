@@ -18,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rtx_remix_tools
 import dx9_calls as calls
 import dx9_pe
 from d3d9_calls import (
-    DEVICE_GLOBAL, PUSH_EAX, PUSH_ECX, PUSH_ESI, TEXT_VA, Code, call_method, load_device, push, push32,
-    write_pe32, write_pe32_plus,
+    DEVICE_GLOBAL, PUSH_EAX, PUSH_ECX, PUSH_ESI, TEXT_RVA, TEXT_VA, Code, call_method, load_config, load_device, push,
+    push32, write_pe32, write_pe32_plus,
 )
 
 SET_RENDER_STATE = 0xE4
@@ -379,20 +379,15 @@ class TestCallScan:
 
         assert found == [(code.calls["short"], "edx"), (code.calls["long"], "edx")]
 
-    def test_region_limits_the_sites_and_the_hits_that_are_checked(self, monkeypatch):
+    def test_region_limits_the_sites(self):
         code = Code()
         for label in ("before", "inside", "after"):
             code.add(label, push(1), push(22), PUSH_ECX, call_method(SET_RENDER_STATE))
-        checked = []
-        is_com_method_call = calls._is_com_method_call
-        monkeypatch.setattr(calls, "_is_com_method_call", lambda text_data, text_va, site_va, param_count: (
-            checked.append(site_va) or is_com_method_call(text_data, text_va, site_va, param_count)))
         inside = code.calls["inside"]
 
         found = calls.scan_all_patterns(code.data, TEXT_VA, SET_RENDER_STATE, region=(inside, inside + 1))
 
         assert found == [(inside, "call [edx+0x0E4]")]
-        assert checked == [inside]
 
     def test_finds_a_call_through_ebp(self):
         through_ebp = bytes([0xFF, 0x95]) + (SET_RENDER_STATE).to_bytes(4, "little")   # call [ebp+0xE4]
@@ -822,17 +817,19 @@ class TestArgumentCount:
         assert _found_calls(code, PRESENT) == [code.calls["aligned"]]
 
     @staticmethod
-    def _add_jump_table_case(code, label, before_dispatch, *case, other_dispatch_after=None):
-        """Add a function that runs *before_dispatch* and reaches *case* only through a one-entry jump table.
+    def _add_jump_table_case(code, label, before_dispatch, *case, other_dispatch_after=None, falling_in=b""):
+        """Add a function that runs *before_dispatch* and reaches *case* through a one-entry jump table.
 
         With *other_dispatch_after*, a second function runs those bytes and
-        dispatches through the same table.
+        dispatches through the same table. *falling_in* sits between the
+        dispatch and the case, which it falls into; without it the table is
+        the only way to the case.
         """
         dispatch = bytes([0xFF, 0x24, 0x85])                                # jmp [eax*4 + table]
         frame, epilogue = 3, 2
-        case_va = TEXT_VA + len(code.data) + frame + len(before_dispatch) + len(dispatch) + 4
+        case_va = TEXT_VA + len(code.data) + frame + len(before_dispatch) + len(dispatch) + 4 + len(falling_in)
         table_va = case_va + sum(len(chunk) for chunk in case) + epilogue + len(_PADDING)
-        code.add(label, before_dispatch, dispatch + struct.pack("<I", table_va), *case)
+        code.add(label, before_dispatch, dispatch + struct.pack("<I", table_va), falling_in, *case)
         assert code.add_data(f"{label} table", struct.pack("<I", case_va)) == table_va
         if other_dispatch_after is not None:
             code.add(f"{label} other dispatch", other_dispatch_after, dispatch + struct.pack("<I", table_va))
@@ -863,6 +860,28 @@ class TestArgumentCount:
                                          other_dispatch_after=_CALL_NEAR)
 
         assert _found_calls(code, SET_RENDER_STATE) == []
+
+    def test_a_push_falling_into_a_jump_table_case_is_not_the_argument_of_the_dispatch_path(self):
+        # push 9 / jmp [table] ... push 7 / case: push 22 / push ecx / call: Value is 9 or 7 by the way in
+        code = self._add_jump_table_case(Code(), "case", push(9), push(22), PUSH_ECX, call_method(SET_RENDER_STATE),
+                                         falling_in=push(7))
+
+        assert _found_calls(code, SET_RENDER_STATE) == [code.calls["case"]]
+        assert _immediates(code, "case", "SetRenderState") == {"this": None, "State": 22, "Value": None}
+
+    def test_the_first_instruction_seen_before_a_dispatch_can_push_the_last_argument(self):
+        # the push sits where the instructions decoded with certainty before the dispatch begin
+        computing_the_case = bytes([
+            0x8B, 0x45, 0x08,               # mov eax, [ebp+8]
+            0x85, 0xC0,                     # test eax, eax
+            0x89, 0x55, 0xF8,               # mov [ebp-8], edx
+            0x83, 0xC0, 0x04,               # add eax, 4
+        ]) * 4 + bytes([0x33, 0xD2])        # xor edx, edx
+        assert len(computing_the_case) == 48 - len(push(1))
+        code = self._add_jump_table_case(Code(), "case", _REAL_CODE + push(1) + computing_the_case,
+                                         push(22), PUSH_ECX, call_method(SET_RENDER_STATE))
+
+        assert _found_calls(code, SET_RENDER_STATE) == [code.calls["case"]]
 
     def test_too_few_pushes_after_a_join_is_kept(self):
         # what the other path put on the stack before the join is not in front of the call
@@ -924,6 +943,236 @@ class TestArgumentCount:
         assert calls.scan_vtable_calls(code.data, TEXT_VA, CREATE_TEXTURE, calls.D3DX_CONSTANT_TABLE) == [
             (code.calls["set_matrices"], "edx")]
         assert _found_calls(code, CREATE_TEXTURE) == []
+
+
+_CALLEE_SAVED = {"ebx": 3, "ebp": 5, "esi": 6, "edi": 7}     # register number in a ModRM byte
+
+
+def _guard_checked_call(register: int, guard_check_pointer: int) -> tuple[bytes, ...]:
+    """``mov ecx, reg`` / ``call [guard_check_pointer]`` / ``call reg``."""
+    return (bytes([0x8B, 0xC8 | register]), bytes([0xFF, 0x15]) + guard_check_pointer.to_bytes(4, "little"),
+            bytes([0xFF, 0xD0 | register]))
+
+
+class TestControlFlowGuard:
+    """MSVC /guard:cf checks a method pointer before calling through it:
+    mov ecx, reg / call [__guard_check_icall_fptr] / call reg, the arguments already pushed.
+    The image's load configuration names the pointer the check is called through."""
+
+    _GUARD_CHECK_POINTER = 0x564790
+    _IMPORT = 0x564794
+    _LOAD_DEVICE = bytes([0xA1]) + _DEVICE_GLOBAL                           # mov eax, [device]
+    _LOAD_VTABLE = bytes([0x8B, 0x08])                                      # mov ecx, [eax]
+    _LOAD_SET_RENDER_STATE = bytes([0x8B, 0xB1]) + SET_RENDER_STATE.to_bytes(4, "little")    # mov esi, [ecx+0xE4]
+    _CALL_GUARD_CHECK = bytes([0xFF, 0x15]) + _GUARD_CHECK_POINTER.to_bytes(4, "little")
+    _CALL_IMPORT = bytes([0xFF, 0x15]) + _IMPORT.to_bytes(4, "little")
+    _CALL_ESI = bytes([0xFF, 0xD6])
+    _GUARDED_CALL = (_MOV_ECX_ESI, _CALL_GUARD_CHECK, _CALL_ESI)
+    _PUSH_OBJECT_AND_LOAD_METHOD = (PUSH_EAX, _LOAD_VTABLE, _LOAD_SET_RENDER_STATE)
+    _SET_RENDER_STATE = (_LOAD_DEVICE, push(1), push(22), *_PUSH_OBJECT_AND_LOAD_METHOD, *_GUARDED_CALL)
+    _LOAD = "mov esi, [ecx+0x0E4]"
+    # mov esi, [edi] / push 1 / push 22 / push ebx: the vtable of the object in edi, and ebx as `this`
+    _ANOTHER_THIS = (bytes([0x8B, 0x37]), push(1), push(22), bytes([0x53]))
+    _COPY_METHOD_FROM_ESI = bytes([0x8B, 0x8E]) + SET_RENDER_STATE.to_bytes(4, "little")     # mov ecx, [esi+0xE4]
+    _CALL_METHOD_THROUGH_ESI = bytes([0xFF, 0x96]) + SET_RENDER_STATE.to_bytes(4, "little")  # call [esi+0xE4]
+
+    @classmethod
+    def _in_guarded_image(cls, code: Code) -> Code:
+        """*code* as the section of an image whose load configuration names the guard check pointer."""
+        code.data = dx9_pe.CodeSection(code.data, cls._GUARD_CHECK_POINTER)
+        return code
+
+    @staticmethod
+    def _load_va(code: Code, label: str, after_the_load: tuple = _GUARDED_CALL) -> int:
+        """Address of the method-pointer load in the function *label*, which ends with *after_the_load*."""
+        return (code.calls[label] - sum(len(chunk) for chunk in after_the_load[:-1])
+                - len(TestControlFlowGuard._LOAD_SET_RENDER_STATE))
+
+    def test_a_checked_call_is_found_with_its_arguments(self):
+        code = self._in_guarded_image(Code().add("checked", *self._SET_RENDER_STATE))
+        load_va = self._load_va(code, "checked")
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE) == [(load_va, self._LOAD)]
+        assert _immediates_at(code, load_va, "SetRenderState") == {"this": None, "State": 22, "Value": 1}
+
+    @pytest.mark.parametrize("name", _CALLEE_SAVED)
+    def test_the_check_is_passed_whichever_register_keeps_the_method(self, name):
+        register = _CALLEE_SAVED[name]
+        load_method = bytes([0x8B, 0x81 | register << 3]) + SET_RENDER_STATE.to_bytes(4, "little")
+        checked_call = _guard_checked_call(register, self._GUARD_CHECK_POINTER)
+        code = self._in_guarded_image(Code().add("checked", self._LOAD_DEVICE, push(1), push(22), PUSH_EAX,
+                                                 self._LOAD_VTABLE, load_method, *checked_call))
+        load_va = self._load_va(code, "checked", checked_call)
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE) == [
+            (load_va, f"mov {name}, [ecx+0x0E4]")]
+        assert _immediates_at(code, load_va, "SetRenderState") == {"this": None, "State": 22, "Value": 1}
+
+    def test_the_same_code_in_an_image_that_names_no_check_is_a_call_after_another_call(self):
+        code = Code().add("checked", *self._SET_RENDER_STATE)
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE) == []
+        assert calls.scan_vtable_mov(self._in_guarded_image(code).data, TEXT_VA, SET_RENDER_STATE) == [
+            (self._load_va(code, "checked"), self._LOAD)]
+
+    def test_this_pushed_between_the_copy_into_ecx_and_the_check_is_this(self):
+        late_this = (_MOV_ECX_ESI, PUSH_EAX, self._CALL_GUARD_CHECK, self._CALL_ESI)
+        code = self._in_guarded_image(Code().add(
+            "late_this", self._LOAD_DEVICE, push(1), push(22), self._LOAD_VTABLE, self._LOAD_SET_RENDER_STATE,
+            *late_this))
+        load_va = self._load_va(code, "late_this", late_this)
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE) == [(load_va, self._LOAD)]
+        args = calls.method_args(code.data, TEXT_VA, load_va, "SetRenderState")
+        assert args["this"].source == "eax" and (args["State"].value, args["Value"].value) == (22, 1)
+
+    def test_each_checked_call_through_a_kept_method_pointer_is_found(self):
+        second_call = (push(0), push(7), PUSH_EAX, *self._GUARDED_CALL)
+        code = self._in_guarded_image(Code().add("twice", *self._SET_RENDER_STATE, *second_call))
+        first_load_va = self._load_va(code, "twice", (*self._GUARDED_CALL, *second_call))
+
+        found = calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE)
+
+        assert [va for va, _description in found] == [first_load_va, code.calls["twice"]]
+        assert _immediates_at(code, code.calls["twice"], "SetRenderState") == {"this": None, "State": 7, "Value": 0}
+
+    def test_a_checked_call_through_the_vtable_slot_is_found(self):
+        # mov esi, [eax] / mov ecx, [esi+0xE4] / push eax / call [check] / call [esi+0xE4]
+        load_vtable_into_esi = bytes([0x8B, 0x30])
+        code = self._in_guarded_image(Code().add(
+            "through_slot", self._LOAD_DEVICE, load_vtable_into_esi, push(1), push(22), self._COPY_METHOD_FROM_ESI,
+            PUSH_EAX, self._CALL_GUARD_CHECK, self._CALL_METHOD_THROUGH_ESI))
+
+        assert calls.scan_vtable_calls(code.data, TEXT_VA, SET_RENDER_STATE) == [(code.calls["through_slot"], "esi")]
+        assert _immediates(code, "through_slot", "SetRenderState") == {"this": None, "State": 22, "Value": 1}
+
+    def test_a_checked_thiscall_is_dropped(self):
+        # mov ecx, esi / call [check] / mov ecx, ebx / call esi: the object goes in ecx after the check
+        load_vtable_from_ebx = bytes([0x8B, 0x03])                          # mov eax, [ebx]
+        load_method = bytes([0x8B, 0xB0]) + SET_RENDER_STATE.to_bytes(4, "little")   # mov esi, [eax+0xE4]
+        mov_ecx_ebx = bytes([0x8B, 0xCB])
+        code = self._in_guarded_image(Code().add(
+            "thiscall", push(1), push(22), load_vtable_from_ebx, load_method, _MOV_ECX_ESI,
+            self._CALL_GUARD_CHECK, mov_ecx_ebx, self._CALL_ESI))
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE) == []
+
+    def test_another_this_is_seen_without_a_check(self):
+        code = Code().add("another_this", *self._ANOTHER_THIS, self._CALL_METHOD_THROUGH_ESI)
+
+        assert calls.scan_vtable_calls(code.data, TEXT_VA, SET_RENDER_STATE) == []
+
+    def test_another_this_is_seen_across_the_check(self):
+        code = self._in_guarded_image(Code().add(
+            "another_this", *self._ANOTHER_THIS, self._COPY_METHOD_FROM_ESI, self._CALL_GUARD_CHECK,
+            self._CALL_METHOD_THROUGH_ESI))
+
+        assert calls.scan_vtable_calls(code.data, TEXT_VA, SET_RENDER_STATE) == []
+
+    def test_a_vtable_register_the_check_may_overwrite_shows_no_other_this(self):
+        # mov edx, [edi] / ... / push ebx / mov ecx, [edx+0xE4] / call [check] / call [edx+0xE4]:
+        # the check is a call, and edx is not what it was before one
+        load_vtable_into_edx = bytes([0x8B, 0x17])
+        copy_method = bytes([0x8B, 0x8A]) + SET_RENDER_STATE.to_bytes(4, "little")
+        code = self._in_guarded_image(Code().add(
+            "clobbered", load_vtable_into_edx, *self._ANOTHER_THIS[1:], copy_method, self._CALL_GUARD_CHECK,
+            call_method(SET_RENDER_STATE)))
+
+        assert _found_calls(code, SET_RENDER_STATE) == [code.calls["clobbered"]]
+
+    def test_this_pushed_from_a_register_the_check_may_overwrite_is_not_settled(self):
+        # mov ecx, [eax] / mov esi, [ecx+0xE4] / mov ecx, esi / call [check] / push eax / call esi:
+        # nothing shows whether eax still holds the object, and a site is dropped only on what the code shows
+        this_after_the_check = (_MOV_ECX_ESI, self._CALL_GUARD_CHECK, PUSH_EAX, self._CALL_ESI)
+        code = self._in_guarded_image(Code().add(
+            "after_check", self._LOAD_DEVICE, push(1), push(22), self._LOAD_VTABLE, self._LOAD_SET_RENDER_STATE,
+            *this_after_the_check))
+        load_va = self._load_va(code, "after_check", this_after_the_check)
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE) == [(load_va, self._LOAD)]
+
+    def test_arguments_pushed_before_a_call_through_another_import_are_not_the_methods(self):
+        # push 1 / push 22 / call [import] / push eax / mov edx, [eax] / call [edx+0xE4]
+        load_vtable_from_result = bytes([0x8B, 0x10])
+        code = self._in_guarded_image(Code().add(
+            "after_import", push(1), push(22), self._CALL_IMPORT, PUSH_EAX, load_vtable_from_result,
+            call_method(SET_RENDER_STATE)))
+
+        assert _found_calls(code, SET_RENDER_STATE) == [code.calls["after_import"]]
+        assert _immediates(code, "after_import", "SetRenderState") == {"this": None, "State": None, "Value": None}
+
+    def test_a_call_through_another_import_is_not_a_check(self):
+        # mov ecx, esi / call [import] / call esi: the import took what was pushed, and no `this` follows it
+        code = self._in_guarded_image(Code().add(
+            "import", self._LOAD_DEVICE, push(1), push(22), *self._PUSH_OBJECT_AND_LOAD_METHOD,
+            _MOV_ECX_ESI, self._CALL_IMPORT, self._CALL_ESI))
+
+        assert calls.scan_vtable_mov(code.data, TEXT_VA, SET_RENDER_STATE) == []
+
+    def test_an_import_called_before_a_callback_elsewhere_is_no_check(self):
+        # mov esi, [callback] / mov ecx, esi / call [import] / call esi has the bytes of a checked call
+        load_callback = bytes([0x8B, 0x35]) + (0x564800).to_bytes(4, "little")
+        load_vtable_from_result = bytes([0x8B, 0x10])                       # mov edx, [eax]
+        code = (Code().add("callback", load_callback, _MOV_ECX_ESI, self._CALL_IMPORT, self._CALL_ESI)
+                .add("import_then_method", push(1), push(22), PUSH_ESI, self._CALL_IMPORT,
+                     load_vtable_from_result, call_method(SET_RENDER_STATE)))
+
+        assert _found_calls(code, SET_RENDER_STATE) == []
+
+
+class TestGuardCheckPointer:
+    """The pointer the Control Flow Guard check is called through, read from the load configuration directory."""
+
+    _POINTER = 0x564790
+
+    @staticmethod
+    def _pointer_of(path: Path) -> int | None:
+        data, image_base, sections = dx9_pe.load_binary(path)
+        return dx9_pe.load_text_section(data, image_base, sections)[0].guard_check_pointer
+
+    def test_the_load_configuration_names_it(self, tmp_path):
+        path = write_pe32(tmp_path / "guarded.exe", Code().data, load_config(self._POINTER))
+
+        assert self._pointer_of(path) == self._POINTER
+
+    def test_an_image_without_a_load_configuration_has_none(self, tmp_path):
+        assert self._pointer_of(write_pe32(tmp_path / "plain.exe", Code().data)) is None
+
+    def test_a_load_configuration_that_ends_before_the_field_has_none(self, tmp_path):
+        path = write_pe32(tmp_path / "old.exe", Code().data, load_config(self._POINTER, size=0x48))
+
+        assert self._pointer_of(path) is None
+
+    def test_a_field_the_configuration_claims_past_the_end_of_the_file_is_not_read(self, tmp_path):
+        claims_full_size = load_config(self._POINTER)[:0x48]
+        path = write_pe32(tmp_path / "cut.exe", Code().data, claims_full_size)
+
+        assert self._pointer_of(path) is None
+
+    def test_a_load_configuration_outside_every_section_has_none(self, tmp_path):
+        path = write_pe32(tmp_path / "outside.exe", Code().data, load_config(self._POINTER),
+                          load_config_rva=0x80000)
+
+        assert self._pointer_of(path) is None
+
+    def test_a_null_pointer_is_none(self, tmp_path):
+        path = write_pe32(tmp_path / "unguarded.exe", Code().data, load_config(0))
+
+        assert self._pointer_of(path) is None
+
+    def test_the_section_table_after_a_short_optional_header_is_not_read_as_the_directory(self, tmp_path):
+        code = Code().data
+        ten_directories = 0x60 + 8 * 10
+        where_the_configuration_is = struct.pack("<II", TEXT_RVA + len(code), 0x40)
+        path = write_pe32(tmp_path / "short.exe", code, load_config(self._POINTER), optional_size=ten_directories,
+                          section_name=where_the_configuration_is)
+
+        assert self._pointer_of(path) is None
+
+    def test_headers_with_too_few_data_directories_name_no_load_configuration(self, tmp_path):
+        path = write_pe32(tmp_path / "few.exe", Code().data, load_config(self._POINTER), directory_count=10)
+
+        assert self._pointer_of(path) is None
 
 
 _OTHER_GLOBAL = 0x9D9200

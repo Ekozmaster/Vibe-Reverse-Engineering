@@ -160,6 +160,9 @@ class TestFormatDecoding:
     def test_named_fourcc(self):
         assert enums.decode_format(int.from_bytes(b"DXT5", "little")) == "DXT5"
 
+    def test_a_value_wider_than_a_dword_is_no_fourcc(self):
+        assert enums.decode_format(0x1_4458_5435) == "UNKNOWN(0x144585435)"
+
 
 def _vertex_element(stream, decl_type, usage):
     return struct.pack("<HHBBBB", stream, 0, decl_type, 0, usage, 0)

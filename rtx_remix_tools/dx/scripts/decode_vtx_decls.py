@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_pe import load_binary, find_text_section, va_to_offset
+from dx9_pe import code_section, find_text_section, load_binary, va_to_offset
 from dx9_calls import (
     scan_vtable_calls, scan_vtable_mov, method_args, immediates, print_undecoded_calls,
 )
@@ -116,7 +116,7 @@ def scan_for_decls(data, sections, image_base, show_all):
     if raw_start is None:
         return []
 
-    text_data = data[raw_start:raw_start + raw_size]
+    text_data = code_section(data, sections, raw_start, raw_size)
 
     # Find CreateVertexDeclaration (vtable+0x158) call sites
     call_vas = [va for va, _ in scan_vtable_calls(text_data, text_va, 0x158)]

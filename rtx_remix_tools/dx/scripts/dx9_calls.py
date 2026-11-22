@@ -226,9 +226,17 @@ def _flow(insn):
     return _Flow.STRAIGHT
 
 
-def _joined_after(insn, jump_targets):
-    """Whether another path joins right after *insn*: a jump goes to the address that follows it."""
-    return insn.address + insn.size in jump_targets
+def _joined_after(insn, landmarks):
+    """Whether another path joins right after *insn*.
+
+    A direct jump goes to the address that follows it, or a jump table does
+    while *insn* falls through to it. A case behind a jmp or a ret is
+    reached through its table alone, and is read with the code in front of
+    its dispatches (see _dispatch_passes_the_arguments).
+    """
+    following = insn.address + insn.size
+    return following in landmarks.jump_targets or (
+        following in landmarks.case_labels and _flow(insn) is not _Flow.END)
 
 
 class StackArg(NamedTuple):
@@ -454,13 +462,46 @@ def _is_dword_store(insn, store):
             and store.mem.index == x86.X86_REG_INVALID and store.mem.disp % 4 == 0)
 
 
-def _jump_targets(text_data, text_va):
-    """Every address a direct jump in the code section goes to.
+class _Landmarks(NamedTuple):
+    """What the whole code section shows about the instructions in front of one call.
 
-    Data in the section decodes into jumps that do not exist; their targets
-    only make the argument walk stop early.
+    Attributes:
+        jump_targets: Every address a direct jump goes to. Data in the
+            section decodes into jumps that do not exist; their targets only
+            make the argument walk stop early.
+        case_labels: Every address a jump table holds.
+        guard_check_pointer: Address of the pointer the Control Flow Guard
+            check is called through (see _is_guard_check), None when the
+            image has none or the code came without its image.
     """
-    return _branch_targets(text_data, text_va)[0]
+    jump_targets: frozenset
+    case_labels: frozenset
+    guard_check_pointer: int | None
+
+
+@lru_cache(maxsize=2)
+def _landmarks(text_data, text_va):
+    """The _Landmarks of a code section, found once per section."""
+    return _Landmarks(_branch_targets(text_data, text_va)[0],
+                      frozenset(_dispatches_by_case(text_data, text_va)),
+                      getattr(text_data, "guard_check_pointer", None))
+
+
+def _is_guard_check(insn, landmarks):
+    """Whether the call *insn* is the Control Flow Guard check of a call target.
+
+    MSVC /guard:cf copies the target of an indirect call into ecx and calls
+    [__guard_check_icall_fptr] before it, through the pointer the image's
+    load configuration names; the arguments may already be pushed. The
+    check takes nothing off the stack, returns with esp where it found it
+    and returns to the next instruction, so the walks back from a call pass
+    it. It is still a call: eax, ecx and edx do not come through it (see
+    _changes).
+    """
+    target = insn.operands[0]
+    return (target.type == x86.X86_OP_MEM
+            and target.mem.base == x86.X86_REG_INVALID and target.mem.index == x86.X86_REG_INVALID
+            and target.mem.disp & 0xFFFFFFFF == landmarks.guard_check_pointer)
 
 
 def _call_targets(text_data, text_va):
@@ -543,16 +584,16 @@ class _StackWalk(NamedTuple):
     end: _WalkEnd
 
 
-def _stack_args(insns, count, jump_targets):
+def _stack_args(insns, count, landmarks):
     """The *count* dwords on top of the stack once *insns* have run, top first.
 
     None for a slot the code before the call does not settle (see _walk_stack).
     """
-    slots = _walk_stack(insns, count, jump_targets).slots
+    slots = _walk_stack(insns, count, landmarks).slots
     return [slots.get(slot) for slot in range(count)]
 
 
-def _walk_stack(insns, count, jump_targets):
+def _walk_stack(insns, count, landmarks):
     """Walk back from the end of *insns* until the *count* top slots of the stack are written.
 
     Keeps, for each slot, the last write to it: a push, or a store to
@@ -562,26 +603,31 @@ def _walk_stack(insns, count, jump_targets):
     slots that older writes land in, and a conditional jump is passed by its
     fall-through.
 
-    An earlier call is passed only when the top slot is written and the
-    caller cleans up after the call (see _caller_cleans_up): the callee then
-    left the stack as it found it. Any other callee may have taken its
-    arguments off the stack or left them, so the slots older writes land in
-    are not known and the walk ends there.
+    An earlier call is passed when it is the Control Flow Guard check of a
+    call target (see _is_guard_check), or when the top slot is written
+    and the caller cleans up after the call (see _caller_cleans_up): the
+    callee then left the stack as it found it. Any other callee may have
+    taken its arguments off the stack or left them, so the slots older
+    writes land in are not known and the walk ends there.
     It also ends at any other change of esp, at a store whose address
-    depends on a register, and before an instruction followed by an address
-    in *jump_targets*: another path joins there, and what it put on the
-    stack is not in front of us.
+    depends on a register, and before an instruction another path joins
+    after (see _joined_after): what that path put on the stack is not in
+    front of us.
 
     Returns:
         _StackWalk.
     """
     slots = {}
     pushed = 0              # dwords pushed between this point and the end
+
+    def settled():
+        return all(slot in slots for slot in range(count))
+
     for index in range(len(insns) - 1, -1, -1):
         insn = insns[index]
-        if all(slot in slots for slot in range(count)):
+        if settled():
             return _StackWalk(slots, _WalkEnd.SETTLED)
-        if _joined_after(insn, jump_targets):
+        if _joined_after(insn, landmarks):
             return _StackWalk(slots, _WalkEnd.UNKNOWN)
         if insn.id == x86.X86_INS_PUSH:
             slots.setdefault(pushed, _stack_arg(insn, insn.operands[0], insn.op_str))
@@ -591,9 +637,9 @@ def _walk_stack(insns, count, jump_targets):
         if flow is _Flow.CONDITIONAL:
             continue    # the call is on its fall-through path
         if flow is _Flow.CALL:
-            if 0 not in slots or not _caller_cleans_up(insns, index):
-                return _StackWalk(slots, _WalkEnd.CALL)
-            continue
+            if _is_guard_check(insn, landmarks) or (0 in slots and _caller_cleans_up(insns, index)):
+                continue
+            return _StackWalk(slots, _WalkEnd.CALL)
         if flow is _Flow.END:
             return _StackWalk(slots, _WalkEnd.ENTRY)
         if _writes(insn, x86.X86_REG_ESP):
@@ -611,7 +657,7 @@ def _walk_stack(insns, count, jump_targets):
             return _StackWalk(slots, _WalkEnd.UNKNOWN)
         for store in stores:
             _settle_store(slots, pushed, insn, store)
-    return _StackWalk(slots, _WalkEnd.UNKNOWN)
+    return _StackWalk(slots, _WalkEnd.SETTLED if settled() else _WalkEnd.UNKNOWN)
 
 
 def _caller_cleans_up(insns, call_index):
@@ -720,15 +766,15 @@ def _is_com_method_call(text_data, text_va, site_va, param_count):
     insns = _instructions_before_call(text_data, text_va, site_va)
     if insns is None:
         return False
-    jump_targets = _jump_targets(text_data, text_va)
-    walk = _walk_stack(insns, (param_count or 0) + 1, jump_targets)
+    landmarks = _landmarks(text_data, text_va)
+    walk = _walk_stack(insns, (param_count or 0) + 1, landmarks)
     if _pushes_no_this(walk):
         return False
     if (param_count is not None and _passes_too_few_arguments(walk, param_count)
             and not (0 in walk.slots and _dispatch_passes_the_arguments(text_data, text_va, insns, param_count))):
         return False
     call = _site_instruction(text_data, text_va, insns[-1].address + insns[-1].size if insns else site_va)
-    if _loads_ecx_for_the_callee(insns, call, jump_targets):
+    if _loads_ecx_for_the_callee(insns, call, landmarks):
         return False
     return not _passes_another_this(text_data, text_va, site_va, insns)
 
@@ -754,24 +800,24 @@ def _dispatch_passes_the_arguments(text_data, text_va, insns, param_count):
     if block is None or block == len(insns):
         return False
     dispatches = _dispatches_by_case(text_data, text_va).get(insns[block].address, ())
-    jump_targets = _jump_targets(text_data, text_va)
+    landmarks = _landmarks(text_data, text_va)
     walks = []
     for dispatch in dispatches:
         before = _certain_instructions_before(text_data, text_va, dispatch)
         if before is None:
             return False
-        walks.append(_walk_stack(before + insns[block:], param_count + 1, jump_targets))
+        walks.append(_walk_stack(before + insns[block:], param_count + 1, landmarks))
     return bool(walks) and all(walk.end is _WalkEnd.SETTLED for walk in walks)
 
 
-def _loads_ecx_for_the_callee(insns, call, jump_targets):
+def _loads_ecx_for_the_callee(insns, call, landmarks):
     """Whether the code loads ecx and only *call* can read what it loaded.
 
     Nothing between the load and the call reads ecx, and no conditional
     jump lies between them that could take the value elsewhere (see
     _gives_ecx_a_value for what counts as a load).
     """
-    first, _entered = _straight_line_start(insns, len(insns), jump_targets)
+    first, _entered = _straight_line_start(insns, len(insns), landmarks)
     for index in range(len(insns) - 1, first - 1, -1):
         insn = insns[index]
         if _flow(insn) is not _Flow.STRAIGHT:
@@ -810,15 +856,15 @@ def _passes_another_this(text_data, text_va, site_va, insns):
     the call while something else is on top of the stack: the __thiscall
     form of passing obj.
     """
-    jump_targets = _jump_targets(text_data, text_va)
-    [this] = _stack_args(insns, 1, jump_targets)
+    landmarks = _landmarks(text_data, text_va)
+    [this] = _stack_args(insns, 1, landmarks)
     if this is None:
         return False
     vtable_reg = _vtable_register(text_data, text_va, site_va)
     if vtable_reg is None:
         return False
     site_index = next((k for k, insn in enumerate(insns) if insn.address == site_va), len(insns))
-    load_index = _last_write(insns, site_index, vtable_reg, jump_targets)
+    load_index = _last_write(insns, site_index, vtable_reg, landmarks)
     if load_index is None:
         return False
     obj = _object_of_vtable_load(insns[load_index])
@@ -828,12 +874,12 @@ def _passes_another_this(text_data, text_va, site_va, insns):
     push_index = next(k for k, insn in enumerate(insns) if insn.address == this.va)
     push = insns[push_index]
     pushed = push.operands[0] if push.id == x86.X86_INS_PUSH else push.operands[1]
-    this_is_obj = _holds_object(insns, load_index, obj, push_index, pushed, jump_targets)
+    this_is_obj = _holds_object(insns, load_index, obj, push_index, pushed, landmarks)
     if this_is_obj:
         return False
-    ecx_index = _last_write(insns, len(insns), x86.X86_REG_ECX, jump_targets)
+    ecx_index = _last_write(insns, len(insns), x86.X86_REG_ECX, landmarks)
     if ecx_index is not None and _is_register_copy(insns[ecx_index]):
-        if _holds_object(insns, load_index, obj, ecx_index, insns[ecx_index].operands[1], jump_targets):
+        if _holds_object(insns, load_index, obj, ecx_index, insns[ecx_index].operands[1], landmarks):
             return True
     return this_is_obj is False
 
@@ -849,7 +895,7 @@ def _vtable_register(text_data, text_va, site_va):
     return method_slots[0].mem.base if method_slots else None
 
 
-def _holds_object(insns, load_index, obj, index, operand, jump_targets):
+def _holds_object(insns, load_index, obj, index, operand, landmarks):
     """Whether *operand*, as insns[index] reads it, is the object insns[load_index] read a vtable from.
 
     None when the code does not show either way.
@@ -860,10 +906,10 @@ def _holds_object(insns, load_index, obj, index, operand, jump_targets):
         # A load after *index* reads obj before it writes; one before it
         # overwrites obj when obj is also the vtable register.
         first, last = (index + 1, load_index) if index < load_index else (load_index, index)
-        if _unchanged(insns, first, last, obj, jump_targets):
+        if _unchanged(insns, first, last, obj, landmarks):
             return True
-    obj_value = _register_value(insns, load_index, obj, jump_targets)
-    operand_value = _operand_value(insns, index, operand, jump_targets)
+    obj_value = _register_value(insns, load_index, obj, landmarks)
+    operand_value = _operand_value(insns, index, operand, landmarks)
     if _UNKNOWN in (obj_value, operand_value):
         return None
     return obj_value == operand_value
@@ -888,20 +934,21 @@ def _object_of_vtable_load(insn):
     return mem.base
 
 
-def _straight_line_start(insns, index, jump_targets):
+def _straight_line_start(insns, index, landmarks):
     """Where the run of instructions that falls straight into insns[index] begins.
 
     Returns:
         (first, entered): insns[first:index] run one after another with no
-        other path joining and no call. *entered* is True when nothing falls
-        into insns[first] (it follows a jump, a return or padding), so the
-        registers there are whatever the code jumping or calling to it left;
-        False when what precedes it is unknown.
+        other path joining and no call but the Control Flow Guard check of
+        a call target (see _is_guard_check). *entered* is True when nothing
+        falls into insns[first] (it follows a jump, a return or padding), so
+        the registers there are whatever the code jumping or calling to it
+        left; False when what precedes it is unknown.
     """
     for k in range(index - 1, -1, -1):
         insn = insns[k]
         flow = _flow(insn)
-        if _joined_after(insn, jump_targets) or flow is _Flow.CALL:
+        if _joined_after(insn, landmarks) or (flow is _Flow.CALL and not _is_guard_check(insn, landmarks)):
             return k + 1, False
         if flow is _Flow.END:
             return k + 1, True
@@ -920,39 +967,53 @@ def _reads(insn, reg):
     return any(_ENCLOSING_REGISTER.get(read, read) == whole for read in insn.regs_access()[0])
 
 
-def _last_write(insns, index, reg, jump_targets):
+def _changes(insn, reg):
+    """Whether *reg* may hold another value after *insn*.
+
+    *insn* writes it, or is a call and *reg* is not one calls preserve. The
+    one call a straight run holds is the Control Flow Guard check (see
+    _straight_line_start).
+    """
+    return _writes(insn, reg) or (
+        _flow(insn) is _Flow.CALL and _ENCLOSING_REGISTER.get(reg, reg) not in _CALLEE_SAVED)
+
+
+def _last_write(insns, index, reg, landmarks):
     """Index of the instruction that set *reg* for insns[index], None when the straight run does not show it."""
-    first, _entered = _straight_line_start(insns, index, jump_targets)
-    return next((k for k in range(index - 1, first - 1, -1) if _writes(insns[k], reg)), None)
+    first, _entered = _straight_line_start(insns, index, landmarks)
+    return next((k for k in range(index - 1, first - 1, -1) if _changes(insns[k], reg)), None)
 
 
-def _unchanged(insns, first, last, reg, jump_targets):
+def _unchanged(insns, first, last, reg, landmarks):
     """*reg* holds one value from insns[first] to insns[last]: no write to it, no other path joining."""
-    return (_straight_line_start(insns, last, jump_targets)[0] <= first
-            and not any(_writes(insn, reg) for insn in insns[first:last]))
+    return (_straight_line_start(insns, last, landmarks)[0] <= first
+            and not any(_changes(insn, reg) for insn in insns[first:last]))
 
 
-def _register_value(insns, index, reg, jump_targets):
+def _register_value(insns, index, reg, landmarks):
     """What *reg* holds just before insns[index], in a form two values can be compared by.
 
     A register copy is followed to its source, a load from memory to the
     value of that memory (see _operand_value); any other write is the
-    instruction that made it. A register the run does not write is its value
-    on entry to the run, or _UNKNOWN when another path joins or a call
+    instruction that made it, except a call, which leaves a register it
+    does not preserve _UNKNOWN. A register the run does not write is its
+    value on entry to the run, or _UNKNOWN when another path joins or a call
     intervenes before it.
     """
-    first, entered = _straight_line_start(insns, index, jump_targets)
+    first, entered = _straight_line_start(insns, index, landmarks)
     for k in range(index - 1, first - 1, -1):
         insn = insns[k]
-        if not _writes(insn, reg):
+        if not _changes(insn, reg):
             continue
+        if _flow(insn) is _Flow.CALL:
+            return _UNKNOWN
         if _is_whole_register_mov(insn) and insn.operands[1].type != x86.X86_OP_IMM:
-            return _operand_value(insns, k, insn.operands[1], jump_targets)
+            return _operand_value(insns, k, insn.operands[1], landmarks)
         return ("written by", insn.address)
     return ("on entry", reg) if entered else _UNKNOWN
 
 
-def _operand_value(insns, index, operand, jump_targets):
+def _operand_value(insns, index, operand, landmarks):
     """The value of *operand*, a register or memory, as insns[index] reads it.
 
     Memory not addressed through esp is the memory operand itself. A stack
@@ -960,16 +1021,16 @@ def _operand_value(insns, index, operand, jump_targets):
     wrote it (see _stack_value).
     """
     if operand.type == x86.X86_OP_REG:
-        return _register_value(insns, index, operand.reg, jump_targets)
+        return _register_value(insns, index, operand.reg, landmarks)
     mem = operand.mem
     if mem.base != x86.X86_REG_ESP:
         return _memory_value(operand)
     if mem.index != x86.X86_REG_INVALID:
         return ("written by", insns[index].address)
-    return _stack_value(insns, index, mem.disp, jump_targets)
+    return _stack_value(insns, index, mem.disp, landmarks)
 
 
-def _stack_value(insns, index, disp, jump_targets):
+def _stack_value(insns, index, disp, landmarks):
     """The dword at [esp+disp] as insns[index] reads it, in a form two values can be compared by.
 
     A slot a push or a dword mov filled is the value it was filled with.
@@ -979,20 +1040,20 @@ def _stack_value(insns, index, disp, jump_targets):
     followed, or the run reaches a join or a call before the slot is
     written.
     """
-    base = _esp_offset(insns, index)
+    base = _esp_offset(insns, index, landmarks)
     if base is None:
         return _UNKNOWN
     slot = base + disp
-    first, entered = _straight_line_start(insns, index, jump_targets)
+    first, entered = _straight_line_start(insns, index, landmarks)
     for k in range(index - 1, first - 1, -1):
-        written = _stack_bytes_written(insns, k)
+        written = _stack_bytes_written(insns, k, landmarks)
         if written is None:
             return _UNKNOWN
         if any(low < slot + 4 and slot < high for low, high in written):
             source = _dword_source(insns[k]) if written == [(slot, slot + 4)] else None
             if source is None or source.type == x86.X86_OP_IMM:
                 return ("written by", insns[k].address)
-            return _operand_value(insns, k, source, jump_targets)
+            return _operand_value(insns, k, source, landmarks)
     return ("stack on entry", slot) if entered else _UNKNOWN
 
 
@@ -1004,18 +1065,20 @@ def _dword_source(insn):
     return insn.operands[1] if _is_dword_store(insn, store) else None
 
 
-def _esp_offset(insns, index):
+def _esp_offset(insns, index, landmarks):
     """Bytes from esp at the end of *insns* up to esp before insns[index].
 
-    None when a call, or a change of esp that is not a push, a pop or an
-    add or sub of whole dwords, lies on the way.
+    None when a call other than the Control Flow Guard check of a call
+    target (see _is_guard_check), or a change of esp that is not a push, a
+    pop or an add or sub of whole dwords, lies on the way.
     """
     dwords = 0
     for insn in insns[index:]:
         if insn.id == x86.X86_INS_PUSH:
             dwords += 1
         elif _flow(insn) is _Flow.CALL:
-            return None
+            if not _is_guard_check(insn, landmarks):
+                return None
         elif _writes(insn, x86.X86_REG_ESP):
             released = _dwords_released(insn)
             if released is None:
@@ -1024,9 +1087,9 @@ def _esp_offset(insns, index):
     return 4 * dwords
 
 
-def _stack_bytes_written(insns, index):
+def _stack_bytes_written(insns, index, landmarks):
     """[(low, high), ...] byte ranges insns[index] writes, counted like _esp_offset; None when unknown."""
-    base = _esp_offset(insns, index)
+    base = _esp_offset(insns, index, landmarks)
     if base is None:
         return None
     insn = insns[index]
@@ -1063,7 +1126,7 @@ def method_args(text_data, text_va, site_va, method):
     insns = _instructions_before_call(text_data, text_va, site_va)
     if insns is None:
         return dict.fromkeys(names)
-    values = _stack_args(insns, len(names), _jump_targets(text_data, text_va))
+    values = _stack_args(insns, len(names), _landmarks(text_data, text_va))
     return dict(zip(names, values))
 
 
@@ -1171,7 +1234,7 @@ def _instructions_back_from(text_data, text_va, site_va):
         end = start
 
 
-def _global_load_chain(back, reg, jump_targets, max_loads):
+def _global_load_chain(back, reg, landmarks, max_loads):
     """Follow *reg* back through register copies and loads from [base+disp] to the global it was read from.
 
     Passes a call when *reg* is one it preserves, and a conditional jump by
@@ -1188,7 +1251,7 @@ def _global_load_chain(back, reg, jump_targets, max_loads):
     """
     displacements = []
     for insn in back:
-        if _joined_after(insn, jump_targets):
+        if _joined_after(insn, landmarks):
             return None
         flow = _flow(insn)
         if flow is _Flow.CALL and reg in _CALLEE_SAVED or flow is _Flow.CONDITIONAL:
@@ -1236,13 +1299,13 @@ def object_origin(text_data, text_va, site_va):
         object.
     """
     back = _instructions_back_from(text_data, text_va, site_va)
-    jump_targets = _jump_targets(text_data, text_va)
+    landmarks = _landmarks(text_data, text_va)
     vtable_reg = _vtable_register(text_data, text_va, site_va)
     if vtable_reg is None:
         method_reg = _site_instruction(text_data, text_va, site_va).operands[0].reg
-        chain = _global_load_chain(back, method_reg, jump_targets, _MAX_FIELD_HOPS + 2)
+        chain = _global_load_chain(back, method_reg, landmarks, _MAX_FIELD_HOPS + 2)
     else:
-        chain = _global_load_chain(back, vtable_reg, jump_targets, _MAX_FIELD_HOPS + 1)
+        chain = _global_load_chain(back, vtable_reg, landmarks, _MAX_FIELD_HOPS + 1)
     if chain is None:
         return None
     address, displacements = chain

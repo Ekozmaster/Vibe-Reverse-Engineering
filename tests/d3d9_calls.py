@@ -95,7 +95,23 @@ class Code:
         return va
 
 
-def _pe_headers(optional_magic: int, optional_size: int, machine: int, code_size: int) -> bytes:
+_DATA_DIRECTORIES = 96             # offset of the data directories in a PE32 optional header
+_LOAD_CONFIG_DIRECTORY = 10
+LOAD_CONFIG_SIZE = 0xC4             # IMAGE_LOAD_CONFIG_DIRECTORY32 as a linker with Control Flow Guard writes it
+_GUARD_CF_CHECK_FUNCTION_POINTER = 72
+
+
+def load_config(guard_check_pointer: int, size: int = LOAD_CONFIG_SIZE) -> bytes:
+    """An IMAGE_LOAD_CONFIG_DIRECTORY32 of *size* bytes that names *guard_check_pointer*, when it reaches that far."""
+    config = bytearray(max(size, 4))
+    struct.pack_into("<I", config, 0, size)
+    if size >= _GUARD_CF_CHECK_FUNCTION_POINTER + 4:
+        struct.pack_into("<I", config, _GUARD_CF_CHECK_FUNCTION_POINTER, guard_check_pointer)
+    return bytes(config)
+
+
+def _pe_headers(optional_magic: int, optional_size: int, machine: int, code_size: int,
+                load_config_rva: int = 0, directory_count: int = 16, section_name: bytes = b".text") -> bytes:
     dos = bytearray(0x40)
     dos[0:2] = b"MZ"
     struct.pack_into("<I", dos, 0x3C, 0x40)
@@ -104,17 +120,36 @@ def _pe_headers(optional_magic: int, optional_size: int, machine: int, code_size
     struct.pack_into("<H", optional, 0, optional_magic)
     if optional_magic == 0x10B:
         struct.pack_into("<I", optional, 28, IMAGE_BASE)
+        struct.pack_into("<I", optional, _DATA_DIRECTORIES - 4, directory_count)
+        if optional_size >= _DATA_DIRECTORIES + 8 * (_LOAD_CONFIG_DIRECTORY + 1):
+            struct.pack_into("<II", optional, _DATA_DIRECTORIES + 8 * _LOAD_CONFIG_DIRECTORY,
+                             load_config_rva, 0x40 if load_config_rva else 0)
     else:
         struct.pack_into("<Q", optional, 24, IMAGE_BASE)
-    section = struct.pack("<8sIIIIIIHHI", b".text", code_size, TEXT_RVA, code_size,
+    section = struct.pack("<8sIIIIIIHHI", section_name, code_size, TEXT_RVA, code_size,
                           _FILE_ALIGNMENT, 0, 0, 0, 0, 0x60000020)
     headers = bytes(dos) + coff + bytes(optional) + section
     return headers.ljust(_FILE_ALIGNMENT, b"\0")
 
 
-def write_pe32(path: Path, code: bytes) -> Path:
-    """Write a PE32 file whose one executable section holds *code* at TEXT_VA."""
-    path.write_bytes(_pe_headers(0x10B, 0xE0, 0x14C, len(code)) + code)
+def write_pe32(path: Path, code: bytes, config: bytes = b"", *, load_config_rva: int | None = None,
+               directory_count: int = 16, optional_size: int = 0xE0, section_name: bytes = b".text") -> Path:
+    """Write a PE32 file whose one executable section holds *code* at TEXT_VA.
+
+    Args:
+        config: A load configuration directory (see load_config), put in the
+            section after the code. None is named when empty.
+        load_config_rva: Where the headers say the load configuration is,
+            when that is not where *config* was put.
+        directory_count: How many data directories the headers say they hold.
+        optional_size: Size of the optional header, which the section table follows.
+        section_name: The eight bytes the section table starts with.
+    """
+    if load_config_rva is None:
+        load_config_rva = TEXT_RVA + len(code) if config else 0
+    headers = _pe_headers(0x10B, optional_size, 0x14C, len(code) + len(config), load_config_rva, directory_count,
+                          section_name)
+    path.write_bytes(headers + code + config)
     return path
 
 

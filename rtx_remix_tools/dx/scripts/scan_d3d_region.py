@@ -7,6 +7,10 @@ Lists, for every device method:
   - call [reg+OFFSET] where OFFSET is the method's vtable slot
   - mov reg, [reg+OFFSET] that a call through the loaded register follows
 
+A reference below vtable+0x80, where every COM interface has methods, is
+labelled unconfirmed unless its object is read from where the code keeps
+its device.
+
 The region must lie in one section.
 
 Usage:
@@ -20,8 +24,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dx9_pe import load_binary
-from dx9_calls import scan_all_patterns
+from dx9_pe import code_section, load_binary
+from dx9_calls import DEVICE_LOW_SLOT_END, device_origin_summary, scan_all_patterns, split_device_hits
 from dx9_enums import D3D9_DEVICE_VTABLE
 
 KEY_METHODS = ["SetVertexShader", "SetPixelShader", "SetVertexShaderConstantF",
@@ -34,13 +38,13 @@ def section_holding(data, image_base, sections, start_va, end_va):
     """The section the whole region lies in.
 
     Returns:
-        (section bytes, virtual address of the first), or None when no one
+        (the section's CodeSection, virtual address of its first byte), or None when no one
         section holds the region.
     """
     for section in sections:
         section_va = image_base + section['va']
         if section_va <= start_va and end_va <= section_va + section['vsz']:
-            return data[section['raw']:section['raw'] + section['rawsz']], section_va
+            return code_section(data, sections, section['raw'], section['rawsz']), section_va
     return None
 
 
@@ -51,7 +55,7 @@ def references_in(section_data, section_va, start_va, end_va):
     the region, so the scan is handed the whole section.
 
     Returns:
-        {vtable offset: [(va, "call" or "mov"), ...]} for the methods
+        {vtable offset: DeviceHits of (va, "call" or "mov")} for the methods
         referenced, each list in address order.
     """
     by_offset = {}
@@ -60,8 +64,13 @@ def references_in(section_data, section_va, start_va, end_va):
                  for va, description in scan_all_patterns(section_data, section_va, offset,
                                                           region=(start_va, end_va))]
         if sites:
-            by_offset[offset] = sites
+            by_offset[offset] = split_device_hits(section_data, section_va, offset, sites)
     return by_offset
+
+
+def unconfirmed_suffix(count, reason=""):
+    """What follows a count of confirmed references: ", 2 unconfirmed" and *reason*, or nothing when there are none."""
+    return f", {count} unconfirmed{reason}" if count else ""
 
 
 def main():
@@ -90,23 +99,30 @@ def main():
     print(f"ImageBase: 0x{image_base:08X}")
 
     by_offset = references_in(*section, scan_start, scan_end)
+    if any(offset < DEVICE_LOW_SLOT_END for offset in by_offset):
+        print(device_origin_summary(*section))
 
     print(f"\n=== D3D9 Device vtable references in 0x{scan_start:X}-0x{scan_end:X} ===\n")
 
     for offset in sorted(by_offset):
-        sites = by_offset[offset]
-        print(f"[{offset // 4:3d}] {D3D9_DEVICE_VTABLE[offset]} (offset 0x{offset:X}): {len(sites)} refs")
-        for va, kind in sites:
-            print(f"        0x{va:08X}  ({kind})")
+        hits = by_offset[offset]
+        unconfirmed = unconfirmed_suffix(len(hits.unconfirmed), " (object not shown to be the device)")
+        print(f"[{offset // 4:3d}] {D3D9_DEVICE_VTABLE[offset]} (offset 0x{offset:X}): "
+              f"{len(hits.confirmed)} refs{unconfirmed}")
+        labelled = [(site, "") for site in hits.confirmed] + [(site, "  unconfirmed") for site in hits.unconfirmed]
+        for (va, kind), label in sorted(labelled):
+            print(f"        0x{va:08X}  ({kind}){label}")
 
-    print(f"\nTotal: {sum(len(sites) for sites in by_offset.values())} vtable reference sites")
-    print(f"Unique methods referenced: {len(by_offset)}")
+    unconfirmed = unconfirmed_suffix(sum(len(hits.unconfirmed) for hits in by_offset.values()))
+    print(f"\nTotal: {sum(len(hits.confirmed) for hits in by_offset.values())} vtable reference sites{unconfirmed}")
+    print(f"Unique methods referenced: {sum(1 for hits in by_offset.values() if hits.confirmed)}")
 
     print(f"\n=== Key method summary ===")
-    count_by_name = {D3D9_DEVICE_VTABLE[offset]: len(sites) for offset, sites in by_offset.items()}
+    hits_by_name = {D3D9_DEVICE_VTABLE[offset]: hits for offset, hits in by_offset.items()}
     for name in KEY_METHODS:
-        count = count_by_name.get(name, 0)
-        status = f"{count} refs" if count > 0 else "NOT FOUND"
+        hits = hits_by_name.get(name)
+        status = (f"{len(hits.confirmed)} refs{unconfirmed_suffix(len(hits.unconfirmed))}" if hits
+                  else "NOT FOUND")
         print(f"  {name:30s} {status}")
 
     print("\n--- DONE ---")

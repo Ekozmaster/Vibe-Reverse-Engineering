@@ -18,7 +18,7 @@ from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dx9_pe import load_binary, load_text_section, print_header
-from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_args, arg_text
+from dx9_calls import scan_vtable_calls, scan_vtable_mov, method_args, arg_text, print_undecoded_calls
 from dx9_enums import D3DRS, D3DRS_ID, decode_rs_value
 
 VTABLE_OFFSET = 0xE4  # SetRenderState
@@ -93,7 +93,7 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("binary", help="Path to PE binary (.exe / .dll)")
     p.add_argument("--all", action="store_true",
-                   help="Show every call site, not just the summary")
+                   help="Show every call site, not just the summary and the first undecoded calls")
     args = p.parse_args()
 
     data, image_base, sections = load_binary(args.binary)
@@ -114,13 +114,13 @@ def main():
 
     # Track per-state: {state_id: [(call_va, Value argument), ...]}
     state_usage = defaultdict(list)
-    unknown_sites = []
+    undecoded = []
 
     for va, reg in all_sites:
         pushed = method_args(text_data, text_va, va, "SetRenderState")
         state = pushed["State"]
         if state is None or state.value is None:
-            unknown_sites.append(va)
+            undecoded.append((va, pushed))
         else:
             state_usage[state.value].append((va, pushed["Value"]))
 
@@ -147,9 +147,7 @@ def main():
             print(_summary_line(state_id, uncategorized[state_id]))
         print()
 
-    if unknown_sites:
-        print(f"  ({len(unknown_sites)} call sites whose State is not a pushed constant -- "
-              f"not decoded statically)")
+    print_undecoded_calls("SetRenderState", undecoded, args.all)
 
     # -- Detailed per-site output --
     if args.all:
