@@ -516,7 +516,7 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture)
 	{
 		TRACE_IF_ACTIVE(trace_SetTexture, Stage, pTexture);
-		if (is_current())
+		if (sets_game_state())
 			shared::common::ffp_state::get().on_set_texture(Stage, pTexture);
 		return m_pIDirect3DDevice9->SetTexture(Stage, pTexture);
 	}
@@ -669,7 +669,7 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetVertexDeclaration(IDirect3DVertexDeclaration9* pDecl)
 	{
 		TRACE_IF_ACTIVE(trace_SetVertexDeclaration, pDecl);
-		if (is_current())
+		if (sets_game_state())
 			shared::common::ffp_state::get().on_set_vertex_declaration(pDecl);
 		return m_pIDirect3DDevice9->SetVertexDeclaration(pDecl);
 	}
@@ -683,7 +683,7 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetFVF(DWORD FVF)
 	{
 		TRACE_IF_ACTIVE(trace_SetFVF, FVF);
-		if (is_current())
+		if (sets_game_state())
 			shared::common::ffp_state::get().on_set_fvf(FVF);
 		return m_pIDirect3DDevice9->SetFVF(FVF);
 	}
@@ -708,7 +708,7 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetVertexShader(IDirect3DVertexShader9* pShader)
 	{
 		TRACE_IF_ACTIVE(trace_SetVertexShader, pShader);
-		if (!is_current())
+		if (!sets_game_state())
 			return m_pIDirect3DDevice9->SetVertexShader(pShader);
 
 		auto& ffp = shared::common::ffp_state::get();
@@ -813,7 +813,7 @@ namespace comp
 	HRESULT d3d9ex::D3D9Device::SetPixelShader(IDirect3DPixelShader9* pShader)
 	{
 		TRACE_IF_ACTIVE(trace_SetPixelShader, pShader);
-		if (!is_current())
+		if (!sets_game_state())
 			return m_pIDirect3DDevice9->SetPixelShader(pShader);
 
 		auto& ffp = shared::common::ffp_state::get();

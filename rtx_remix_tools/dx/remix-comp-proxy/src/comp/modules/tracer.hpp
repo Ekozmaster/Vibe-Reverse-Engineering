@@ -115,6 +115,11 @@ namespace comp
 		char* buffer_ = nullptr;
 		size_t write_pos_ = 0;
 
+		// Windows error of the first write to the capture file that failed; a capture with one
+		// ends at its next frame and is reported failed
+		DWORD write_error_ = ERROR_SUCCESS;
+		void note_write_error(DWORD error) { if (write_error_ == ERROR_SUCCESS) write_error_ = error; }
+
 		// JSON state machine
 		bool first_arg_ = true;
 		bool args_open_ = false;

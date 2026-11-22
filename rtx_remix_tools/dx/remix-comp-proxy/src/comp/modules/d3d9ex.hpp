@@ -140,6 +140,12 @@ namespace comp
 			// passed through, its calls forwarded without the modules seeing them.
 			bool is_current() const { return shared::globals::d3d_device == this; }
 
+			// Whether a state-setting call is the game's, on the device the modules serve. The
+			// overlay draws through this wrapper as well and puts the device back with a state
+			// block, which the wrapper does not see: what it sets is forwarded and not recorded
+			// as the game's state.
+			bool sets_game_state() const { return is_current() && !shared::globals::imgui_is_rendering; }
+
 			// The device with the shaders the game set last on it, for a call that reads or
 			// uses them. Converted draws leave it without shaders until then.
 			IDirect3DDevice9* with_game_shaders();

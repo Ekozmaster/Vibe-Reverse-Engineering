@@ -465,6 +465,14 @@ class TestFvf:
         assert_drawn_by(frame, reference, "skinned strip variant", "green")
 
 
+class TestStateKeptAcrossFrames:
+    """A draw with the declaration, buffers and shaders the frame before left on the device."""
+
+    def test_a_rigid_draw_is_converted(self, toy):
+        frame, reference = variant_frames(toy, "state-kept-across-frames")
+        assert_drawn_by(frame, reference, RIGID[0], "green")
+
+
 class TestConstantUploadOutOfRange:
     """A shader constant upload that starts at a register near UINT_MAX, which Direct3D refuses."""
 

@@ -21,8 +21,9 @@ namespace comp
 		constexpr long MAX_TRIGGER_FRAMES = 100000;
 
 		// dxtrace_progress.txt holds one line at any time: "<frame> <calls> <id>" while capturing,
-		// " done" added once the capture file is closed, or "0 0 <id> failed <reason>" for a
-		// capture that could not start. <id> is the id of the trigger that asked for the capture,
+		// " done" added once the capture file is closed and holds every record, " failed <reason>"
+		// instead when a write to it failed, or "0 0 <id> failed <reason>" for a capture that
+		// could not start. <id> is the id of the trigger that asked for the capture,
 		// NO_TRIGGER_ID without one. The standalone tracer writes the same format, which
 		// "trigger --wait" follows. When it finds no progress it sends its user to the log, so a
 		// capture, or a trigger that starts none, whose progress cannot be written says so there, once.
@@ -60,9 +61,9 @@ namespace comp
 			write_progress_line(std::format("{} {} {}{}", frame, calls, trigger_id, done ? " done" : ""));
 		}
 
-		void write_capture_failure(const std::string& trigger_id, const std::string& reason)
+		void write_capture_failure(int frame, int calls, const std::string& trigger_id, const std::string& reason)
 		{
-			write_progress_line(std::format("0 0 {} failed {}", trigger_id, reason));
+			write_progress_line(std::format("{} {} {} failed {}", frame, calls, trigger_id, reason));
 		}
 
 		// The value of the line "<key>=<value>" of a trigger file; nullopt when it has no such line
@@ -226,7 +227,7 @@ namespace comp
 		{
 			const std::string reason = std::format("cannot create {}: Windows error {}", full_path, GetLastError());
 			shared::common::log("Tracer", "Capture not started, " + reason, shared::common::LOG_TYPE::LOG_TYPE_ERROR);
-			write_capture_failure(trigger_id, reason);
+			write_capture_failure(0, 0, trigger_id, reason);
 			return;
 		}
 
@@ -235,6 +236,7 @@ namespace comp
 		frames_captured_ = 0;
 		frames_to_capture_ = num_frames;
 		write_pos_ = 0;
+		write_error_ = ERROR_SUCCESS;
 
 #ifdef HAS_FFP_STATE
 		// Save FFP state and disable during capture to record unmodified game calls
@@ -273,16 +275,24 @@ namespace comp
 			CloseHandle(log_file_);
 			log_file_ = INVALID_HANDLE_VALUE;
 		}
-		write_progress(frames_captured_, sequence_, capture_trigger_id_, true);
+		if (write_error_ != ERROR_SUCCESS)
+		{
+			const std::string reason = std::format("cannot write {}: Windows error {}", last_capture_path_, write_error_);
+			shared::common::log("Tracer", "Capture incomplete, " + reason, shared::common::LOG_TYPE::LOG_TYPE_ERROR);
+			write_capture_failure(frames_captured_, sequence_, capture_trigger_id_, reason);
+		}
+		else
+			write_progress(frames_captured_, sequence_, capture_trigger_id_, true);
 
 #ifdef HAS_FFP_STATE
 		// Restore FFP to its pre-capture state (don't force it on if config had it off)
 		shared::common::ffp_state::get().set_enabled(ffp_was_enabled_);
 #endif
 
-		shared::common::log("Tracer",
-			std::format("Capture done: {} frames, {} calls, {:.1f} KB",
-				frames_captured_, sequence_, last_capture_size_ / 1024.0));
+		if (write_error_ == ERROR_SUCCESS)
+			shared::common::log("Tracer",
+				std::format("Capture done: {} frames, {} calls, {:.1f} KB",
+					frames_captured_, sequence_, last_capture_size_ / 1024.0));
 	}
 
 	void tracer::start_capture_delayed(int num_frames, const std::string& filename, float delay_seconds)
@@ -361,7 +371,7 @@ namespace comp
 		else
 		{
 			progress_failure_logged = false;
-			write_capture_failure(id, std::format("frames={} is not a number of frames from 1 up", *frames_line));
+			write_capture_failure(0, 0, id, std::format("frames={} is not a number of frames from 1 up", *frames_line));
 		}
 
 		// Deleted only now that the progress file answers it, so whoever wrote the trigger
@@ -407,7 +417,7 @@ namespace comp
 		frame_index_++;
 		frames_captured_ = frame_index_;
 
-		if (frame_index_ >= frames_to_capture_)
+		if (frame_index_ >= frames_to_capture_ || write_error_ != ERROR_SUCCESS)
 			stop_capture();
 		else
 			write_progress(frame_index_, sequence_, capture_trigger_id_, false);
@@ -424,8 +434,12 @@ namespace comp
 	void tracer::flush_buffer()
 	{
 		if (write_pos_ == 0 || log_file_ == INVALID_HANDLE_VALUE) return;
-		DWORD written;
-		WriteFile(log_file_, buffer_, static_cast<DWORD>(write_pos_), &written, nullptr);
+		const DWORD size = static_cast<DWORD>(write_pos_);
+		DWORD written = 0;
+		if (!WriteFile(log_file_, buffer_, size, &written, nullptr))
+			note_write_error(GetLastError());
+		else if (written != size)
+			note_write_error(ERROR_DISK_FULL);
 		write_pos_ = 0;
 	}
 

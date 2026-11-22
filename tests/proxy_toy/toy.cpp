@@ -139,6 +139,9 @@ namespace
 	//                    DrawRectPatch or DrawTriPatch is called, which few devices draw, and the
 	//                    second draw goes straight to the device the vertex buffer names as its
 	//                    own, past any wrapper the toy was handed, without setting a shader
+	// One variant draws what the plain toy draws, leaving out calls:
+	//   state-kept-across-frames  from the second frame on, the first quad is drawn with the
+	//                    declaration, buffers and shaders the frame before left on the device
 	// Two variants create a second device while the first is in use. The second device draws the
 	// scene too in every frame from then on. At the end the first device is released, then the
 	// second, and the last Release of each has to return 0:
@@ -157,7 +160,7 @@ namespace
 		"new-vs-after-converted", "new-vs-up-after-converted", "rigid-normal-on-stream-1",
 		"get-shaders-after-converted", "state-block-created-after-converted", "state-block-recorded-after-converted",
 		"process-vertices-after-converted", "rect-patch-after-converted", "tri-patch-after-converted",
-		"first-device-drawn-on", "second-device-mid-frame",
+		"first-device-drawn-on", "second-device-mid-frame", "state-kept-across-frames",
 		"read-only-trigger", "read-only-trigger-until-replacement" };
 
 	// The variants that draw what the plain toy draws, with the trigger file of the proxy's
@@ -736,7 +739,10 @@ float4 ps_vertex_colour(float4 colour : COLOR0) : COLOR
 	//   skinned strip                  skinned strip behind offsets    skinned strip, four weights
 	//   rigid quad whose world matrix  skinned strip on the last       skinned strip, drawn as
 	//     was set before the strips      bones of a large palette        --variant says
-	void draw_scene(const scene& s)
+	//
+	// The last draw of a frame is a rigid quad, so with bind_first_quad false the first quad is
+	// drawn with what that draw left bound.
+	void draw_scene(const scene& s, bool bind_first_quad = true)
 	{
 		const auto dev = s.dev;
 		const UINT strip_vertices = STRIP_VERTICES + s.opt.extra_vertices;
@@ -755,7 +761,8 @@ float4 ps_vertex_colour(float4 colour : COLOR0) : COLOR
 		if (s.opt.albedo_stage != 0)
 			check(dev->SetTexture(0, s.blue), "SetTexture");
 
-		bind(s, s.rigid_decl, s.rigid_vb, 0, sizeof(rigid_vertex), s.vs_rigid);
+		if (bind_first_quad)
+			bind(s, s.rigid_decl, s.rigid_vb, 0, sizeof(rigid_vertex), s.vs_rigid);
 		set_matrix(s, s.opt.world, XMMatrixRotationZ(XMConvertToRadians(20)) * XMMatrixTranslation(-2, 2, 0));
 		check(dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, 4, QUAD_FIRST_INDEX, 2), "DrawIndexedPrimitive");
 
@@ -1218,7 +1225,7 @@ int main(int argc, char** argv)
 			fill_vertex_buffer(s.variant_vb, dynamic_strip(frame == FRAMES - 1), D3DLOCK_DISCARD);
 		check(dev->BeginScene(), "BeginScene");
 		check(dev->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 64), 1.0f, 0), "Clear");
-		draw_scene(s);
+		draw_scene(s, frame == 0 || s.opt.variant != "state-kept-across-frames");
 		if (frame == FRAMES - 1 && s.opt.variant == "second-device-mid-frame")
 		{
 			create_second_device();
