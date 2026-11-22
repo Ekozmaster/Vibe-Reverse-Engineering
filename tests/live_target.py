@@ -7,7 +7,10 @@ instruction address and every argument value:
     loop:        load the arguments 1, 2, 3 (pushed on x86, in registers on x64)
     call_site:   call callee
     after_call:  count the iteration as good if callee returned 6, else as bad
-    spare:       nop
+    spare:       instructions that do nothing, enough of them for the jump of a
+                 hook: Frida moves the instructions its jump replaces into
+                 memory it frees with the hook, and a thread that is inside a
+                 call moved there returns into that memory
                  Sleep(10) and repeat
     callee:      return a + b + c, through a ``bnd ret`` (a prefixed return)
 
@@ -170,12 +173,12 @@ def _x86_code(base: int) -> tuple[bytes, dict[str, int]]:
     code += b"\xFF\x05" + struct.pack("<I", at["bad"])                  # 10 inc dword [bad]
     code += bytes.fromhex("EB06")                                       # 16 jmp 0x1E
     code += b"\xFF\x05" + struct.pack("<I", at["good"])                 # 18 inc dword [good]
-    code += bytes.fromhex("90")                                         # 1E nop
-    code += bytes.fromhex("6A0A")                                       # 1F push 10
-    code += b"\xFF\x15" + struct.pack("<I", at["sleep_ptr"])            # 21 call [sleep_ptr]
-    code += b"\x83\x3D" + struct.pack("<I", at["stop"]) + b"\x00"       # 27 cmp dword [stop], 0
-    code += bytes.fromhex("74D0")                                       # 2E je loop
-    code += bytes.fromhex("31C0 C20400")                                # 30 xor eax, eax; ret 4
+    code += bytes.fromhex("909090")                                     # 1E nop; nop; nop
+    code += bytes.fromhex("6A0A")                                       # 21 push 10
+    code += b"\xFF\x15" + struct.pack("<I", at["sleep_ptr"])            # 23 call [sleep_ptr]
+    code += b"\x83\x3D" + struct.pack("<I", at["stop"]) + b"\x00"       # 29 cmp dword [stop], 0
+    code += bytes.fromhex("74CE")                                       # 30 je loop
+    code += bytes.fromhex("31C0 C20400")                                # 32 xor eax, eax; ret 4
     code = code.ljust(labels["callee"], b"\xCC")
     code += bytes.fromhex("8B442404 03442408 0344240C F2C20C00")        # 40 a + b + c; bnd ret 12
     code = code.ljust(_REPEATER, b"\xCC")
