@@ -374,6 +374,23 @@ def _stops_at_function_end(mask: bytes, func_size: int) -> bool:
     return func_size < 32 and not any(mask[func_size:])
 
 
+_FILLER_BYTES = frozenset(b"\xcc\x90")
+
+
+def _ends_where_sig_does(code32: bytes, sig_size: int, func_size: int, prefix_end: int | None) -> bool:
+    """Whether the function starting with *code32* ends where a signature of *sig_size* bytes does.
+
+    It does when it measures that size by the estimate (*func_size*) or by
+    its end in the prefix (*prefix_end*), or ends in the prefix before it
+    with only breakpoints and nops up to it: a .pat length and a map size
+    count the filler the compiler or the linker put after the last
+    instruction.
+    """
+    if sig_size in (func_size, prefix_end):
+        return True
+    return prefix_end is not None and prefix_end < sig_size and _FILLER_BYTES.issuperset(code32[prefix_end:sig_size])
+
+
 def extract_structural_sig(b: Binary, va: int) -> dict | None:
     """Extract structural (CFG-based) signature for the function at *va*.
 
@@ -666,6 +683,14 @@ def _byte_row_key(row: tuple) -> _SigKey:
     return row[1], row[2], row[5], row[6]
 
 
+def _byte_row_identity(row: tuple) -> tuple:
+    """What makes a byte_sigs row in insertion column order the same signature as another.
+
+    Every column but the category, which is derived from the name.
+    """
+    return row[:9]
+
+
 # A byte signature that fits a function: its match, score in percent points, and key.
 _ScoredSig = tuple[Match, int, _SigKey]
 
@@ -673,16 +698,25 @@ _ScoredSig = tuple[Match, int, _SigKey]
 def _agreed_matches(candidates: Collection[_ScoredSig]) -> list[Match]:
     """The matches among *candidates* that name the function, best first.
 
+    Equally scored matches are ordered by their own fields, so the result
+    does not depend on the order the signatures were stored in.
+
     Returns:
-        An empty list when the candidates of every key carry several names,
-        or the best-scored of the others do.
+        An empty list when the best-scored candidates carry several names:
+        those of one key held under several names, or those of several keys.
+        Candidates of a key held under several names are never returned.
     """
+    if not candidates:
+        return []
     names_by_key: dict[_SigKey, set[str]] = collections.defaultdict(set)
     for match, _, key in candidates:
         names_by_key[key].add(match.name)
-    ranked = sorted((c for c in candidates if len(names_by_key[c[2]]) == 1), key=lambda c: c[1], reverse=True)
-    if len({match.name for match, score, _ in ranked if score == ranked[0][1]}) > 1:
+    best_score = max(score for _, score, _ in candidates)
+    if len({name for _, score, key in candidates if score == best_score for name in names_by_key[key]}) > 1:
         return []
+    ranked = sorted(
+        (c for c in candidates if len(names_by_key[c[2]]) == 1),
+        key=lambda c: (-c[1], c[0].name, c[0].compiler, c[0].source, c[0].category))
     return [match for match, _, _ in ranked]
 
 
@@ -760,6 +794,8 @@ class SignatureDB:
         tables = self._table_names(path)
         if "schema_version" in tables:
             row = self._conn.execute("SELECT version FROM schema_version").fetchone()
+            if row and not isinstance(row[0], int):
+                raise NotASignatureDB(f"{path} is not a signature database: its schema version is {row[0]!r}")
             if row and row[0] > SCHEMA_VERSION:
                 raise SchemaTooNew(
                     f"{path} has schema version {row[0]}, newer than the version {SCHEMA_VERSION} "
@@ -858,9 +894,11 @@ class SignatureDB:
         signatures whatever order they are added in, and adding them again
         adds nothing.
 
-        A byte row is held when its key, name and compiler label are. A key
-        may end up under several names: match_bytes is what refuses it then.
-        A structural row is held when every column is.
+        A byte row is held when a row with its key, name, size, tail CRC,
+        compiler label and source is, so one function measured two ways or
+        taken from two sources keeps a row for each. A key may end up under
+        several names: match_bytes is what refuses it then. A structural row
+        is held when every column is.
 
         Args:
             byte_rows: byte_sigs rows in insertion column order.
@@ -876,18 +914,21 @@ class SignatureDB:
         self._ensure_writable_schema()
         stats: collections.Counter = collections.Counter()
         holders: dict[_SigKey, set[tuple[str, str]]] = collections.defaultdict(set)
-        for name, pattern, mask, crc_len, crc16, compiler in self._conn.execute(
-                "SELECT name, pattern, mask, crc_len, crc16, compiler FROM byte_sigs"):
-            holders[(pattern, mask, crc_len, crc16)].add((name, compiler))
+        held = set()
+        for row in self._conn.execute(
+                "SELECT name, pattern, mask, func_size, tail_crc, crc_len, crc16, compiler, source FROM byte_sigs"):
+            held.add(_byte_row_identity(row))
+            holders[_byte_row_key(row)].add((row[0], row[7]))
         new_byte_rows = []
         batch_keys = set()
         for row in byte_rows:
-            key, holder = _byte_row_key(row), (row[0], row[7])
+            key, identity = _byte_row_key(row), _byte_row_identity(row)
             batch_keys.add(key)
-            if holder in holders[key]:
+            if identity in held:
                 stats["already_in_db"] += 1
             else:
-                holders[key].add(holder)
+                held.add(identity)
+                holders[key].add((row[0], row[7]))
                 new_byte_rows.append(row)
         stats["added"] = len(new_byte_rows)
         stats["ambiguous_prefix"] = sum(1 for key in batch_keys if _names_meet(holders[key]))
@@ -963,7 +1004,9 @@ class SignatureDB:
           2. End of a short function: a signature that pins no byte after
              its function's end is rejected unless the function measures
              that size too. *func_size* is the measure a build without map
-             sizes stored, *prefix_end* the one a map or a .pat file gives.
+             sizes stored, *prefix_end* the one a map or a .pat file gives,
+             less the breakpoints and nops such a size counts after the
+             last instruction (_ends_where_sig_does).
           3. FLIRT CRC16 over the following bytes, when the signature has
              one: a mismatch rejects, a match scores higher.
           4. Size disambiguation: exact size match scores higher.
@@ -972,9 +1015,11 @@ class SignatureDB:
 
         A key (prefix, mask and CRC16) that the signatures passing tiers 1
         to 3 hold under more than one name cannot tell those functions
-        apart, so it matches nothing: size and tail CRC only order the
-        matches of a key. When the best-scored of the remaining signatures
-        carry more than one name, the function matches nothing either.
+        apart, so none of its signatures is a match: size and tail CRC only
+        order the matches of a key. The function matches nothing when the
+        best-scored signatures are of such a key, or carry more than one
+        name between them, so a weaker signature never names a function
+        that better ones disagree on.
 
         Returns:
             Matches, best first. Scores are whole percent points, so equal
@@ -1012,7 +1057,8 @@ class SignatureDB:
                 continue
             if not _masked_eq(code32, pattern, mask):
                 continue
-            if _stops_at_function_end(mask, db_size) and db_size not in (func_size, prefix_end):
+            if _stops_at_function_end(mask, db_size) and not _ends_where_sig_does(
+                    code32, db_size, func_size, prefix_end):
                 continue
             score = 70  # base confidence for byte match
             if crc_len:
@@ -1477,15 +1523,15 @@ def download_signature_db(url: str, dest: str) -> None:
     The download lands beside *dest* and takes its place only once it opens
     as a signature database this code reads, so a refused download leaves
     *dest* as it was. A write-ahead log left beside *dest* by a writer that
-    never closed it is removed before the download takes the database's
-    place: SQLite would replay it over the download.
+    never closed it goes with the database it belongs to
+    (_replace_database): SQLite would replay it over the download.
 
     Raises:
         sqlite3.DatabaseError: The download is not a signature database, or
             its schema is newer than this code.
         PermissionError: *dest* or its log cannot be replaced; on Windows,
-            because a program holds it open. The database file is as it was;
-            a log that could be removed before the refusal is gone.
+            because a program holds it open. The database and its log are as
+            they were.
     """
     dest_path = Path(dest)
     part = dest_path.with_name(dest_path.name + ".part")
@@ -1498,15 +1544,40 @@ def download_signature_db(url: str, dest: str) -> None:
         except sqlite3.DatabaseError as e:
             raise sqlite3.DatabaseError(f"download from {url} refused, {dest} left as it was: {e}") from e
         try:
-            for suffix in ("-wal", "-shm"):
-                dest_path.with_name(dest_path.name + suffix).unlink(missing_ok=True)
-            os.replace(part, dest_path)
+            _replace_database(part, dest_path)
         except PermissionError as e:
             raise PermissionError(
                 f"cannot replace {dest} with the download (is it open in another program?): {e}") from e
     finally:
         part.unlink(missing_ok=True)
     print(f"  {dest_path.name} ({len(data):,} bytes)")
+
+
+def _replace_database(new: Path, dest: Path) -> None:
+    """Move the database file *new* over *dest*, dropping the write-ahead log and shared memory files of *dest*.
+
+    Those files hold the rows the old database has not checkpointed, so they
+    are set aside under another name until *new* is in place and put back if
+    it cannot be: a refusal leaves the old database whole.
+
+    Raises:
+        OSError: One of the files cannot be moved; all are as they were.
+    """
+    set_aside: list[tuple[Path, Path]] = []
+    try:
+        for suffix in ("-wal", "-shm"):
+            sidecar = dest.with_name(dest.name + suffix)
+            if sidecar.exists():
+                aside = sidecar.with_name(sidecar.name + ".replaced")
+                os.replace(sidecar, aside)
+                set_aside.append((sidecar, aside))
+        os.replace(new, dest)
+    except OSError:
+        for sidecar, aside in reversed(set_aside):
+            os.replace(aside, sidecar)
+        raise
+    for _, aside in set_aside:
+        aside.unlink()
 
 
 def _source_dest(dest_dir: Path, rel_path: str) -> Path:
@@ -1527,15 +1598,32 @@ def _source_dest(dest_dir: Path, rel_path: str) -> Path:
     return dest
 
 
+def _manifest_sources(manifest_json: bytes, repo: str) -> list[str]:
+    """The source paths listed by the manifest.json of the HF *repo*.
+
+    Raises:
+        RefusedInput: See _pull_sources.
+    """
+    try:
+        manifest = json.loads(manifest_json)
+    except ValueError as e:
+        raise RefusedInput(f"manifest.json of {repo} is not JSON: {e}") from e
+    sources = manifest.get("sources", []) if isinstance(manifest, dict) else None
+    if not isinstance(sources, list) or not all(isinstance(rel_path, str) for rel_path in sources):
+        raise RefusedInput(f"manifest.json of {repo} is not an object whose \"sources\" is a list of paths")
+    return sources
+
+
 def _pull_sources(repo: str, dest_dir: str, revision: str = _HF_REVISION_DEFAULT) -> None:
     """Download source files listed in the HF repo's manifest.json at *revision*.
 
     Raises:
-        RefusedInput: A listed path names no file inside *dest_dir*; nothing
-            is downloaded then.
+        RefusedInput: The manifest is not a JSON object whose ``sources``, if
+            any, is a list of paths, or a listed path names no file inside
+            *dest_dir*; nothing is downloaded then.
     """
-    manifest = json.loads(_fetch(_hf_url(repo, revision, "manifest.json")))
-    dests = {rel_path: _source_dest(Path(dest_dir), rel_path) for rel_path in manifest.get("sources", [])}
+    dests = {rel_path: _source_dest(Path(dest_dir), rel_path)
+             for rel_path in _manifest_sources(_fetch(_hf_url(repo, revision, "manifest.json")), repo)}
     for rel_path, dest in dests.items():
         try:
             _download_file(_hf_url(repo, revision, rel_path), str(dest))

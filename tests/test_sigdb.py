@@ -1136,14 +1136,15 @@ class TestPrefixDedup:
         code = bytes.fromhex("5589E5") + b"\x95" * 29
         assert [m.compiler for m in db.match_bytes(code, 0x30, "", 0, frozenset({"8.0"}))] == ["msvc2005"]
 
-    def test_only_the_same_label_again_is_already_in_db(self, tmp_path):
+    def test_only_the_same_label_and_source_again_is_already_in_db(self, tmp_path):
         from sigdb import SignatureDB, read_pat_sigs
         pat = tmp_path / "x.pat"
         pat.write_text(self._PLAIN)
         db = SignatureDB(":memory:")
         read_pat_sigs(str(pat), "msvc2008", "vs2008").add_to(db)
         assert read_pat_sigs(str(pat), "msvc2005_2008", "both").add_to(db) == {"added": 1}
-        assert read_pat_sigs(str(pat), "msvc2008", "another source").add_to(db) == {"already_in_db": 1}
+        assert read_pat_sigs(str(pat), "msvc2008", "another source").add_to(db) == {"added": 1}
+        assert read_pat_sigs(str(pat), "msvc2008", "vs2008").add_to(db) == {"already_in_db": 1}
 
 
 class TestRel32AtTheEndOfThePrefix:
@@ -1755,7 +1756,14 @@ def _pat_line(fill, name):
 
 
 def _byte_rows(db):
-    return sorted(db._conn.execute("SELECT name, compiler FROM byte_sigs").fetchall())
+    """Every column of every byte signature but its row id."""
+    return sorted(db._conn.execute(
+        "SELECT name, pattern, mask, func_size, tail_crc, crc_len, crc16, compiler, source, category "
+        "FROM byte_sigs").fetchall())
+
+
+def _names_and_labels(db):
+    return [(row[0], row[7]) for row in _byte_rows(db)]
 
 
 class TestOneKeyUnderSeveralNames:
@@ -1774,18 +1782,22 @@ class TestOneKeyUnderSeveralNames:
             self._import(db, tmp_path, compiler, *names)
         return db
 
-    @pytest.mark.parametrize("order", [("_x", "_y"), ("_y", "_x")])
-    def test_both_names_are_kept_whatever_the_order_and_neither_matches(self, tmp_path, order):
-        db = self._after(tmp_path, *(("msvc2008", name) for name in order))
-        assert _byte_rows(db) == [("_x", "msvc2008"), ("_y", "msvc2008")]
-        assert db.match_bytes(self._CODE, 0x30, "", 0, frozenset({"9.0"})) == []
+    def test_both_names_are_kept_whatever_the_order_and_neither_matches(self, tmp_path):
+        db = self._after(tmp_path, ("msvc2008", "_x"), ("msvc2008", "_y"))
+        other_order = self._after(tmp_path, ("msvc2008", "_y"), ("msvc2008", "_x"))
+        assert _byte_rows(db) == _byte_rows(other_order)
+        assert _names_and_labels(db) == [("_x", "msvc2008"), ("_y", "msvc2008")]
+        for held in (db, other_order):
+            assert held.match_bytes(self._CODE, 0x30, "", 0, frozenset({"9.0"})) == []
 
     def test_importing_again_adds_and_removes_nothing(self, tmp_path):
         db = self._after(tmp_path, ("msvc2008", "_y"), ("msvc2008", "_x"))
+        rows = _byte_rows(db)
+        assert len(rows) == 2
         for name in ("_x", "_y", "_x"):
             stats = self._import(db, tmp_path, "msvc2008", name)
             assert +stats == {"already_in_db": 1, "ambiguous_prefix": 1}
-            assert _byte_rows(db) == [("_x", "msvc2008"), ("_y", "msvc2008")]
+            assert _byte_rows(db) == rows
 
     def test_two_names_in_one_file_are_counted_as_one_ambiguous_key(self, tmp_path):
         from sigdb import SignatureDB
@@ -1802,7 +1814,7 @@ class TestOneKeyUnderSeveralNames:
 
     def test_two_new_names_do_not_leave_a_held_third_matching(self, tmp_path):
         db = self._after(tmp_path, ("msvc2008", "_y"), ("msvc2008", "_x", "_z"))
-        assert [name for name, _ in _byte_rows(db)] == ["_x", "_y", "_z"]
+        assert [name for name, _ in _names_and_labels(db)] == ["_x", "_y", "_z"]
         assert db.match_bytes(self._CODE, 0x30, "", 0) == []
 
     def test_names_for_toolchains_that_never_meet_each_match_their_own_binaries(self, tmp_path):
@@ -1822,11 +1834,15 @@ class TestOneKeyUnderSeveralNames:
         assert db.match_bytes(body, 40, "", 0, frozenset({"8.0", "9.0"})) == []
         assert db.match_bytes(body, 40, "", 0) == []
 
-    @pytest.mark.parametrize("order", [("msvc2008", "msvc2005_2008", "msvc"), ("msvc", "msvc2005_2008", "msvc2008")])
-    def test_one_name_under_overlapping_labels_keeps_a_row_per_label_whatever_the_order(self, tmp_path, order):
-        db = self._after(tmp_path, *((compiler, "_x") for compiler in order))
-        assert _byte_rows(db) == [("_x", "msvc"), ("_x", "msvc2005_2008"), ("_x", "msvc2008")]
-        assert {m.name for m in db.match_bytes(self._CODE, 0x30, "", 0, frozenset({"8.0"}))} == {"_x"}
+    def test_one_name_under_overlapping_labels_keeps_a_row_per_label_whatever_the_order(self, tmp_path):
+        labels = ("msvc2008", "msvc2005_2008", "msvc")
+        db = self._after(tmp_path, *((compiler, "_x") for compiler in labels))
+        other_order = self._after(tmp_path, *((compiler, "_x") for compiler in reversed(labels)))
+        assert _byte_rows(db) == _byte_rows(other_order)
+        assert _names_and_labels(db) == [("_x", "msvc"), ("_x", "msvc2005_2008"), ("_x", "msvc2008")]
+        matches = db.match_bytes(self._CODE, 0x30, "", 0, frozenset({"8.0"}))
+        assert [(m.name, m.compiler) for m in matches] == [("_x", "msvc"), ("_x", "msvc2005_2008")]
+        assert other_order.match_bytes(self._CODE, 0x30, "", 0, frozenset({"8.0"})) == matches
 
     def test_a_key_with_another_crc_is_another_key(self):
         from sigdb import SignatureDB, flirt_crc16
@@ -2103,7 +2119,7 @@ class TestCompilerLabels:
         pat.write_text(_pat_line("A3", "_f"))
         db = SignatureDB(":memory:")
         read_pat_sigs(str(pat), label, "t").add_to(db)
-        assert _byte_rows(db) == [("_f", label)]
+        assert _names_and_labels(db) == [("_f", label)]
 
 
 class TestBuildNeedsItsBinaries:
@@ -2152,6 +2168,8 @@ _ADD_MUL = bytes.fromhex("8b4424048b4c240803c10fafc1c20800")
 _AULLSHR = bytes.fromhex("80f940731580f92073060fadd0d3eac38bc233d280e11fd3e8c333c033d2c3")
 _INITTERM = bytes.fromhex("8bff558bec568bf0eb0b8b0685c07402ffd083c6043b750872f05e5dc3")
 _ALLOCA_PROBE_16 = bytes.fromhex("518d4c24082bc883e10f03c11bc90bc159e94a050000")
+# Twenty bytes ending in a return, which the linker aligns the next function after.
+_SUM_TIMES_CUBE = bytes.fromhex("8b4424048b4c240803c10fafc10fafc10fafc1c3")
 # Sixteen bytes that end in a call, which a longer function can start with too.
 _ENDS_IN_A_CALL = bytes.fromhex("6a016a026a036a046a0550e8") + b"\x10\x00\x00\x00"
 
@@ -2208,11 +2226,54 @@ class TestSignaturesShorterThanThePrefix:
         db = _db_with_sig_of(_ENDS_IN_A_CALL, 16)
         assert db.identify(binary_over(_ENDS_IN_A_CALL + _PADDING), CODE_VA).name == "lib"
 
-    def test_a_call_followed_by_a_breakpoint_a_branch_jumps_over_is_not_the_end(self):
+    @pytest.mark.parametrize("size", [14, 15], ids=["sized_to_the_call", "sized_with_the_breakpoint"])
+    def test_a_call_followed_by_a_breakpoint_a_branch_jumps_over_is_not_the_end(self, size):
         guarded = bytes.fromhex("85c9740b6a016a0250e810000000")  # test ecx, ecx; jz past the int3; pushes; call
-        db = _db_with_sig_of(guarded, len(guarded))
         longer = guarded + b"\xcc" + bytes.fromhex("33c0c3") + _PADDING
+        db = _db_with_sig_of(longer, size)
         assert db.identify(binary_over(longer), CODE_VA) is None
+
+    @pytest.mark.parametrize("following", [_PADDING, b"\xcc" + _NEXT_FUNCTION], ids=["padded", "one_breakpoint"])
+    def test_a_signature_sized_with_the_breakpoint_after_a_call_that_does_not_return_matches(self, following):
+        db = _db_with_sig_of(_ENDS_IN_A_CALL, 17)
+        assert db.identify(binary_over(_ENDS_IN_A_CALL + following), CODE_VA).name == "lib"
+
+    def test_a_pat_length_counting_the_breakpoint_after_the_last_call_matches(self, tmp_path):
+        from sigdb import SignatureDB, read_pat_sigs
+        pat = tmp_path / "atl.pat"
+        pat.write_text("8B4424042D........F7D81BC083E00605........6A..50E8........CC.... 00 0000 001E "
+                       ":0000 _AtlThrowImpl_ATL__YAXJ_Z\n")
+        db = SignatureDB(":memory:")
+        assert read_pat_sigs(str(pat), "msvc2008", "vs2008").add_to(db) == {"added": 1}
+        # mov eax, [esp+4]; sub eax, E_FAIL; neg eax; sbb eax, eax; and eax, 6; add eax, E_FAIL; push 0; push eax;
+        # call; int3, then alignment and the next function.
+        thrower = bytes.fromhex("8b4424042d05400080f7d81bc083e00605054000806a0050e830000000cc")
+        b = binary_over(thrower + b"\xcc" * 2 + _NEXT_FUNCTION)
+        assert db.identify(b, CODE_VA).name == "_AtlThrowImpl_ATL__YAXJ_Z"
+
+    @pytest.mark.parametrize("filler", [b"\xcc", b"\x90"], ids=["breakpoints", "nops"])
+    @pytest.mark.parametrize("function", [_SUM_TIMES_CUBE, _ALLOCA_PROBE_16], ids=["return", "tail_jump"])
+    def test_a_signature_sized_with_the_alignment_filler_after_its_function_matches(self, function, filler):
+        aligned = function + filler * (-len(function) % 8)
+        assert len(function) < len(aligned) < 32
+        db = _db_with_sig_of(aligned + _NEXT_FUNCTION, len(aligned))
+        assert db.identify(binary_over(aligned + _NEXT_FUNCTION), CODE_VA).name == "lib"
+
+    def test_a_signature_sized_past_its_function_does_not_match_where_code_follows_the_function(self):
+        from sigdb import SignatureDB
+        db = SignatureDB(":memory:")
+        size = len(_SUM_TIMES_CUBE)
+        db.add_byte_sig(name="lib", pattern=_SUM_TIMES_CUBE + bytes(32 - size), mask=b"\xff" * size + bytes(32 - size),
+                        func_size=size + 4, tail_crc=0)
+        assert db.identify(binary_over(_SUM_TIMES_CUBE + b"\xcc" * 4 + _NEXT_FUNCTION), CODE_VA).name == "lib"
+        assert db.identify(binary_over(_SUM_TIMES_CUBE + _NEXT_FUNCTION), CODE_VA) is None
+
+    def test_a_signature_sized_with_filler_does_not_match_a_longer_function_starting_alike(self):
+        db = _db_with_sig_of(_ENDS_IN_A_CALL, 17)
+        # The call returns here: add esp, 0x14; int3 as a debug break; xor eax, eax; nops; ret.
+        longer = _ENDS_IN_A_CALL + bytes.fromhex("83c414cc33c0") + b"\x90" * 20 + b"\xc3"
+        assert db.identify(binary_over(_ENDS_IN_A_CALL + _PADDING), CODE_VA).name == "lib"
+        assert db.identify(binary_over(longer + _PADDING), CODE_VA) is None
 
     def test_a_signature_sized_by_the_estimate_matches_a_function_the_estimate_sizes_alike(self):
         # A tail jump, padding, then another function: 22 bytes to the estimate, which ends a function at a return.
@@ -2256,6 +2317,28 @@ class TestSeveralNamesForOneFunction:
         wide, narrow, _ = self._masks()
         db = self._db({"name": "other_size", "mask": wide, "func_size": 80}, {"name": "same_size", "mask": narrow})
         assert [m.name for m in db.match_bytes(self._CODE, 40, "", 0)] == ["same_size", "other_size"]
+
+    def test_a_weaker_name_does_not_match_when_the_best_scored_key_is_held_under_two_names(self):
+        from sigdb import SignatureDB, flirt_crc16
+        code = bytes(range(0x40, 0x60)) + b"\x90" * 16
+        db = SignatureDB(":memory:")
+        for name in ("a", "b"):
+            db.add_byte_sig(name=name, pattern=code[:32], mask=b"\xff" * 32, func_size=48, tail_crc=0,
+                            crc_len=8, crc16=flirt_crc16(code[32:40]))
+        db.add_byte_sig(name="c", pattern=code[:12] + bytes(20), mask=b"\xff" * 12 + bytes(20),
+                        func_size=999, tail_crc=0)
+        assert db.match_bytes(code, 48, "", 0) == []
+
+    def test_a_weaker_name_does_not_match_when_a_key_held_under_two_names_scores_the_same(self):
+        wide, narrow, _ = self._masks()
+        db = self._db({"name": "a", "mask": wide}, {"name": "b", "mask": wide}, {"name": "c", "mask": narrow})
+        assert db.match_bytes(self._CODE, 40, "", 0) == []
+
+    def test_a_name_scoring_above_a_key_held_under_two_names_matches(self):
+        wide, narrow, _ = self._masks()
+        db = self._db({"name": "a", "mask": wide, "func_size": 80}, {"name": "b", "mask": wide, "func_size": 80},
+                      {"name": "c", "mask": narrow})
+        assert [m.name for m in db.match_bytes(self._CODE, 40, "", 0)] == ["c"]
 
     def test_scores_reached_by_different_boosts_tie(self):
         wide, narrow, _ = self._masks()
@@ -2333,25 +2416,57 @@ class TestEverySchemaTableIsRequired:
         with pytest.raises(TypeError):
             SignatureDB(str(path), read_only=True)
 
-class TestPullOverALeftoverWriteAheadLog:
-    def _killed_writer_leftovers(self, tmp_path, held):
-        """Leave *held* with the -wal and -shm files of a writer that never closed its connection."""
-        from sigdb import SignatureDB
-        live = tmp_path / "live" / held.name
-        live.parent.mkdir()
-        db = SignatureDB(str(live))
-        db._conn.execute("PRAGMA wal_autocheckpoint=0")
-        db.add_byte_sig(name="old", pattern=b"\x55" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0)
-        for suffix in ("", "-wal", "-shm"):
-            (held.parent / (held.name + suffix)).write_bytes((live.parent / (live.name + suffix)).read_bytes())
-        db.close()
+def _killed_writer_leftovers(tmp_path, held):
+    """Leave *held* with the -wal and -shm files of a writer that never closed its connection.
 
+    Its one signature, called "old", is in the write-ahead log only.
+    """
+    from sigdb import SignatureDB
+    live = tmp_path / "live" / held.name
+    live.parent.mkdir()
+    db = SignatureDB(str(live))
+    db._conn.execute("PRAGMA wal_autocheckpoint=0")
+    db.add_byte_sig(name="old", pattern=b"\x55" * 32, mask=b"\xff" * 32, func_size=40, tail_crc=0)
+    for suffix in ("", "-wal", "-shm"):
+        (held.parent / (held.name + suffix)).write_bytes((live.parent / (live.name + suffix)).read_bytes())
+    db.close()
+
+
+def _refuse_replacing(monkeypatch, refused):
+    """Have os.replace refuse, as Windows does for a file held open, every move *refused*(src, dst) is true for."""
+    import sigdb
+    replace = os.replace
+
+    def replace_unless_refused(src, dst):
+        if refused(Path(src), Path(dst)):
+            raise PermissionError(13, "Access is denied", str(dst))
+        replace(src, dst)
+
+    monkeypatch.setattr(sigdb.os, "replace", replace_unless_refused)
+
+
+def _pull_refused_leaving_the_old_rows(held, capsys):
+    """Run a pull that must fail and leave the folder of *held* byte for byte, its "old" signature still read."""
+    import sigdb
+    before = _dir_bytes(held.parent)
+    with pytest.raises(SystemExit) as exc:
+        sigdb.main(["pull"])
+    assert exc.value.code == 1
+    (line,) = capsys.readouterr().err.splitlines()
+    assert "cannot replace" in line and "signatures.db" in line and "open in another program" in line
+    assert _dir_bytes(held.parent) == before
+    db = sigdb.SignatureDB.open_existing(str(held))
+    assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0)] == ["old"]
+    db.close()
+
+
+class TestPullOverALeftoverWriteAheadLog:
     def test_the_downloaded_rows_are_the_ones_served(self, tmp_path, monkeypatch):
         import sigdb
         held = tmp_path / "data" / "signatures.db"
         held.parent.mkdir()
         monkeypatch.setattr(sigdb, "DEFAULT_DB_PATH", held)
-        self._killed_writer_leftovers(tmp_path, held)
+        _killed_writer_leftovers(tmp_path, held)
         assert (held.parent / "signatures.db-wal").stat().st_size > 0
         _served(monkeypatch, {"signatures.db": _db_bytes(tmp_path, "new")})
         sigdb.main(["pull"])
@@ -2361,28 +2476,17 @@ class TestPullOverALeftoverWriteAheadLog:
         assert names == ["new"]
         assert [p.name for p in held.parent.iterdir()] == ["signatures.db"]
 
-    def test_a_log_that_cannot_be_removed_leaves_the_held_database_and_its_log(self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize("held_open", ["signatures.db-wal", "signatures.db-shm"])
+    def test_a_log_file_that_cannot_be_moved_leaves_the_held_database_and_its_log(
+            self, tmp_path, monkeypatch, capsys, held_open):
         import sigdb
         held = tmp_path / "data" / "signatures.db"
         held.parent.mkdir()
         monkeypatch.setattr(sigdb, "DEFAULT_DB_PATH", held)
-        self._killed_writer_leftovers(tmp_path, held)
+        _killed_writer_leftovers(tmp_path, held)
         _served(monkeypatch, {"signatures.db": _db_bytes(tmp_path, "new")})
-        unlink = Path.unlink
-
-        def refuse_the_log(path, missing_ok=False):
-            if path.name.endswith("-wal"):
-                raise PermissionError(13, "Access is denied", str(path))
-            unlink(path, missing_ok=missing_ok)
-
-        monkeypatch.setattr(Path, "unlink", refuse_the_log)
-        before = _dir_bytes(held.parent)
-        with pytest.raises(SystemExit) as exc:
-            sigdb.main(["pull"])
-        assert exc.value.code == 1
-        (line,) = capsys.readouterr().err.splitlines()
-        assert "cannot replace" in line and "signatures.db" in line and "open in another program" in line
-        assert _dir_bytes(held.parent) == before
+        _refuse_replacing(monkeypatch, lambda src, dst: src.name == held_open)
+        _pull_refused_leaving_the_old_rows(held, capsys)
 
 
 class TestPullCannotReplaceTheDatabase:
@@ -2405,6 +2509,17 @@ class TestPullCannotReplaceTheDatabase:
         (line,) = capsys.readouterr().err.splitlines()
         assert "cannot replace" in line and "signatures.db" in line and "open in another program" in line
         assert _dir_bytes(held.parent) == before
+
+    def test_rows_held_only_in_the_write_ahead_log_are_left_too(self, tmp_path, monkeypatch, capsys):
+        import sigdb
+        held = tmp_path / "data" / "signatures.db"
+        held.parent.mkdir()
+        monkeypatch.setattr(sigdb, "DEFAULT_DB_PATH", held)
+        _killed_writer_leftovers(tmp_path, held)
+        assert (held.parent / "signatures.db-wal").stat().st_size > 0
+        _served(monkeypatch, {"signatures.db": _db_bytes(tmp_path, "new")})
+        _refuse_replacing(monkeypatch, lambda src, dst: dst == held)
+        _pull_refused_leaving_the_old_rows(held, capsys)
 
 
 class TestPullSourcePathsNamingTheDestination:
@@ -2450,3 +2565,109 @@ class TestVersionLabelsWithTrailingZeros:
                         compiler="msvc7.10")
         assert [m.name for m in db.match_bytes(b"\x55" * 32, 40, "", 0, toolchains)] == ["crt"]
         assert db.match_bytes(b"\x55" * 32, 40, "", 0, frozenset({"9.0"})) == []
+
+
+class TestImportOrder:
+    """What a database holds and matches does not depend on the order its sources were added in."""
+
+    _LINE = "5589E5" + "41" * 29 + " 00 0000 {length:04X} :0000 _f"
+    _CODE = bytes.fromhex("5589E5") + b"\x41" * 29 + b"\x90" * 48
+
+    def _after(self, tmp_path, imports, extra_rows=()):
+        """A database after importing (length, compiler, source) .pat files in order, then *extra_rows*."""
+        from sigdb import SignatureDB, read_pat_sigs
+        db = SignatureDB(":memory:")
+        stats = []
+        for length, compiler, source in imports:
+            pat = tmp_path / "x.pat"
+            pat.write_text(self._LINE.format(length=length) + "\n")
+            stats.append(+read_pat_sigs(str(pat), compiler, source).add_to(db))
+        db.add_new_sigs(extra_rows)
+        return db, stats
+
+    def _both_orders(self, tmp_path, imports, extra_rows=()):
+        db, stats = self._after(tmp_path, imports, extra_rows)
+        reverse, reverse_stats = self._after(tmp_path, imports[::-1], extra_rows)
+        assert _byte_rows(db) == _byte_rows(reverse)
+        assert stats == reverse_stats
+        return db, reverse, stats
+
+    def test_one_line_with_two_lengths_keeps_a_row_per_length(self, tmp_path):
+        db, _, stats = self._both_orders(tmp_path, [(0x30, "msvc2008", "a"), (0x50, "msvc2008", "b")])
+        assert [(row[0], row[3], row[8]) for row in _byte_rows(db)] == [("_f", 0x30, "a"), ("_f", 0x50, "b")]
+        assert stats == [{"added": 1}, {"added": 1}]
+
+    def test_one_line_from_two_sources_keeps_a_row_per_source(self, tmp_path):
+        db, _, stats = self._both_orders(tmp_path, [(0x30, "msvc2008", "a"), (0x30, "msvc2008", "b")])
+        assert [(row[0], row[3], row[8]) for row in _byte_rows(db)] == [("_f", 0x30, "a"), ("_f", 0x30, "b")]
+        assert stats == [{"added": 1}, {"added": 1}]
+
+    @pytest.mark.parametrize("func_size", [0x30, 0x50])
+    def test_rows_of_one_name_and_key_with_two_lengths_match_as_that_name(self, tmp_path, func_size):
+        db, reverse, _ = self._both_orders(tmp_path, [(0x30, "msvc2008", "a"), (0x50, "msvc2008", "b")])
+        matches = db.match_bytes(self._CODE, func_size, "", 0)
+        assert [(m.name, m.confidence) for m in matches] == [("_f", 0.85), ("_f", 0.7)]
+        assert reverse.match_bytes(self._CODE, func_size, "", 0) == matches
+
+    def test_a_name_under_another_key_ties_with_either_order(self, tmp_path):
+        other_key = ("_g", self._CODE[:31] + b"\0", b"\xff" * 31 + b"\0", 0x50, 0, 0, 0, "msvc2008", "c", "unknown")
+        db, reverse, _ = self._both_orders(
+            tmp_path, [(0x30, "msvc2008", "a"), (0x50, "msvc2008", "b")], extra_rows=[other_key])
+        assert db.match_bytes(self._CODE, 0x50, "", 0) == []
+        assert reverse.match_bytes(self._CODE, 0x50, "", 0) == []
+        assert [m.name for m in db.match_bytes(self._CODE, 0x30, "", 0)] == ["_f", "_f", "_g"]
+        assert reverse.match_bytes(self._CODE, 0x30, "", 0) == db.match_bytes(self._CODE, 0x30, "", 0)
+
+    def test_equally_scored_rows_of_one_name_come_back_in_one_order(self, tmp_path):
+        db, reverse, _ = self._both_orders(tmp_path, [(0x30, "msvc2008", "s1"), (0x30, "msvc2005", "s2")])
+        matches = db.match_bytes(self._CODE, 0x30, "", 0)
+        assert [(m.compiler, m.source) for m in matches] == [("msvc2005", "s2"), ("msvc2008", "s1")]
+        assert reverse.match_bytes(self._CODE, 0x30, "", 0) == matches
+
+    def test_a_row_twice_in_one_batch_is_added_once(self):
+        from sigdb import SignatureDB
+        row = ("_f", self._CODE[:32], b"\xff" * 32, 0x30, 0, 0, 0, "msvc2008", "a", "unknown")
+        db = SignatureDB(":memory:")
+        assert +db.add_new_sigs([row, row]) == {"added": 1, "already_in_db": 1}
+        assert _byte_rows(db) == [row]
+
+
+class TestSchemaVersionThatIsNoNumber:
+    @pytest.mark.parametrize("version", ["abc", None, 2.5, b"\x02"])
+    def test_the_file_is_refused_as_no_signature_database(self, tmp_path, version):
+        import sigdb
+        path = tmp_path / "s.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(sigdb._SCHEMA_SQL)
+        conn.execute("DROP TABLE schema_version")
+        conn.execute("CREATE TABLE schema_version (version)")
+        conn.execute("INSERT INTO schema_version VALUES (?)", (version,))
+        conn.commit()
+        conn.close()
+        for open_db in (sigdb.SignatureDB, sigdb.SignatureDB.open_existing):
+            with pytest.raises(sigdb.NotASignatureDB, match="not a signature database"):
+                open_db(str(path))
+
+
+class TestPullSourcesManifestShape:
+    @pytest.mark.parametrize("manifest", [
+        b"<html>rate limited</html>", b"", b'["sources/a.csv"]', b'{"sources": "sources/a.csv"}',
+        b'{"sources": ["sources/a.csv", 5]}', b'{"sources": [null]}', b'{"sources": [["sources/a.csv"]]}',
+    ])
+    def test_a_manifest_that_lists_no_source_paths_is_reported_and_nothing_is_fetched(
+            self, tmp_path, monkeypatch, capsys, manifest):
+        import sigdb
+        monkeypatch.setattr(sigdb, "DEFAULT_DB_PATH", tmp_path / "data" / "signatures.db")
+        asked = _served(monkeypatch, {"signatures.db": _db_bytes(tmp_path), "manifest.json": manifest, "a.csv": b"a"})
+        with pytest.raises(SystemExit) as exc:
+            sigdb.main(["pull", "--sources"])
+        assert exc.value.code == 1
+        (line,) = capsys.readouterr().err.splitlines()
+        assert "manifest.json" in line
+        assert [url.rsplit("/", 1)[1] for url in asked] == ["signatures.db", "manifest.json"]
+
+    def test_a_manifest_without_sources_fetches_nothing(self, tmp_path, monkeypatch):
+        import sigdb
+        asked = _served(monkeypatch, {"manifest.json": b"{}"})
+        sigdb._pull_sources("org/repo", str(tmp_path / "sources"))
+        assert [url.rsplit("/", 1)[1] for url in asked] == ["manifest.json"]
