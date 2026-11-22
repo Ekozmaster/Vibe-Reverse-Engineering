@@ -37,7 +37,13 @@ from .d3d9_methods import (
 # ── Data loading ────────────────────────────────────────────────────────────
 
 def load_records(path: str, filt: str | None = None) -> list[dict]:
+    """The records of a capture file that match *filt*; every record without one.
+
+    A line that is not JSON is left out, and their number is reported on
+    stderr: a tracer that keeps the file open leaves its last line half written.
+    """
     records = []
+    unreadable_lines = 0
     field, op, val = (None, None, None)
     if filt:
         field, op, val = _parse_filter(filt)
@@ -50,10 +56,13 @@ def load_records(path: str, filt: str | None = None) -> list[dict]:
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
+                unreadable_lines += 1
                 continue
             if field and not _match_filter(rec, field, op, val):
                 continue
             records.append(rec)
+    if unreadable_lines:
+        print(f"[warning] {path}: lines skipped because they are not JSON: {unreadable_lines}", file=sys.stderr)
     return records
 
 

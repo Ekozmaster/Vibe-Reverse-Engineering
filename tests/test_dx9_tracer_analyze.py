@@ -105,3 +105,17 @@ class TestLoadRecords:
         capture = tmp_path / "dxtrace_frame.jsonl"
         capture.write_text('{"frame":0,"seq":0,"method":"Present"}\n{"frame":-1,"seq":1,"method":"Cre')
         assert analyze.load_records(str(capture)) == [{"frame": 0, "seq": 0, "method": "Present"}]
+
+    def test_lines_that_are_no_records_are_counted_on_stderr(self, tmp_path, capsys):
+        capture = tmp_path / "dxtrace_frame.jsonl"
+        capture.write_text('{"seq":0}\n{"seq":1,"args":{"State":\n\n{"seq":2}\n{"seq":3,"met')
+        assert [record["seq"] for record in analyze.load_records(str(capture))] == [0, 2]
+        captured = capsys.readouterr()
+        assert captured.err == f"[warning] {capture}: lines skipped because they are not JSON: 2\n"
+        assert captured.out == ""
+
+    def test_a_capture_of_whole_records_is_loaded_without_a_warning(self, tmp_path, capsys):
+        capture = tmp_path / "dxtrace_frame.jsonl"
+        capture.write_text('{"seq":0}\n\n{"seq":1}\n')
+        analyze.load_records(str(capture))
+        assert capsys.readouterr().err == ""

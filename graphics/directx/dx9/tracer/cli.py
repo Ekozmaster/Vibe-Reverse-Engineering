@@ -66,14 +66,15 @@ class _Progress(NamedTuple):
     """A progress line the tracer wrote about one capture.
 
     "<frame> <calls> <id>" while capturing, then " done" on the last write; or
-    "0 0 <id> failed <reason>" from a tracer that could not start the capture.
-    <id> is the id in the trigger file that started the capture.
+    "<frame> <calls> <id> failed <reason>" from a tracer that gave the capture
+    up there, "0 0" when it could not start it. <id> is the id in the trigger
+    file that started the capture.
 
     Attributes:
         frame: Frames the capture has finished.
         calls: Calls it has recorded.
         done: The capture is over and every recorded call is in the JSONL file.
-        failure: Why the tracer could not start the capture; None when it could.
+        failure: Why the tracer gave the capture up; None when it has not.
     """
     frame: int
     calls: int
@@ -111,6 +112,13 @@ def _read_progress(path: Path, capture_id: str) -> _Progress | _NoProgress:
     return progress._replace(done=outcome == ["done"])
 
 
+def _given_up(progress: _Progress) -> str:
+    if progress.frame or progress.calls:
+        return (f"the tracer gave up the capture at frame {progress.frame}, "
+                f"after {progress.calls} calls: {progress.failure}")
+    return f"the tracer could not start the capture: {progress.failure}"
+
+
 def _frames_short(progress: _Progress, frames: int) -> str:
     return f"the capture stopped at frame {progress.frame} of {frames}"
 
@@ -143,7 +151,7 @@ def _wait_for_capture(trigger_path: Path, progress_path: Path, frames: int, capt
         if not isinstance(seen, _Progress):
             continue
         if seen.failure is not None:
-            return f"the tracer could not start the capture: {seen.failure}"
+            return _given_up(seen)
         if seen != progress:
             progress = seen
             last_change = time.monotonic()
