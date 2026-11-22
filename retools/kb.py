@@ -65,7 +65,7 @@ _DECLARATION_KEYWORDS = frozenset(("typedef", "struct", "union", "enum", "class"
 # (``Foo::`vftable'``) opens nothing.
 _LITERAL_OR_COMMENT = re.compile(
     r"""(?P<literal>"(?:\\.|[^"\\\n])*"|'(?:\\.[^'\n]*|[^'\\\n])')"""
-    r"""|[ \t]*(?://[^\n]*|/\*.*?\*/)[ \t]*""",
+    r"""|[ \t]*(?://[^\n]*|/\*.*?(?:\*/|\Z))[ \t]*""",
     re.DOTALL,
 )
 _FIRST_WORD = re.compile(r"\w*")
@@ -89,8 +89,11 @@ def _first_word(text: str) -> str:
 
 
 def _is_open(text: str) -> bool:
-    """Whether *text* has a brace or parenthesis that is not closed."""
-    return text.count("{") > text.count("}") or text.count("(") > text.count(")")
+    """Whether *text* has a brace or parenthesis that is not closed, literals aside."""
+    code = text
+    if '"' in text or "'" in text:
+        code = _LITERAL_OR_COMMENT.sub(lambda match: "" if match.group("literal") else match.group(), text)
+    return code.count("{") > code.count("}") or code.count("(") > code.count(")")
 
 
 def _continues(declaration: list[str], line: str) -> bool:
@@ -105,6 +108,8 @@ def _continues(declaration: list[str], line: str) -> bool:
     if _is_open(text):
         return True
     if set(text.split()) <= _DECLARATION_KEYWORDS:
+        return True
+    if text.endswith("}") and line == ";":
         return True
     if text.endswith(";") or line.startswith("#") or _first_word(line) in _DECLARATION_KEYWORDS:
         return False

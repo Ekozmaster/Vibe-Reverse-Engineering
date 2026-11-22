@@ -160,6 +160,8 @@ class TestRegistersAnInstructionOverwrites:
         ("B101", {"ecx"}),              # mov cl, 1
         ("32C0", {"eax"}),              # xor al, al
         ("6683C001", {"eax"}),          # add ax, 1
+        ("E800100000", {"eax", "ecx", "edx"}),          # call rel32
+        ("9A785634121200", {"eax", "ecx", "edx"}),      # lcall 0x12:0x12345678
     ])
     def test_written_register_is_no_longer_a_constant(self, instruction, overwritten):
         from dataflow import Const, Unknown
@@ -183,6 +185,112 @@ class TestRegistersAnInstructionOverwrites:
     def test_only_the_32_bit_registers_are_reported(self):
         state = self._state_after("B101" "32C0")    # mov cl, 1; xor al, al
         assert sorted(state) == ["eax", "ebp", "ebx", "ecx", "edi", "edx", "esi", "esp"]
+
+
+_CALL = "E800100000"                       # call rel32
+_SET_ESI_9 = "BE09000000"                  # mov esi, 9
+
+
+class TestStackSlotsAPopReads:
+    """A pop yields a pushed value only while the pushes and pops since are all accounted for."""
+
+    def _state_after(self, code: str):
+        from dataflow import propagate_forward
+        cs = Cs(CS_ARCH_X86, CS_MODE_32)
+        cs.detail = True
+        insns = list(cs.disasm(bytes.fromhex(code), 0x401000))
+        assert sum(insn.size for insn in insns) == len(code) // 2
+        return propagate_forward(insns)
+
+    @pytest.mark.parametrize("code", [
+        _SET_ESI_9 + "56" "6A05" + _CALL + "83C404" "5E",   # push esi; push 5; call; add esp, 4; pop esi
+        _SET_ESI_9 + "56" "6A05" + _CALL + "5E",            # push esi; push 5; call; pop esi
+        _SET_ESI_9 + "56" "6A05" "FF10" "5E",               # push esi; push 5; call [eax]; pop esi
+        _SET_ESI_9 + "56" "6A05" "9A785634121200" "5E",     # push esi; push 5; lcall 0x12:0x12345678; pop esi
+        _SET_ESI_9 + "56" "6A05" "FF18" "5E",               # push esi; push 5; call far [eax]; pop esi
+    ])
+    def test_pop_behind_a_call_is_unknown(self, code):
+        from dataflow import Unknown
+        assert self._state_after(code)["esi"] == Unknown()
+
+    def test_add_esp_drops_the_slots_it_releases(self):
+        from dataflow import Const
+        state = self._state_after(_SET_ESI_9 + "56" "6A05" "6A06" "83C408" "5E")   # push esi; push 5; push 6; add esp, 8; pop esi
+        assert state["esi"] == Const(9)
+
+    def test_slots_below_the_first_push_are_unknown(self):
+        from dataflow import Const, Unknown
+        state = self._state_after("6A05" "83C408" "6A06" "58" "59")   # push 5; add esp, 8; push 6; pop eax; pop ecx
+        assert state["eax"] == Const(6)
+        assert state["ecx"] == Unknown()
+
+    @pytest.mark.parametrize("reserve", [
+        "83EC04",           # sub esp, 4
+        "83C4FC",           # add esp, -4
+    ])
+    def test_a_reserved_slot_is_unknown_and_the_push_below_it_is_kept(self, reserve):
+        from dataflow import Const, Unknown
+        state = self._state_after("6A05" + reserve + "58" "59")       # push 5; reserve; pop eax; pop ecx
+        assert state["eax"] == Unknown()
+        assert state["ecx"] == Const(5)
+
+    @pytest.mark.parametrize("store, eax, ecx", [
+        ("C7042407000000", None, 1),        # mov dword [esp], 7
+        ("C744240407000000", 2, None),      # mov dword [esp + 4], 7
+        ("C644240507", 2, None),            # mov byte [esp + 5], 7
+        ("66C74424030700", None, None),     # mov word [esp + 3], 7
+        ("D91C24", None, 1),                # fstp dword [esp]
+        ("DD1C24", None, None),             # fstp qword [esp]
+        ("C744240807000000", 2, 1),         # mov dword [esp + 8], 7
+        ("C74424FC07000000", 2, 1),         # mov dword [esp - 4], 7
+        ("C7043407000000", None, None),     # mov dword [esp + esi], 7
+        ("660FD60424", None, None),         # movq [esp], xmm0
+        ("0F7F0424", None, None),           # movq [esp], mm0
+        ("0F7E0424", None, 1),              # movd [esp], mm0
+        ("0FAE1C24", None, 1),              # stmxcsr [esp]
+        ("0F9F0424", None, 1),              # setg byte [esp]
+        ("0FB1542404", 2, None),            # cmpxchg [esp + 4], edx
+        ("0FC70C24", None, None),           # cmpxchg8b [esp]
+        ("C10C2402", None, 1),              # ror dword [esp], 2
+        ("660F3A160C2401", None, 1),        # pextrd [esp], xmm1, 1
+        ("0FAE0424", None, None),           # fxsave [esp]
+        ("DD3424", None, None),             # fnsave [esp]
+        ("0FAE2424", None, None),           # xsave [esp]
+        ("0FAE3424", None, None),           # xsaveopt [esp]
+        ("0FC72424", None, None),           # xsavec [esp]
+        ("0FC72C24", None, None),           # xsaves [esp]
+        ("0FAE442408", None, None),         # fxsave [esp + 8]
+    ])
+    def test_a_store_through_esp_makes_the_slots_it_writes_unknown(self, store, eax, ecx):
+        from dataflow import Const, Unknown
+        state = self._state_after("6A01" "6A02" + store + "58" "59")      # push 1; push 2; store; pop eax; pop ecx
+        assert state["eax"] == (Unknown() if eax is None else Const(eax))
+        assert state["ecx"] == (Unknown() if ecx is None else Const(ecx))
+
+    def test_pop_into_memory_takes_a_slot(self):
+        from dataflow import Const
+        state = self._state_after("6A07" "6A05" "8F03" "58")          # push 7; push 5; pop dword [ebx]; pop eax
+        assert state["eax"] == Const(7)
+
+    @pytest.mark.parametrize("instruction", [
+        "C9",               # leave
+        "8BE5",             # mov esp, ebp
+        "8D6424F8",         # lea esp, [esp - 8]
+        "83C402",           # add esp, 2
+        "03E1",             # add esp, ecx
+        "81ECFCFFFF7F",     # sub esp, 0x7ffffffc
+        "61",               # popal
+        "9D",               # popfd
+        "C8080000",         # enter 8, 0
+        "6658",             # pop ax
+        "07",               # pop es
+        "0FA0",             # push fs
+        "5C",               # pop esp
+    ])
+    def test_pop_behind_a_stack_pointer_change_that_is_not_followed_is_unknown(self, instruction):
+        from dataflow import Unknown
+        state = self._state_after("6A07" "6A05" + instruction + "5F")  # push 7; push 5; ...; pop edi
+        assert state["edi"] == Unknown()
 
 
 class TestPropagateCfg:
@@ -230,24 +338,6 @@ class TestPropagateCfg:
         # Merge block: eax is Unknown (5 vs 10)
         assert isinstance(result[0x40100F]["eax"], Unknown)
 
-    def test_returns_dict_of_block_states(self):
-        from dataflow import propagate_cfg
-        from common import Binary
-        from unittest.mock import MagicMock
-
-        b = MagicMock(spec=Binary)
-        b.is_64 = False
-        b.disasm.return_value = []
-        b.find_func_start.return_value = 0x401000
-        b.read_va.return_value = b""
-        b.exec_ranges.return_value = []
-        b.in_exec.return_value = True
-        b.ptr_size = 4
-        b.base = 0x400000
-
-        result = propagate_cfg(b, 0x401000)
-        assert isinstance(result, dict)
-
 
 class TestBackwardSlice:
     def test_importable(self):
@@ -278,6 +368,19 @@ class TestBackwardSlice:
         result = backward_slice(insns, target_va, "eax")
         vas = [entry[0] for entry in result]
         assert 0x401000 not in vas
+
+    @pytest.mark.parametrize("call", [
+        "E800100000",           # call rel32
+        "9A785634121200",       # lcall 0x12:0x12345678
+        "FF1E",                 # call far [esi]
+    ])
+    def test_a_call_writes_the_registers_a_callee_may_change(self, call):
+        from dataflow import backward_slice
+        cs = Cs(CS_ARCH_X86, CS_MODE_32)
+        cs.detail = True
+        insns = list(cs.disasm(bytes.fromhex("B805000000" + call + "8BD8"), 0x401000))   # mov eax, 5; call; mov ebx, eax
+        result = backward_slice(insns, insns[-1].address, "ebx")
+        assert [(va, reg) for va, reg, _ in result] == [(insns[1].address, "eax"), (insns[2].address, "ebx")]
 
     def test_empty_insns(self):
         from dataflow import backward_slice

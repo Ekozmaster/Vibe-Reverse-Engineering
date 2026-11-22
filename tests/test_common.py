@@ -12,7 +12,7 @@ from capstone import CS_ARCH_X86, CS_MODE_32, CS_MODE_64, Cs  # noqa: E402
 
 from common import Binary  # noqa: E402
 from pe_fakes import (DATA_RAW, DATA_RVA, IMAGE_BASE, IMAGE_BASE64, TEXT_RAW, TEXT_RVA,  # noqa: E402
-                      binary_from_sections, fake_section, pe_image)
+                      binary_from_sections, binary_over, fake_section, pe_image)
 
 def _insn(code_hex: str, mode=CS_MODE_32, address=0x1000):
     cs = Cs(CS_ARCH_X86, mode)
@@ -115,6 +115,28 @@ class TestFuncTable:
         assert b.find_func_start(first - 1) is None
 
 
+class TestJumpTableVas:
+    def test_tables_of_jumps_indexed_by_pointer_size_in_address_order(self):
+        code = (b"\xFF\x24\xBD" + struct.pack("<I", 0x402010)      # jmp [edi*4 + 0x402010]
+                + b"\xFF\x24\x85" + struct.pack("<I", 0x402000)    # jmp [eax*4 + 0x402000]
+                + b"\xFF\x24\x85" + struct.pack("<I", 0x402010)    # jmp [eax*4 + 0x402010]
+                + b"\xFF\x24\xC5" + struct.pack("<I", 0x402020)    # jmp [eax*8 + 0x402020]
+                + b"\xFF\x14\x85" + struct.pack("<I", 0x402030)    # call [eax*4 + 0x402030]
+                + b"\xFF\xA4\x83" + struct.pack("<I", 0x402040))   # jmp [ebx + eax*4 + 0x402040]
+        assert binary_over(code).jump_table_vas == [0x402000, 0x402010]
+
+    def test_a_table_in_the_upper_half_of_the_address_space_has_an_unsigned_address(self):
+        code = b"\xFF\x24\x85" + struct.pack("<I", 0x80402000)     # jmp [eax*4 + 0x80402000]
+        assert binary_over(code).jump_table_vas == [0x80402000]
+
+    def test_x64_tables_are_not_looked_for(self):
+        code = (b"\xFF\x24\xC5" + struct.pack("<I", 0x402000)          # jmp [rax*8 + 0x402000]
+                + b"\x42\xFF\x24\xCD" + struct.pack("<I", 0x402040))   # jmp [r9*8 + 0x402040]
+        section = fake_section(TEXT_RVA, len(code), 0, len(code), executable=True)
+        b = binary_from_sections(code, [section], is_64=True)
+        assert b.jump_table_vas == []
+
+
 class TestInstructionPredicates:
     def test_classification(self):
         assert Binary.is_call(_insn("e800000000"))
@@ -140,10 +162,57 @@ class TestMemOperands:
         "d918", "d910", "db18", "db10", "db08",       # fstp fst fistp fist fisttp
         "d938",                                       # fnstcw
         "0f1100", "0f2b00", "660f2b00", "0fc300",     # movups movntps movntpd movnti
+        "660fd60424", "0f7f0424", "0f7e0424",         # movq from xmm0 and from mm0, movd from mm0
+        "660f110424",                                 # movupd
+        "0f130424", "660f130424", "0f170424", "660f170424",       # movlps movlpd movhps movhpd
+        "660fe70424", "0fe70424", "f20f2b0424", "f30f2b0424",     # movntdq movntq movntsd movntss
+        "0fae1c24", "c5f8ae1c24",                     # stmxcsr vstmxcsr
+        "0f900424", "0f910424", "0f920424", "0f930424", "0f960424", "0f970424", "0f980424",   # seto setno setb setae setbe seta sets
+        "0f990424", "0f9a0424", "0f9b0424", "0f9c0424", "0f9d0424", "0f9e0424", "0f9f0424",   # setns setp setnp setl setge setle setg
+        "660f3a14042400", "660f3a15042400", "660f3a16042400", "660f3a17042400",   # pextrb pextrw pextrd extractps
+        "c4e37914042400", "c4e37915042400", "c4e37916042400", "c4e3f916042400",   # vpextrb vpextrw vpextrd vpextrq
+        "c4e37917042400", "c4e37d19042400", "c4e37d39042400", "c4e3791d042400",   # vextractps vextractf128 vextracti128 vcvtps2ph
+        "c5f8290424", "c5f9290424", "c5f8110424", "c5f9110424",   # vmovaps vmovapd vmovups vmovupd
+        "c5fa110424", "c5fb110424", "c5f97e0424", "c5f9d60424",   # vmovss vmovsd vmovd vmovq
+        "c5f97f0424", "c5fe7f0424",                               # vmovdqa vmovdqu
+        "c5f8130424", "c5f9130424", "c5f8170424", "c5f9170424",   # vmovlps vmovlpd vmovhps vmovhpd
+        "c5f82b0424", "c5f92b0424", "c5f9e70424",                 # vmovntps vmovntpd vmovntdq
+        "c4e2792e0424", "c4e2792f0424", "c4e2798e0424", "c4e2f98e0424",   # vmaskmovps vmaskmovpd vpmaskmovd vpmaskmovq
+        "c5f8910424", "c5f9910424", "c4e1f9910424",   # kmovw kmovb kmovd
+        "0f38f60424", "660f38f50424",                 # wrssd wrussd
+        "6c", "666d", "6d",                           # insb insw insd
     ])
     def test_a_store_writes_its_memory_destination(self, code):
         """The ISA stores to operand 0; capstone reports these as reads."""
         assert Binary.mem_operands(_insn(code))[0].access == "w"
+
+    @pytest.mark.parametrize("code", [
+        "66480f3a16042400",                           # pextrq
+        "c4e1f8910424",                               # kmovq
+        "480f38f60424", "66480f38f50424",             # wrssq wrussq
+    ])
+    def test_a_64_bit_store_writes_its_memory_destination(self, code):
+        assert Binary.mem_operands(_insn(code, CS_MODE_64))[0].access == "w"
+
+    @pytest.mark.parametrize("code, mode", [
+        ("0fb00424", CS_MODE_32), ("0fb10c24", CS_MODE_32),       # cmpxchg byte and dword
+        ("0fc70c24", CS_MODE_32), ("480fc70c24", CS_MODE_64),     # cmpxchg8b cmpxchg16b
+        ("c0042400", CS_MODE_32), ("c00c2400", CS_MODE_32),       # rol ror
+        ("c0142400", CS_MODE_32), ("c01c2400", CS_MODE_32),       # rcl rcr
+    ])
+    def test_an_update_in_place_reads_and_writes_its_memory_operand(self, code, mode):
+        """The ISA reads operand 0 and stores to it; capstone reports these as reads."""
+        assert Binary.mem_operands(_insn(code, mode))[0].access == "rw"
+
+    @pytest.mark.parametrize("code", [
+        "0fa30424",         # bt [esp], eax
+        "0fae1424",         # ldmxcsr [esp]
+        "ff3424",           # push dword [esp]
+        "660f6f0424",       # movdqa xmm0, [esp]
+        "f30f7e0424",       # movq xmm0, [esp]
+    ])
+    def test_a_load_only_reads_its_memory_operand(self, code):
+        assert Binary.mem_operands(_insn(code))[0].access == "r"
 
 
 class TestReferenceExtraction:

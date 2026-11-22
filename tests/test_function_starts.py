@@ -2,6 +2,8 @@
 
 import struct
 
+import pytest
+
 from pe_fakes import CODE_VA, IMAGE_BASE, binary_from_sections, binary_over, fake_section
 
 INT3 = bytes([0xCC])
@@ -54,6 +56,41 @@ class TestX86:
         }))
 
         assert b.func_table == [called, tail_called]
+
+    def test_jump_target_behind_an_import_thunk_is_a_function_start(self):
+        thunk, tail_called = CODE_VA + 0x10, CODE_VA + 0x16
+        b = binary_over(_laid_out(CODE_VA, {
+            CODE_VA: _rel32(0xE8, CODE_VA, thunk) + _rel32(0xE9, CODE_VA + 5, tail_called),
+            thunk: bytes.fromhex("FF25") + struct.pack("<I", IMAGE_BASE + 0x2000),    # jmp [import]
+            tail_called: RET,
+        }))
+
+        assert b.func_table == [thunk, tail_called]
+
+    def test_jump_target_at_the_start_of_a_section_is_a_function_start(self):
+        jumper = CODE_VA + 0x10
+        b = binary_over(_laid_out(CODE_VA, {
+            CODE_VA: RET,
+            jumper: _rel32(0xE9, jumper, CODE_VA),
+        }))
+
+        assert b.func_table == [CODE_VA]
+
+    @pytest.mark.parametrize("before, follows", [
+        ("CC", True),                   # int3
+        ("90", True),                   # nop
+        ("C3", True),                   # ret
+        ("C20800", True),               # ret 8
+        ("EB10", True),                 # jmp rel8
+        ("E900010000", True),           # jmp rel32
+        ("FF2500204000", True),         # jmp [import]
+        ("33C0", False),                # xor eax, eax
+        ("8B442404", False),            # mov eax, [esp + 4]
+        ("", True),                     # nothing: the section starts here
+    ])
+    def test_follows_function_end(self, before, follows):
+        code = bytes.fromhex(before)
+        assert binary_over(code + RET).follows_function_end(CODE_VA + len(code)) is follows
 
 
 def _x64_binary():

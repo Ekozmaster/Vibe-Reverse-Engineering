@@ -56,19 +56,6 @@ def _function_starts_after(b: Binary, start: int, end: int) -> list[int]:
     return table[bisect.bisect_right(table, start):bisect.bisect_left(table, end)]
 
 
-def _follows_a_function_end(b: Binary, va: int) -> bool:
-    """Whether the bytes before *va* end a function: padding, a return or an unconditional jump.
-
-    A known entry point reached that way starts a function of its own; one in
-    the middle of straight-line code is a call target inside a function.
-    """
-    before = b.read_va(va - 6, 6)
-    if len(before) < 6:
-        return True
-    return (before[-1] in (0xCC, 0x90, 0xC3) or before[-3] == 0xC2 or before[-2] == 0xEB
-            or before[-5] == 0xE9 or before[-6:-4] == b"\xFF\x25")
-
-
 def _is_known_start(b: Binary, va: int) -> bool:
     table = b.func_table
     index = bisect.bisect_left(table, va)
@@ -83,19 +70,26 @@ class _JumpTable(NamedTuple):
 
 
 def _jump_table(b: Binary, insn, low: int, high: int) -> _JumpTable | None:
-    """The jump table *insn* reads, with its cases in [*low*, *high*); None when it reads none.
+    """The jump table of pointers the x86 *insn* reads, with its cases in [*low*, *high*); None when it reads none.
 
     The table has no stored length: it is read up to the first entry that
-    points outside that range.
+    points outside that range, and no further than the table of another jump.
+    None on x64, where a jump table holds offsets that code adds to a register.
     """
-    operands = b.mem_operands(insn)
-    if (insn.mnemonic != "jmp" or not operands or not operands[0].index
-            or operands[0].scale != b.ptr_size or not operands[0].disp):
+    if b.is_64 or insn.mnemonic != "jmp":
         return None
-    va = operands[0].disp
+    operands = b.mem_operands(insn)
+    if not operands or not operands[0].index or operands[0].scale != b.ptr_size or not operands[0].disp:
+        return None
+    # Capstone gives the displacement as a signed number, negative for a table at or above 0x80000000
+    va = operands[0].disp & 0xFFFFFFFF
+    limit = va + _MAX_JUMP_TABLE_ENTRIES * b.ptr_size
+    following = bisect.bisect_right(b.jump_table_vas, va)
+    if following < len(b.jump_table_vas):
+        limit = min(limit, b.jump_table_vas[following])
     cases = []
-    for index in range(_MAX_JUMP_TABLE_ENTRIES):
-        entry = b.read_va(va + index * b.ptr_size, b.ptr_size)
+    for entry_va in range(va, limit - b.ptr_size + 1, b.ptr_size):
+        entry = b.read_va(entry_va, b.ptr_size)
         case = int.from_bytes(entry, "little")
         if len(entry) < b.ptr_size or not low <= case < high:
             break
@@ -106,7 +100,7 @@ def _jump_table(b: Binary, insn, low: int, high: int) -> _JumpTable | None:
 def _is_tail_call(b: Binary, insn, target: int, next_function: int | None) -> bool:
     """Whether the direct jump *insn* leaves for the entry of another function."""
     return (insn.mnemonic == "jmp" and next_function is not None and target >= next_function
-            and (_is_known_start(b, target) or _follows_a_function_end(b, target)))
+            and (_is_known_start(b, target) or b.follows_function_end(target)))
 
 
 def _instructions_around(b: Binary, start: int, max_size: int, tables: list[_JumpTable]):
@@ -162,7 +156,7 @@ def analyze(b: Binary, start: int, max_size: int):
     nop_run = 0
     furthest_branch = start
     later_starts = _function_starts_after(b, start, start + max_size)
-    next_function = next((va for va in later_starts if _follows_a_function_end(b, va)), None)
+    next_function = next((va for va in later_starts if b.follows_function_end(va)), None)
     previous = None
     live = True
     scan_end = start + max_size

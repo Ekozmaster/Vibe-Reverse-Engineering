@@ -131,6 +131,7 @@ class TestGameIndex:
         "PRAGMA table_info(funcs)",
         "SELECT * FROM pragma_table_info('funcs')",
         "PRAGMA index_list(xrefs)",
+        "PRAGMA TABLE_INFO(funcs)",
         "SELECT * FROM callers",
         "SELECT * FROM callees",
         "SELECT printf('0x%x', address), count(*) FROM grep WHERE name LIKE '%a%' GROUP BY 1",

@@ -357,3 +357,25 @@ class TestReadExistingAddresses:
     def test_missing_file_empty_set(self, tmp_path):
         from kb import read_existing_addresses
         assert read_existing_addresses(tmp_path / "nope.h") == set()
+
+
+class TestBracesAndCommentsAtTheEdges:
+    def test_a_brace_inside_a_character_literal_does_not_close_the_struct(self):
+        from kb import parse_kb
+        kb = parse_kb("struct S {\n    char close = '}';\n    int x;\n};\nstruct T { int y; };\n")
+        assert kb.typedefs == ["struct S { char close = '}'; int x; };", "struct T { int y; };"]
+
+    def test_a_brace_inside_a_string_literal_does_not_close_the_struct(self):
+        from kb import parse_kb
+        kb = parse_kb('struct S {\n    const char *fmt = "}";\n    int x;\n};\n')
+        assert kb.typedefs == ['struct S { const char *fmt = "}"; int x; };']
+
+    def test_a_semicolon_on_the_line_after_the_closing_brace_ends_that_declaration(self):
+        from kb import parse_kb
+        kb = parse_kb("struct S {\n    int x;\n}\n;\nstruct T { int y; };\n")
+        assert kb.typedefs == ["struct S { int x; } ;", "struct T { int y; };"]
+
+    def test_a_block_comment_never_closed_runs_to_the_end_of_the_text(self):
+        from kb import parse_kb
+        kb = parse_kb("struct S { int x; };\n/* never closed\nstruct Hidden { int y; };\n")
+        assert kb.typedefs == ["struct S { int x; };"]

@@ -90,9 +90,9 @@ _SCHEMA_PRAGMAS = frozenset((
 ))
 
 
-def _authorize_read(action: int, subject: str | None, *_details: str | None) -> int:
+def _authorize_read(action: int, subject: str, *_details: str | None) -> int:
     """sqlite3 authorizer for read-only connections: queries and the pragmas that describe the schema."""
-    if action in _READ_ACTIONS or (action == sqlite3.SQLITE_PRAGMA and subject in _SCHEMA_PRAGMAS):
+    if action in _READ_ACTIONS or (action == sqlite3.SQLITE_PRAGMA and subject.lower() in _SCHEMA_PRAGMAS):
         return sqlite3.SQLITE_OK
     return sqlite3.SQLITE_DENY
 

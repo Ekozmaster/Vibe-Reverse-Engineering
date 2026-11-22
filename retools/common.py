@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import functools
+import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,9 @@ _UNW_FLAG_CHAININFO = 0x4
 _MAX_UNWIND_CHAIN = 32  # a chain longer than this is a loop in a damaged file
 
 _MAX_INSN_LEN = 15
+
+# SIB bytes of a memory operand [index * 4 + disp32], one per index register
+_JMP_TABLE_SIB = rb"\x85\x8D\x95\x9D\xAD\xB5\xBD"
 
 # Operand values above this are treated as addresses; smaller ones are constants.
 MIN_ABS_ADDRESS = 0x10000
@@ -274,32 +278,59 @@ class Binary:
             return self._exception_chunks[idx]
         return None
 
-    def _follows_end_of_code(self, va: int) -> bool:
-        """True when the bytes before *va* are padding, a return or an unconditional jump."""
-        before = self.read_va(va - 5, 5)
-        return len(before) == 5 and (
-            before[4] in (0xCC, 0x90, 0xC3)                 # int3, nop, ret
-            or before[2] == 0xC2                            # ret imm16
-            or before[0] == 0xE9 or before[3] == 0xEB)      # jmp rel32, jmp rel8
+    @functools.cached_property
+    def jump_table_vas(self) -> list[int]:
+        """Sorted addresses of the tables that x86 ``jmp [index * 4 + table]`` instructions read.
 
-    @property
+        A jump table stores no length, and the tables of several switches lie
+        back to back, so where the next one starts is what ends a table.
+
+        Empty for an x64 image, whose jump tables hold offsets that code adds
+        to a register, not pointers that a ``jmp`` reads.
+
+        A byte heuristic like ``func_table``: the instruction's bytes are
+        matched anywhere in executable code, decoded or not.
+        """
+        if self.is_64:
+            return []
+        pattern = re.compile(rb"\xFF\x24[" + _JMP_TABLE_SIB + rb"](?=(.{4}))", re.DOTALL)
+        tables: set[int] = set()
+        for _va_start, raw_off, raw_size in self.exec_ranges():
+            for match in pattern.finditer(self.raw, raw_off, raw_off + raw_size):
+                tables.add(int.from_bytes(match.group(1), "little"))
+        return sorted(tables)
+
+    def follows_function_end(self, va: int) -> bool:
+        """Whether the bytes before *va* end a function: padding, a return or an unconditional jump.
+
+        So does the start of a section, where no bytes come before. A byte
+        heuristic: the bytes are not decoded, so the tail of a longer
+        instruction can pass for one of these.
+        """
+        last = self.read_va(va - 1, 1)
+        return (not last or last[0] in (0xCC, 0x90, 0xC3)   # int3, nop, ret
+                or self.read_va(va - 3, 1) == b"\xC2"       # ret imm16
+                or self.read_va(va - 2, 1) == b"\xEB"       # jmp rel8
+                or self.read_va(va - 5, 1) == b"\xE9"       # jmp rel32
+                or self.read_va(va - 6, 2) == b"\xFF\x25")  # jmp [disp32]
+
+    @functools.cached_property
     def func_table(self) -> list[int]:
-        """Sorted list of known function entry points (lazily built).
+        """Sorted list of known function entry points.
 
         Entry points come from the x64 exception table, the targets of direct
         ``call rel32`` instructions and the exports. A ``jmp rel32`` target is
-        one only where a function can start, behind padding, a return or
-        another jump: that is a function reached by tail calls, while any other
-        jump target is a label inside a function. On x64 nothing inside a
-        function of the exception table is an entry point.
+        one only where ``follows_function_end`` holds: that is a function
+        reached by tail calls, while any other jump target is a label inside a
+        function. On x64 nothing inside a function of the exception table is
+        an entry point.
 
         Both tests are byte heuristics, not decoded instructions: every
-        ``E8``/``E9`` byte counts as a call or jump, and "behind padding, a
-        return or a jump" only looks at the raw bytes before the target. An
-        operand or data byte that happens to match can add a false entry point.
+        ``E8``/``E9`` byte counts as a call or jump, and
+        ``follows_function_end`` only looks at the raw bytes before the target.
+        An operand or data byte that happens to match can add a false entry
+        point.
         """
-        if hasattr(self, "_func_table"):
-            return self._func_table
         called: set[int] = set()
         jumped_to: set[int] = set()
         for va_start, raw_off, raw_size in self.exec_ranges():
@@ -310,15 +341,14 @@ class Binary:
                     dest = va_start + i + 5 + rel
                     if self.in_exec(dest):
                         (called if data[i] == 0xE8 else jumped_to).add(dest)
-        starts = called | {va for va in jumped_to if self._follows_end_of_code(va)}
+        starts = called | {va for va in jumped_to if self.follows_function_end(va)}
         if hasattr(self.pe, "DIRECTORY_ENTRY_EXPORT"):
             for exp in self.pe.DIRECTORY_ENTRY_EXPORT.symbols:
                 if exp.address:
                     starts.add(self.base + exp.address)
         starts = {va for va in starts if self._chunk_at(va) is None}
         starts.update(start for _begin, _end, start in self._exception_chunks)
-        self._func_table = sorted(starts)
-        return self._func_table
+        return sorted(starts)
 
     def find_func_start(self, va: int) -> int | None:
         """Entry point of the function that holds *va*, or None when no known function does.
@@ -370,12 +400,28 @@ class Binary:
         except ValueError:
             return insn.op_str
 
-    # FPU/SSE mnemonics where operand 0 is a memory destination
+    # Mnemonics that store to operand 0 when it is a memory operand; Capstone reports a read for some forms
     _STORE_MNEMONICS = frozenset((
         "fstp", "fst", "fistp", "fist", "fisttp", "fbstp",
         "fstcw", "fnstcw", "fstenv", "fnstenv", "fstsw", "fnstsw",
-        "movss", "movsd", "movaps", "movups", "movdqa", "movdqu",
-        "movntps", "movntpd", "movnti",
+        "movss", "movsd", "movaps", "movups", "movupd", "movdqa", "movdqu", "movd", "movq",
+        "movlps", "movlpd", "movhps", "movhpd",
+        "movntps", "movntpd", "movnti", "movntdq", "movntq", "movntss", "movntsd",
+        "pextrb", "pextrw", "pextrd", "pextrq", "extractps",
+        "stmxcsr", "vstmxcsr",
+        "seto", "setno", "setb", "setae", "setbe", "seta", "sets", "setns",
+        "setp", "setnp", "setl", "setge", "setle", "setg",
+        "vmovss", "vmovsd", "vmovaps", "vmovapd", "vmovups", "vmovupd", "vmovdqa", "vmovdqu", "vmovd", "vmovq",
+        "vmovlps", "vmovlpd", "vmovhps", "vmovhpd", "vmovntps", "vmovntpd", "vmovntdq",
+        "vpextrb", "vpextrw", "vpextrd", "vpextrq", "vextractps", "vextractf128", "vextracti128", "vcvtps2ph",
+        "vmaskmovps", "vmaskmovpd", "vpmaskmovd", "vpmaskmovq",
+        "kmovb", "kmovw", "kmovd", "kmovq",
+        "wrssd", "wrssq", "wrussd", "wrussq",
+        "insb", "insw", "insd",
+    ))
+    # Mnemonics that read a memory operand 0 and store to it, where Capstone reports only the read
+    _UPDATE_MNEMONICS = frozenset((
+        "cmpxchg", "cmpxchg8b", "cmpxchg16b", "rol", "ror", "rcl", "rcr",
     ))
 
     @classmethod
@@ -390,6 +436,8 @@ class Binary:
                 continue
             if i == 0 and insn.mnemonic in cls._STORE_MNEMONICS:
                 acc = "w"
+            elif i == 0 and insn.mnemonic in cls._UPDATE_MNEMONICS:
+                acc = "rw"
             elif (op.access & 3) == 3:
                 acc = "rw"
             elif op.access & 2:

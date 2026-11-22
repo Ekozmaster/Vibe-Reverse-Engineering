@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from capstone import CS_GRP_CALL
 from capstone import x86_const as x86
 from common import Binary
 from cfg import build_cfg
@@ -136,7 +137,7 @@ def _registers_written(insn) -> set[str]:
     return {_TRACKED_REGISTER[name] for name in names if name in _TRACKED_REGISTER}
 
 
-def _apply_modelled(state: dict, insn, push_stack: list) -> set[str]:
+def _apply_modelled(state: dict, insn) -> set[str]:
     """Give the registers of an instruction this module models their new values.
 
     Returns:
@@ -204,23 +205,7 @@ def _apply_modelled(state: dict, insn, push_stack: list) -> set[str]:
             state[dst] = BinOp("+", base_val, Const(disp)) if disp else base_val
         return {dst}
 
-    if mn == "push" and nops == 1:
-        reg = _get_reg(insn, 0)
-        imm = _get_imm(insn, 0)
-        if reg in state:
-            push_stack.append(state[reg])
-        else:
-            push_stack.append(Const(imm) if imm is not None else Unknown())
-        return set()
-
-    if mn == "pop" and nops == 1:
-        reg = _get_reg(insn, 0)
-        if reg in state and push_stack:
-            state[reg] = push_stack.pop()
-            return {reg}
-        return set()
-
-    if mn == "call":
+    if insn.group(CS_GRP_CALL):
         for reg in _CALLER_SAVED:
             state[reg] = Unknown()
         return set(_CALLER_SAVED)
@@ -233,14 +218,97 @@ def _apply_modelled(state: dict, insn, push_stack: list) -> set[str]:
     return set()
 
 
-def _apply_insn(state: dict, insn, push_stack: list) -> None:
-    """Update register state for a single instruction.
+_SLOT_SIZE = 4
+# A larger reservation is a buffer, not slots a pop will read
+_MAX_RESERVED_SLOTS = 64
+# Capstone leaves esp out of the registers these write when the operand is a segment register, and for enter
+_MOVES_ESP_UNREPORTED = frozenset(("push", "pop", "enter"))
+# These save hundreds of bytes of processor state, and Capstone reports their operand as 4 bytes long
+_STATE_SAVES = frozenset(("fnsave", "fxsave", "xsave", "xsaveopt", "xsavec", "xsaves"))
+
+
+def _stack_pointer_change(insn) -> int | None:
+    """Bytes ``add esp, imm`` or ``sub esp, imm`` moves esp by, negative when it reserves.
+
+    None for any other instruction.
+    """
+    if insn.mnemonic not in ("add", "sub") or _get_reg(insn, 0) != "esp":
+        return None
+    imm = _get_imm(insn, 1)
+    if imm is None:
+        return None
+    signed = imm - (1 << 32) if imm & 0x80000000 else imm
+    return signed if insn.mnemonic == "add" else -signed
+
+
+def _apply_to_stack(state: dict, insn, stack: list) -> set[str]:
+    """Follow an instruction that moves esp through *stack*, the slots pushed so far with the top one last.
+
+    The slots below the first one are not known, so a pop from an empty
+    *stack* yields no value. An instruction whose effect on esp is not
+    followed (a near or far call, whose callee may or may not release its
+    arguments, or ``leave``) empties *stack*: no slot is known behind it.
+
+    Returns:
+        The registers that were given a value.
+    """
+    mn = insn.mnemonic
+    slot_operand = len(insn.operands) == 1 and insn.operands[0].size == _SLOT_SIZE
+    reg = _get_reg(insn, 0)
+
+    if mn == "push" and slot_operand:
+        imm = _get_imm(insn, 0)
+        stack.append(state[reg] if reg in state else Const(imm) if imm is not None else Unknown())
+        return set()
+
+    if mn == "pop" and slot_operand and reg != "esp":
+        if not stack:
+            return set()
+        value = stack.pop()
+        if reg not in state:
+            return set()
+        state[reg] = value
+        return {reg}
+
+    change = _stack_pointer_change(insn)
+    if change is None or change % _SLOT_SIZE or change < -_MAX_RESERVED_SLOTS * _SLOT_SIZE:
+        stack.clear()
+    elif change >= 0:
+        del stack[max(len(stack) - change // _SLOT_SIZE, 0):]
+    else:
+        stack.extend(Unknown() for _ in range(-change // _SLOT_SIZE))
+    return set()
+
+
+def _overwrite_slots(stack: list, store, mnemonic: str) -> None:
+    """Make the slots of *stack* Unknown that *store*, a memory operand based on esp, writes.
+
+    Every slot when the extent of the write is not known: an indexed operand,
+    or the area *mnemonic* saves processor state to.
+    """
+    if store.index or mnemonic in _STATE_SAVES:
+        stack.clear()
+        return
+    first, last = store.disp // _SLOT_SIZE, (store.disp + store.size - 1) // _SLOT_SIZE
+    for slot in range(max(first, 0), min(last + 1, len(stack))):
+        stack[-1 - slot] = Unknown()
+
+
+def _apply_insn(state: dict, insn, stack: list) -> None:
+    """Update register state and the pushed stack slots for a single instruction.
 
     A register the instruction writes without a value being modelled for it
     becomes Unknown: a value from before the instruction no longer holds.
     """
-    given_a_value = _apply_modelled(state, insn, push_stack)
-    for reg in _registers_written(insn) - given_a_value:
+    written = _registers_written(insn)
+    given_a_value = _apply_modelled(state, insn)
+    # Capstone reports esp as written by a near call but not by a far one
+    if "esp" in written or insn.mnemonic in _MOVES_ESP_UNREPORTED or insn.group(CS_GRP_CALL):
+        given_a_value |= _apply_to_stack(state, insn, stack)
+    for operand in Binary.mem_operands(insn):
+        if operand.base == "esp" and "w" in operand.access:
+            _overwrite_slots(stack, operand, insn.mnemonic)
+    for reg in written - given_a_value:
         state[reg] = Unknown()
 
 
@@ -256,9 +324,9 @@ def propagate_forward(insns: list, init: dict[str, object] | None = None) -> dic
         Register state dict mapping register names to Value objects.
     """
     state = {**_init_state(), **(init or {})}
-    push_stack: list = []
+    stack: list = []
     for insn in insns:
-        _apply_insn(state, insn, push_stack)
+        _apply_insn(state, insn, stack)
     return state
 
 
@@ -377,7 +445,7 @@ def _insn_writes(insn) -> set[str]:
         return regs  # these don't write to register operands
     if insn.operands and insn.operands[0].type == x86.X86_OP_REG:
         regs.add(insn.reg_name(insn.operands[0].reg))
-    if insn.mnemonic == "call":
+    if insn.group(CS_GRP_CALL):
         regs.update(_CALLER_SAVED)
     if insn.mnemonic in ("cdq", "cwd"):
         regs.add("edx")

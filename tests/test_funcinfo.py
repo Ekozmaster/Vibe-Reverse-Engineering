@@ -249,6 +249,19 @@ class TestScanStops:
         rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
         assert rets == [(TEXT + 8, 0)] and end == TEXT + 9
 
+    def test_a_known_start_in_straight_line_code_at_the_start_of_the_section_is_not_the_next_function(self, tmp_path):
+        # xor eax, eax / label called from +0x30: mov / jmp over / nop / nop / over: mov / call / int3
+        code = bytearray(bytes.fromhex("CC") * 0x40)
+        code[0:2] = bytes.fromhex("33C0")
+        code[2:6] = MOV
+        code[6:10] = bytes.fromhex("EB029090")
+        code[10:14] = MOV
+        code[14:19] = _call(14, 0x38)
+        code[0x30:0x36] = _call(0x30, 2) + bytes.fromhex("C3")
+        code[0x38] = 0xC3
+        _, calls, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
+        assert calls == [(TEXT + 14, TEXT + 0x38)] and end == TEXT + 19
+
     def test_a_case_reached_only_through_the_jump_table_behind_the_last_ret_is_counted(self, tmp_path):
         # jmp [eax*4 + table] / case 0: mov / ret / case 1: mov / jmp eax / mov edi, edi / table / int3
         table = struct.pack("<II", TEXT + 7, TEXT + 12)
@@ -272,6 +285,65 @@ class TestScanStops:
                 + table + MOV + b"\xC3" + b"\xCC" * 8)
         rets, _, end = funcinfo.analyze(_binary(tmp_path, code), TEXT, 0x100)
         assert rets == [(TEXT + 11, 0)] and end == TEXT + 18
+
+    def test_a_case_at_a_known_start_that_follows_a_ret_is_a_case_of_this_function(self, tmp_path):
+        # jmp [eax*4 + table] / case 0: mov / ret / case 1, called from +0x30: mov / ret / table
+        code = bytearray(bytes.fromhex("CC") * 0x40)
+        code[0:7] = bytes.fromhex("FF2485") + struct.pack("<I", TEXT + 0x18)
+        code[7:12] = MOV + bytes.fromhex("C3")
+        code[12:17] = MOV + bytes.fromhex("C3")
+        code[0x18:0x20] = struct.pack("<II", TEXT + 7, TEXT + 12)
+        code[0x30:0x36] = _call(0x30, 12) + bytes.fromhex("C3")
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
+        assert rets == [(TEXT + 11, 0), (TEXT + 16, 0)] and end == TEXT + 17
+
+    @pytest.mark.parametrize("image_base", [IMAGE_BASE, 0x80000000])
+    def test_the_table_of_a_later_function_that_follows_this_one_s_table_is_not_read(self, image_base):
+        # jmp [eax*4 + table] / case 0: ret / case 1: call / int3 padding /
+        # another function, called from +0x90: jmp [eax*4 + its table] / mov / ret / call / ret /
+        # table / the other function's table
+        text = image_base + TEXT_RVA
+        code = bytearray(b"\xCC" * 0xA0)
+        code[0:7] = b"\xFF\x24\x85" + struct.pack("<I", text + 0x40)
+        code[7] = 0xC3
+        code[8:13] = _call(8, 0x80)
+        code[0x10:0x17] = b"\xFF\x24\x85" + struct.pack("<I", text + 0x48)
+        code[0x17:0x1C] = MOV + b"\xC3"
+        code[0x1C:0x22] = _call(0x1C, 0x80) + b"\xC3"
+        code[0x40:0x48] = struct.pack("<II", text + 7, text + 8)
+        code[0x48:0x50] = struct.pack("<II", text + 0x17, text + 0x1C)
+        code[0x80] = 0xC3
+        code[0x90:0x96] = _call(0x90, 0x10) + b"\xC3"
+        section = fake_section(TEXT_RVA, len(code), 0, len(code), executable=True)
+        b = binary_from_sections(bytes(code), [section], image_base=image_base)
+        rets, calls, end = funcinfo.analyze(b, text, 0x100)
+        assert rets == [(text + 7, 0)] and calls == [(text + 8, text + 0x80)] and end == text + 13
+
+    def test_an_entry_that_runs_into_the_table_of_another_jump_is_not_read(self, tmp_path):
+        # jmp [eax*4 + table] / case 0: call / int3 padding / mov / ret / another jump, whose table starts
+        # 6 bytes into this one's / table of one case / a pointer to the mov that the other table starts inside
+        code = bytearray(b"\xCC" * 0x90)
+        code[0:7] = b"\xFF\x24\x85" + struct.pack("<I", TEXT + 0x40)
+        code[7:12] = _call(7, 0x80)
+        code[0x10:0x15] = MOV + b"\xC3"
+        code[0x20:0x27] = b"\xFF\x24\x85" + struct.pack("<I", TEXT + 0x46)
+        code[0x40:0x48] = struct.pack("<II", TEXT + 7, TEXT + 0x10)
+        code[0x80] = 0xC3
+        rets, _, end = funcinfo.analyze(_binary(tmp_path, bytes(code)), TEXT, 0x100)
+        assert rets == [] and end == TEXT + 12
+
+    def test_an_x64_jump_through_a_table_of_pointers_is_not_followed(self):
+        # jmp [rax*8 + table] / case 0: call / int3 padding / case 1: mov / ret / table
+        code = bytearray(b"\xCC" * 0x90)
+        code[0:7] = b"\xFF\x24\xC5" + struct.pack("<I", TEXT + 0x40)
+        code[7:12] = _call(7, 0x80)
+        code[0x10:0x15] = MOV + b"\xC3"
+        code[0x40:0x50] = struct.pack("<QQ", TEXT + 7, TEXT + 0x10)
+        code[0x80] = 0xC3
+        section = fake_section(TEXT_RVA, len(code), 0, len(code), executable=True)
+        b = binary_from_sections(bytes(code), [section], is_64=True)
+        rets, _, end = funcinfo.analyze(b, TEXT, 0x100)
+        assert rets == [] and end == TEXT + 7
 
     def test_jump_table_bytes_that_decode_as_a_jump_carry_the_scan_nowhere(self, tmp_path):
         # jmp [eax*4 + table] / movs / case at +0xEB: call noreturn / movs / table (EB 10 ..., 07 10 ...) /
